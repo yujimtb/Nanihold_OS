@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vsm-poc-platform"
+version = "0.1.0"
+description = "Viable System Model PoC Platform - Python 3.11+ asyncio implementation"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "vsm-poc-platform contributors" }]
+dependencies = [
+    "litellm",
+    "hypothesis",
+    "pytest",
+    "pytest-asyncio",
+    "typer",
+    "pydantic>=2",
+]
+
+[project.scripts]
+vsm = "vsm.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["vsm*"]
+exclude = ["tests*", "runs*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "live_llm: tests that hit a live LLM provider (gated, opt-in only)",
+]
