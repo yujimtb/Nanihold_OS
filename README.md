@@ -1,169 +1,371 @@
 # vsm-poc-platform
 
-Viable System Model (VSM) Proof-of-Concept Platform — a Python 3.11+ / asyncio
-single-process implementation of S1〜S5 + S3* with a CLI front-end.
+Viable System Model (VSM) Proof-of-Concept Platform.
+
+Python 3.11+ / asyncio による単一プロセス実装で、S1〜S5 + S3* の各 System
+が LLM ベースの Sub_Agent として動作します。CLI からタスク投入、状態確認、
+イベントログ追跡、リプレイを実行できます。
+
+この README は Windows 版の実行手順を基準にしています。
+
+## WSL / コンテナ開発
+
+Windows でコンテナ開発する場合は、WSL2 + Ubuntu 上にリポジトリを置き、
+Docker Desktop の WSL integration を有効にして使います。Windows 側の
+`D:\...` 配下を直接 bind mount するより、WSL の Linux ファイルシステム
+(`~/projects/Nanihold_OS` など) に置く方がファイル I/O と権限差分が安定します。
+
+```powershell
+wsl --install -d Ubuntu
+wsl -l -v
+```
+
+Ubuntu 側でリポジトリを開きます。
+
+```bash
+mkdir -p ~/projects
+cd ~/projects
+git clone <repo-url> Nanihold_OS
+cd Nanihold_OS
+code .
+```
+
+VS Code Dev Containers を使う場合は、`Reopen in Container` を実行します。
+エディタ非依存で使う場合は Docker Compose から同じ環境を起動できます。
+
+```bash
+docker compose build
+docker compose run --rm app python -m pytest
+docker compose run --rm app python scripts/smoke_run.py
+docker compose run --rm app python -m vsm --help
+```
+
+実 LLM を使う場合は、各自の WSL 側リポジトリ直下に `.env` を作成します。
+`.env` は Git 管理しません。キー名の雛形は `.env.example` を参照してください。
 
 ## 概要
 
-`vsm-poc-platform` は Stafford Beer の VSM (Viable System Model) に基づく「AI 自動会社」の
-組織アーキテクチャ構想を、動作する PoC ソフトウェアとして実装するための基盤です。
+`vsm-poc-platform` は Stafford Beer の VSM (Viable System Model) に基づく
+「AI 自動会社」の組織アーキテクチャ構想を、動作する PoC ソフトウェアとして
+確認するための基盤です。
 
-各 System (S1_Worker, S2_Coordinator, S3_Allocator, S3Star_Auditor, S4_Scanner, S5_Policy)
-は LLM ベースの AI エージェント (Sub_Agent) として動作し、VSM の標準チャネルを介して
-メッセージを交換しながらタスクを処理します。
+各 System (`S1_WORKER`, `S2_COORDINATOR`, `S3_ALLOCATOR`,
+`S3STAR_AUDITOR`, `S4_SCANNER`, `S5_POLICY`) は VSM の標準チャネルを介して
+メッセージを交換し、Run ごとの `events.jsonl` に全イベントを永続化します。
 
-## アーキテクチャ
+## Windows クイックスタート
 
-- **実装言語**: Python 3.11+
-- **並行モデル**: asyncio 単一プロセス
-- **LLM 抽象化**: LiteLLM (環境変数 `LITELLM_PROVIDER` または `vsm.toml` で切替)
-- **メッセージング**: 自前実装 Message_Bus (外部フレームワーク非依存)
-- **永続化**: JSONL ファイル (Source of Truth)、ランタイムキャッシュは Python オブジェクト
+以下は PowerShell での手順です。作業ディレクトリはこのリポジトリのルートです。
 
-## クイックスタート
-
-### 1. インストール
-
-```bash
-pip install -e .
+```powershell
+cd D:\userdata\docs\projects\Nanihold_OS
 ```
 
-### 2. LLM プロバイダの設定
+### 1. Python 仮想環境を作成
 
-```bash
-export LITELLM_PROVIDER="openai/gpt-4o-mini"
-# または anthropic, bedrock など LiteLLM 対応プロバイダ
-export OPENAI_API_KEY="sk-..."
+Python 3.11 以上が必要です。
+
+```powershell
+py -3.11 -m venv .venv-win
+.\.venv-win\Scripts\python.exe -m pip install --upgrade pip
+.\.venv-win\Scripts\python.exe -m pip install -e .
 ```
 
-または `vsm.toml` に書く:
+開発用のテスト依存も入れる場合:
+
+```powershell
+.\.venv-win\Scripts\python.exe -m pip install -e ".[dev]"
+```
+
+### 2. CLI の起動確認
+
+PowerShell では同梱のラッパーを使うのが簡単です。
+
+```powershell
+.\vsm.ps1 --help
+```
+
+`Activate.ps1` や `vsm.ps1` が実行ポリシーで止まる場合は、その PowerShell
+セッションだけ一時的に許可してから再実行します。
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\vsm.ps1 --help
+```
+
+`cmd.exe` から使う場合:
+
+```bat
+cd /d D:\userdata\docs\projects\Nanihold_OS
+vsm.cmd --help
+```
+
+仮想環境を有効化して使う場合:
+
+```powershell
+.\.venv-win\Scripts\Activate.ps1
+vsm.exe --help
+```
+
+仮想環境を有効化せず、Python モジュールとして直接実行する場合:
+
+```powershell
+.\.venv-win\Scripts\python.exe -m vsm --help
+```
+
+## LLM なしで動作確認
+
+API キーなしで、VSM の構造、メッセージング、Event_Log、リプレイ可能な
+イベント永続化を確認できます。`FakeLLMProvider` が固定応答を返します。
+
+```powershell
+cd D:\userdata\docs\projects\Nanihold_OS
+.\.venv-win\Scripts\python.exe scripts\smoke_run.py
+```
+
+これは LLM の推論品質を見るものではなく、S4 → S5 → S3 → S1 → S3* の
+イベント伝播とランタイム構造を確認するための smoke test です。
+
+## 実 LLM で VSM を使う
+
+`vsm submit` は LiteLLM 経由でモデルを呼び出します。プロバイダは
+`LITELLM_PROVIDER` 環境変数、または `vsm.toml` / `.env` で設定します。
+
+### 既に `.env` に API キーとモデルを書いてある場合
+
+リポジトリ直下の `.env` に `LITELLM_PROVIDER` とプロバイダ別 API キー
+(`OPENROUTER_API_KEY`, `OPENAI_API_KEY` など) が入っている場合は、
+PowerShell で `$env:...` を設定する必要はありません。
+
+```powershell
+cd D:\userdata\docs\projects\Nanihold_OS
+.\vsm.ps1 submit "Write a Python function that reverses a string"
+```
+
+`cmd.exe` でも同じ `.env` が読み込まれます。
+
+```bat
+cd /d D:\userdata\docs\projects\Nanihold_OS
+vsm.cmd submit "Write a Python function that reverses a string"
+```
+
+Run が完了したら、表示された `run_id` で状態確認できます。
+
+```powershell
+.\vsm.ps1 status <run_id>
+.\vsm.ps1 replay <run_id>
+```
+
+`.env` は `vsm submit` の実行時に読み込まれます。シェル側で
+`LITELLM_PROVIDER` を設定している場合は、シェルの値が `.env` より優先されます。
+
+### OpenAI を使う例
+
+PowerShell:
+
+```powershell
+cd D:\userdata\docs\projects\Nanihold_OS
+$env:LITELLM_PROVIDER = "openai/gpt-4o-mini"
+$env:OPENAI_API_KEY = "sk-..."
+
+.\vsm.ps1 submit "Write a Python function that reverses a string"
+```
+
+`cmd.exe`:
+
+```bat
+cd /d D:\userdata\docs\projects\Nanihold_OS
+set LITELLM_PROVIDER=openai/gpt-4o-mini
+set OPENAI_API_KEY=sk-...
+
+vsm.cmd submit "Write a Python function that reverses a string"
+```
+
+### OpenRouter を使う例
+
+`.env` に設定すると、毎回 PowerShell で `$env:...` を設定せずに使えます。
+`.env` は Git 管理しないローカル認証情報として扱ってください。
+
+```dotenv
+LITELLM_PROVIDER=openrouter/openai/gpt-oss-20b:free
+OPENROUTER_API_KEY=sk-or-v1-...
+```
+
+`.env` 設定済みなら、実行コマンドはこれだけです。
+
+```powershell
+.\vsm.ps1 submit "Write a Python function that reverses a string"
+```
+
+OpenRouter のモデル ID は LiteLLM 向けに先頭へ `openrouter/` を付けます。
+たとえば OpenRouter 側のモデル ID が `openai/gpt-oss-20b:free` の場合、
+`LITELLM_PROVIDER` は `openrouter/openai/gpt-oss-20b:free` です。
+
+無料モデルは availability や rate limit で失敗することがあります。その場合は
+OpenRouter の Models 画面で別の `:free` モデル ID を選び、同じく
+`openrouter/` を付けて指定します。
+
+### Bedrock を使う例
+
+AWS 認証と Bedrock のモデルアクセス権限がある場合:
+
+```powershell
+$env:LITELLM_PROVIDER = "bedrock/anthropic.claude-3-5-haiku-20241022-v1:0"
+$env:AWS_REGION = "us-west-2"
+
+.\vsm.ps1 submit "Summarize the current VSM architecture"
+```
+
+## VSM CLI コマンド集
+
+| コマンド | 説明 |
+|---|---|
+| `.\vsm.ps1 submit "<description>"` | タスクを投入し、新しい Run を起動します。 |
+| `.\vsm.ps1 submit "<description>" --file path\to\file.txt` | UTF-8 の補足ファイル付きでタスクを投入します。`--file` は複数指定できます。 |
+| `.\vsm.ps1 status <run_id>` | `events.jsonl` から Task / System の状態サマリを再構成して表示します。 |
+| `.\vsm.ps1 tail <run_id>` | Run の `events.jsonl` に追従して新着イベントを JSONL で表示します。 |
+| `.\vsm.ps1 tail <run_id> --system <system_id>` | system_id / sender / receiver の一致でイベントを絞り込みます。 |
+| `.\vsm.ps1 tail <run_id> --channel S4-S5` | channel の一致でイベントを絞り込みます。 |
+| `.\vsm.ps1 replay <run_id>` | 完了済み Run の全イベントを append 順で人間可読形式に表示します。 |
+
+`cmd.exe` では `.\vsm.ps1` の代わりに `vsm.cmd` を使います。
+
+```bat
+vsm.cmd submit "Write a Python function that reverses a string"
+vsm.cmd status <run_id>
+vsm.cmd replay <run_id>
+```
+
+## Run の確認
+
+`submit` が完了すると `run_id` と `task_id` が表示されます。
+
+```text
+run_id=<run_id>
+task_id=<task_id>
+```
+
+Run のイベントログは以下に作成されます。
+
+```text
+runs\<run_id>\events.jsonl
+```
+
+最近の Run を確認する例:
+
+```powershell
+Get-ChildItem .\runs | Sort-Object LastWriteTime -Descending | Select-Object -First 5
+```
+
+Run の中身を見る例:
+
+```powershell
+.\vsm.ps1 status <run_id>
+.\vsm.ps1 replay <run_id>
+.\vsm.ps1 tail <run_id>
+.\vsm.ps1 tail <run_id> --system <system_id>
+.\vsm.ps1 tail <run_id> --channel S4-S5
+```
+
+## 設定ファイル
+
+環境変数の代わりに `vsm.toml` にモデルを設定できます。
 
 ```toml
 [llm]
 provider = "openai/gpt-4o-mini"
 ```
 
-### 3. タスクを投入
-
-```bash
-vsm submit "Implement a JSON parser in Python"
-```
-
-ファイル付きで投入する場合:
-
-```bash
-vsm submit "Refactor this code" --file src/old_module.py --file docs/spec.md
-```
-
-### 4. 観測
-
-```bash
-# 完了後の状態スナップショット
-vsm status <run_id>
-
-# 進行中の Run を tail
-vsm tail <run_id>
-vsm tail <run_id> --system S4_SCANNER --channel S4-S5
-
-# 完了 Run の全イベントをリプレイ
-vsm replay <run_id>
-```
-
-## CLI コマンド
-
-| コマンド | 説明 | 主な REQ |
-|---|---|---|
-| `vsm submit <description> [-f file]...` | タスクを投入し新しい Run を起動 | REQ 4.1〜4.7 |
-| `vsm status <run_id>` | Run の Tasks / Systems サマリを stdout 出力 | REQ 11.1 |
-| `vsm tail <run_id> [--system S] [--channel C]` | events.jsonl を追従して新着イベントを出力 | REQ 11.2〜11.4 |
-| `vsm replay <run_id>` | events.jsonl を append 順で人間可読形式で出力 | REQ 11.5, 11.6 |
+`LITELLM_PROVIDER` 環境変数が設定されている場合は、`vsm.toml` の
+`[llm].provider` より優先されます。
 
 ## 環境変数
 
 | 環境変数 | 説明 |
 |---|---|
-| `LITELLM_PROVIDER` | LLM プロバイダのモデル文字列 (例: `openai/gpt-4o-mini`)。`vsm.toml` の `[llm].provider` より優先。 |
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc. | 各プロバイダの認証キー (LiteLLM のドキュメントを参照)。 |
+| `LITELLM_PROVIDER` | LiteLLM のモデル文字列。例: `openai/gpt-4o-mini`, `openrouter/openai/gpt-oss-20b:free` |
+| `OPENAI_API_KEY` | OpenAI を使う場合の API キー。 |
+| `OPENROUTER_API_KEY` | OpenRouter を使う場合の API キー。 |
+| `ANTHROPIC_API_KEY` | Anthropic を使う場合の API キー。 |
+| `AWS_REGION` | Bedrock を使う場合の AWS リージョン。 |
 
 ## 終了コード
 
 | code | 意味 |
 |---|---|
 | 0 | 正常終了 |
-| 1 | 内部例外 (未分類) |
-| 2 | CLI 入力バリデーション違反 (description / file / run_id) |
-| 3 | 構造制約違反 (必須 System 不足) |
+| 1 | 内部例外 |
+| 2 | CLI 入力バリデーション違反 |
+| 3 | 構造制約違反 |
 | 4 | Run ディレクトリ / Event_Log 作成失敗 |
-| 5 | スコープ外機能要求 |
+| 5 | MVP スコープ外機能要求 |
 | 6 | 代表シナリオの 1800 秒タイムアウト |
+
+## 開発コマンド
+
+```powershell
+cd D:\userdata\docs\projects\Nanihold_OS
+.\.venv-win\Scripts\python.exe -m pip install -e ".[dev]"
+
+.\.venv-win\Scripts\python.exe -m pytest
+.\.venv-win\Scripts\python.exe -m pytest tests\unit
+.\.venv-win\Scripts\python.exe -m pytest tests\integration
+.\.venv-win\Scripts\python.exe -m pytest -m live_llm
+```
+
+Python の構文チェック:
+
+```powershell
+.\.venv-win\Scripts\python.exe -m py_compile vsm\cli.py vsm\messaging\bus.py vsm\eventlog\reader.py
+```
 
 ## ファイルレイアウト
 
-```
-runs/{run_id}/events.jsonl   # 全イベントの Source of Truth (REQ 10.1, 10.3)
-runs/{run_id}/RUNNING        # アクティブ Run のロックファイル (vsm replay の警告用)
+```text
+runs\{run_id}\events.jsonl   # 全イベントの Source of Truth
+runs\{run_id}\RUNNING        # アクティブ Run のロックファイル
 
-vsm/
+vsm.cmd                      # cmd.exe 用 VSM ラッパー
+vsm.ps1                      # PowerShell 用 VSM ラッパー
+
+vsm\
+├── __main__.py              # python -m vsm エントリポイント
 ├── cli.py                   # CLI エントリポイント
-├── config.py                # vsm.toml + 環境変数のローダ
+├── config.py                # vsm.toml + .env + 環境変数のローダ
 ├── errors.py                # 例外階層
 ├── ids.py                   # UUIDv4 / run_id バリデータ
-├── clock.py                 # UTC clock 抽象 (テスト容易化)
-├── roles.py                 # SystemRole enum (S1〜S5, S3*)
-├── messaging/               # Message_Bus + ChannelId
-├── eventlog/                # JSONL writer / reader / replay
-├── llm/                     # LiteLLM ラッパ + FakeLLMProvider
-├── systems/                 # S1〜S5 + S3* 実装
-└── runtime/                 # Platform オーケストレータ
-```
-
-## 開発
-
-### テスト
-
-```bash
-pip install -e ".[dev]"  # pytest, hypothesis, pytest-asyncio が入る
-pytest                    # 全テスト実行
-pytest tests/property     # PBT のみ
-pytest tests/integration  # 統合テスト
-pytest -m live_llm        # 実 LLM を使うテスト (オプトイン)
-```
-
-### ビルドチェック
-
-```bash
-python -m py_compile vsm/cli.py vsm/messaging/*.py vsm/eventlog/*.py
+├── clock.py                 # UTC clock 抽象
+├── roles.py                 # SystemRole enum
+├── messaging\               # Message_Bus + ChannelId
+├── eventlog\                # JSONL writer / reader / replay
+├── llm\                     # LiteLLM ラッパ + FakeLLMProvider
+├── systems\                 # S1〜S5 + S3* 実装
+└── runtime\                 # Platform オーケストレータ
 ```
 
 ## MVP Scope Boundaries
 
-REQ 14.9 に従い、本 MVP では以下のスコープ外項目は **意図的に実装していません**:
+この MVP は VSM アーキテクチャの動作確認用です。S1_Worker は LLM 応答を
+`s1_completion` の `result` に記録しますが、実際にコードを書いたり、
+ファイルを編集したり、外部プロセスを実行したりはしません。
 
-1. **FSX (Future-State Expansion) の数値最適化・目的関数** (REQ 14.1)
-   将来的なエージェントの到達可能状態集合の拡張・維持を目的関数として最大化する機能は本 MVP の対象外です。
-2. **公共性の測定および勾配的公共性の評価** (REQ 14.2)
-   組織活動の外部影響を測定して FSX 評価範囲を連続的に拡張する仕組みは含みません。
-3. **共有剰余の配分ロジック** (REQ 14.3)
-   AI が生む剰余の帰属・配分ルールの実装は含みません。
-4. **人間の層横断的介入機構** (REQ 14.4)
-   テンポラル・インターフェース、サブ VSM デプロイなど、人間が処理速度の異なる本体 VSM に介入するための仕組みは含みません。
-5. **VSM の動的な内部分化および外部包摂による再帰的成長** (REQ 14.5)
-   サブ VSM の自動増殖や、複数 VSM の上位 VSM への組み込みは含みません。
-6. **セミステートフル記憶を S2_Coordinator が集団的に混合する機能** (REQ 14.6)
-   各 S1 の記憶を S2 が集約・混合する操作は含みません。
-7. **Web UI ダッシュボード** (REQ 14.7)
-   HTTP/HTTPS で到達可能な Web UI は提供しません。観測は CLI (`vsm status` / `vsm tail` / `vsm replay`) のみで完結します。
+- REQ 14.1: FSX (Future-State Expansion) の数値最適化・目的関数評価は実装しません。
+- REQ 14.2: 公共性測定および勾配的公共性評価は実装しません。
+- REQ 14.3: 共有剰余の配分ロジックは実装しません。
+- REQ 14.4: 人間の層横断介入、テンポラル・インターフェース、サブ VSM デプロイは実装しません。
+- REQ 14.5: 動的な内部分化・外部包摂による再帰的成長は実装しません。
+- REQ 14.6: S2_Coordinator によるセミステートフル記憶の集団的混合は実装しません。
+- REQ 14.7: HTTP / HTTPS で到達可能な Web UI ダッシュボードは実装しません。
 
-スコープ外機能を CLI に対し要求した場合は終了コード 5 と stderr `requested capability is out of MVP scope: <name>` で拒否されます (REQ 14.8)。
-
-これらの境界は構想ドキュメント (`.kiro/specs/vsm-poc-platform/`) における方向性であり、後続イテレーションでの段階的拡張を想定しています。
-
-## ライセンス
-
-(Proprietary — 本 PoC のライセンスは未確定です)
+永続的な会社運用、Run 間の長期記憶、コード実行サンドボックスも本 PoC の
+スコープ外です。
 
 ## 関連ドキュメント
 
-- `.kiro/specs/vsm-poc-platform/requirements.md` — 14 個の Requirement (EARS パターン)
-- `.kiro/specs/vsm-poc-platform/design.md` — アーキテクチャ設計、Mermaid シーケンス図、17 個の Correctness Properties
-- `.kiro/specs/vsm-poc-platform/tasks.md` — 実装計画 (TDD 順)
+- `.kiro\specs\vsm-poc-platform\requirements.md`
+- `.kiro\specs\vsm-poc-platform\design.md`
+- `.kiro\specs\vsm-poc-platform\tasks.md`
+
+## ライセンス
+
+Proprietary. 本 PoC のライセンスは未確定です。

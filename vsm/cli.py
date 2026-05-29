@@ -360,12 +360,18 @@ def submit(
     # ``vsm --help`` does not pay their startup cost.
     import asyncio
 
+    from vsm.config import load_config
     from vsm.eventlog.reader import read_all
     from vsm.roles import SystemRole
     from vsm.runtime.lifecycle import start_run
 
     async def _run() -> None:
-        platform = await start_run(run_id=run_id)
+        llm_config, run_config = load_config(None)
+        platform = await start_run(
+            run_id=run_id,
+            run_config=run_config,
+            llm_config=llm_config,
+        )
         events_path = platform.run_dir / "events.jsonl"
         try:
             # REQ 4.6: persist the Task acceptance on the Event_Log.

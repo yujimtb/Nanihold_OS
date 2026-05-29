@@ -1,0 +1,172 @@
+VSM Windows コマンド集
+
+前提:
+- Windows PowerShell または cmd.exe
+- Python 3.11 以上
+- 作業ディレクトリ: D:\userdata\docs\projects\Nanihold_OS
+
+1. 初回セットアップ
+
+PowerShell:
+
+cd D:\userdata\docs\projects\Nanihold_OS
+py -3.11 -m venv .venv-win
+.\.venv-win\Scripts\python.exe -m pip install --upgrade pip
+.\.venv-win\Scripts\python.exe -m pip install -e .
+
+開発・テスト用依存も入れる場合:
+
+.\.venv-win\Scripts\python.exe -m pip install -e ".[dev]"
+
+2. CLI の起動確認
+
+PowerShell:
+
+.\vsm.ps1 --help
+
+実行ポリシーで止まる場合:
+
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\vsm.ps1 --help
+
+cmd.exe:
+
+cd /d D:\userdata\docs\projects\Nanihold_OS
+vsm.cmd --help
+
+Python から直接:
+
+.\.venv-win\Scripts\python.exe -m vsm --help
+
+仮想環境を有効化して使う場合:
+
+.\.venv-win\Scripts\Activate.ps1
+vsm.exe --help
+
+3. LLM なしで smoke test
+
+API キーなしで VSM の構造と Event_Log の動作を確認できます。
+
+cd D:\userdata\docs\projects\Nanihold_OS
+.\.venv-win\Scripts\python.exe scripts\smoke_run.py
+
+4. OpenAI で実 LLM 実行
+
+すでに .env に LITELLM_PROVIDER と API キーを書いてある場合は、PowerShell で
+$env:... を設定せずにそのまま実行できます。
+
+PowerShell:
+
+cd D:\userdata\docs\projects\Nanihold_OS
+.\vsm.ps1 submit "Write a Python function that reverses a string"
+
+cmd.exe:
+
+cd /d D:\userdata\docs\projects\Nanihold_OS
+vsm.cmd submit "Write a Python function that reverses a string"
+
+結果確認:
+
+.\vsm.ps1 status <run_id>
+.\vsm.ps1 replay <run_id>
+
+シェル側に LITELLM_PROVIDER を設定している場合は、.env よりシェル側の値が優先されます。
+
+5. OpenAI の値を PowerShell で一時指定して実 LLM 実行
+
+PowerShell:
+
+cd D:\userdata\docs\projects\Nanihold_OS
+$env:LITELLM_PROVIDER = "openai/gpt-4o-mini"
+$env:OPENAI_API_KEY = "sk-..."
+.\vsm.ps1 submit "Write a Python function that reverses a string"
+
+cmd.exe:
+
+cd /d D:\userdata\docs\projects\Nanihold_OS
+set LITELLM_PROVIDER=openai/gpt-4o-mini
+set OPENAI_API_KEY=sk-...
+vsm.cmd submit "Write a Python function that reverses a string"
+
+6. OpenRouter で実 LLM 実行
+
+.env に以下を設定します。実キーは自分のものに置き換えてください。
+
+LITELLM_PROVIDER=openrouter/openai/gpt-oss-20b:free
+OPENROUTER_API_KEY=sk-or-v1-...
+
+実行:
+
+cd D:\userdata\docs\projects\Nanihold_OS
+.\vsm.ps1 submit "Write a Python function that reverses a string"
+
+OpenRouter のモデル ID は LiteLLM 向けに先頭へ openrouter/ を付けます。
+例: openai/gpt-oss-20b:free -> openrouter/openai/gpt-oss-20b:free
+
+7. Bedrock で実 LLM 実行
+
+AWS 認証と Bedrock のモデルアクセス権限が必要です。
+
+$env:LITELLM_PROVIDER = "bedrock/anthropic.claude-3-5-haiku-20241022-v1:0"
+$env:AWS_REGION = "us-west-2"
+.\vsm.ps1 submit "Summarize the current VSM architecture"
+
+8. VSM CLI コマンド
+
+タスク投入:
+
+.\vsm.ps1 submit "Write a Python function that reverses a string"
+
+ファイル付きタスク投入:
+
+.\vsm.ps1 submit "Refactor this code" --file src\old_module.py --file docs\spec.md
+
+状態確認:
+
+.\vsm.ps1 status <run_id>
+
+イベント追跡:
+
+.\vsm.ps1 tail <run_id>
+.\vsm.ps1 tail <run_id> --system <system_id>
+.\vsm.ps1 tail <run_id> --channel S4-S5
+
+イベントリプレイ:
+
+.\vsm.ps1 replay <run_id>
+
+cmd.exe では .\vsm.ps1 の代わりに vsm.cmd を使います。
+
+vsm.cmd submit "Write a Python function that reverses a string"
+vsm.cmd status <run_id>
+vsm.cmd tail <run_id>
+vsm.cmd replay <run_id>
+
+9. Run の場所
+
+submit が完了すると run_id と task_id が表示されます。
+
+run_id=<run_id>
+task_id=<task_id>
+
+イベントログ:
+
+runs\<run_id>\events.jsonl
+
+最近の Run を見る:
+
+Get-ChildItem .\runs | Sort-Object LastWriteTime -Descending | Select-Object -First 5
+
+10. テスト
+
+.\.venv-win\Scripts\python.exe -m pytest
+.\.venv-win\Scripts\python.exe -m pytest tests\unit
+.\.venv-win\Scripts\python.exe -m pytest tests\integration
+.\.venv-win\Scripts\python.exe -m pytest -m live_llm
+
+11. 補足
+
+- Windows では .venv ではなく .venv-win を使うのが確実です。
+- PowerShell では .\vsm.ps1、cmd.exe では vsm.cmd を使います。
+- .env には API キーを置けますが、Git には入れないでください。
+- この PoC は LLM 応答を Event_Log に記録しますが、実ファイルの編集やコード実行は行いません。

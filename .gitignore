@@ -15,7 +15,11 @@ dist/
 .ruff_cache/
 
 # Virtual environments
+.env
+.env.*
+!.env.example
 .venv/
+.venv-win/
 venv/
 env/
 

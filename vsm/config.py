@@ -39,6 +39,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
 from vsm.errors import ConfigError
 from vsm.roles import MANDATORY_ROLES, SystemRole
 
@@ -48,6 +50,7 @@ __all__ = [
     "load_config",
     "LITELLM_PROVIDER_ENV",
     "DEFAULT_CONFIG_PATH",
+    "DEFAULT_DOTENV_PATH",
     "S1_HARD_MAX",
     "S1_DYNAMIC_MAX",
     "SUB_AGENT_HARD_MAX",
@@ -64,6 +67,11 @@ LITELLM_PROVIDER_ENV = "LITELLM_PROVIDER"
 # working directory. ``vsm.toml`` is the project-local convention used by
 # design.md §設計の中核方針 #4.
 DEFAULT_CONFIG_PATH = Path("vsm.toml")
+
+# Optional local environment file. ``load_config`` reads this before checking
+# OS environment variables so local CLI runs can persist provider credentials.
+# python-dotenv does not override variables already set in the shell by default.
+DEFAULT_DOTENV_PATH = Path(".env")
 
 # REQ 1.3: at startup time the platform MUST allow between 0 and 1024
 # S1_Worker instances (the upper bound is the absolute hard limit).
@@ -559,6 +567,12 @@ def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
         be read or parsed, when the file contains structurally invalid
         sections, or when validation of the contained values fails.
     """
+    dotenv_path = (
+        DEFAULT_DOTENV_PATH
+        if path is None
+        else path.parent / DEFAULT_DOTENV_PATH
+    )
+    load_dotenv(dotenv_path)
     env_provider = _read_env_provider()
 
     if path is None:
