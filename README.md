@@ -319,6 +319,65 @@ Python の構文チェック:
 .\.venv-win\Scripts\python.exe -m py_compile vsm\cli.py vsm\messaging\bus.py vsm\eventlog\reader.py
 ```
 
+## Discord Codex Bot
+
+WSL 側のリポジトリ (`/home/user/projects/Nanihold_OS`) で Codex CLI を実行し、
+Discord スレッドから自然言語でコーディングを依頼できます。
+
+Ubuntu 側で Codex CLI と bot 依存を用意します。
+
+```bash
+sudo apt-get install -y nodejs npm
+sudo npm install -g @openai/codex
+cd /home/user/projects/Nanihold_OS
+. .venv/bin/activate
+python -m pip install -e .
+```
+
+WSL 側で Codex 認証も済ませます。
+
+```bash
+codex login
+codex doctor
+```
+
+`.env` に Discord bot 用の値を追加します。
+
+```dotenv
+DISCORD_BOT_TOKEN=...
+DISCORD_ALLOWED_USER_IDS=123456789012345678,234567890123456789
+DISCORD_ALLOWED_CHANNEL_IDS=345678901234567890
+CODEX_WORKDIR=/home/user/projects/Nanihold_OS
+CODEX_BIN=codex
+CODEX_TIMEOUT_SECONDS=1800
+CODEX_LOG_DIR=logs/discord-codex
+```
+
+Discord Developer Portal では bot の `Message Content Intent` を有効にしてください。
+通常チャンネルでは `!codex <依頼内容>` または bot へのメンションで開始します。
+bot が作成した `codex-...` スレッド内では、その後の自然文メッセージを Codex に渡します。
+
+設定確認と手動起動:
+
+```bash
+python bot/discord_codex_bot.py --check
+python bot/discord_codex_bot.py
+```
+
+常駐化:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/discord-codex-bot.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now discord-codex-bot
+systemctl --user status discord-codex-bot
+journalctl --user -u discord-codex-bot -f
+```
+
+初期設定では `git push`、`git reset --hard`、`.env` の内容表示などは bot 側で
+止めます。Codex 実行ログは `logs/discord-codex/` に保存されます。
+
 ## ファイルレイアウト
 
 ```text

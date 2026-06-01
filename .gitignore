@@ -1,5 +1,6 @@
 # Run artifacts (Source of Truth events.jsonl)
 runs/
+logs/
 
 # Python build / cache
 __pycache__/
