@@ -8,8 +8,10 @@ import os
 import re
 import shlex
 import shutil
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import IO
 from pathlib import Path
 
 import discord
@@ -20,6 +22,7 @@ COMMAND_PREFIX = "!codex"
 THREAD_PREFIX = "codex-"
 DISCORD_MESSAGE_LIMIT = 1900
 TRANSCRIPT_LIMIT = 30
+RECENT_MESSAGE_CACHE_SIZE = 512
 
 FORBIDDEN_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bgit\s+push\b", re.IGNORECASE),
@@ -76,6 +79,8 @@ class CodexDiscordBot(discord.Client):
         super().__init__(intents=intents)
         self.settings = settings
         self._locks: dict[int, asyncio.Lock] = {}
+        self._recent_message_ids: set[int] = set()
+        self._recent_message_id_order: deque[int] = deque()
 
     async def on_ready(self) -> None:
         print(f"discord-codex-bot ready as {self.user}", flush=True)
@@ -86,6 +91,8 @@ class CodexDiscordBot(discord.Client):
         if message.author.id not in self.settings.allowed_user_ids:
             return
         if not self._channel_allowed(message.channel):
+            return
+        if not self._remember_message(message.id):
             return
 
         content = _strip_activation(message.content, self.user.id)
@@ -116,6 +123,17 @@ class CodexDiscordBot(discord.Client):
         channel_id = getattr(channel, "id", None)
         parent_id = getattr(channel, "parent_id", None)
         return channel_id in allowed or parent_id in allowed
+
+    def _remember_message(self, message_id: int) -> bool:
+        if message_id in self._recent_message_ids:
+            return False
+
+        self._recent_message_ids.add(message_id)
+        self._recent_message_id_order.append(message_id)
+        while len(self._recent_message_id_order) > RECENT_MESSAGE_CACHE_SIZE:
+            old_message_id = self._recent_message_id_order.popleft()
+            self._recent_message_ids.discard(old_message_id)
+        return True
 
     @staticmethod
     def _is_codex_thread(channel: discord.Thread) -> bool:
@@ -364,6 +382,29 @@ def _read_text_if_exists(path: Path) -> str:
         return ""
 
 
+def _acquire_single_instance_lock(settings: Settings) -> IO[str]:
+    settings.codex_log_dir.mkdir(parents=True, exist_ok=True)
+    lock_file = settings.codex_log_dir / "discord-codex-bot.lock"
+    handle = lock_file.open("a+", encoding="utf-8")
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        raise RuntimeError(f"discord-codex-bot is already running: {lock_file}") from exc
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"pid={os.getpid()}\n")
+    handle.flush()
+    return handle
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true", help="validate configuration and exit")
@@ -381,8 +422,12 @@ def main() -> None:
         )
         return
 
+    lock_handle = _acquire_single_instance_lock(settings)
     bot = CodexDiscordBot(settings)
-    bot.run(settings.token)
+    try:
+        bot.run(settings.token)
+    finally:
+        lock_handle.close()
 
 
 if __name__ == "__main__":
