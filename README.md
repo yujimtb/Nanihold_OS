@@ -542,6 +542,29 @@ projection として扱います。
 | Role / Agent / Execution | `RoleSpec`, `AgentSpec`, `PromptTemplate`, `Execution`。Spec versioning と Agent / Tool 実行単位を明示します。 |
 | Memory / Graph / Telemetry | `ContextView`, `TaskSummary`, `GraphProjection`, `TelemetryCorrelation` を軽量モデルとして実装しています。 |
 
+### Tool 群の実装状況
+
+`refactor_20260608.md` の Tool examples に対する現在の実装状況です。
+共通契約としては `ToolEffect`, `ToolSpec`, `ToolInvocation` を実装済みで、
+`EXTERNAL_WRITE` と `CONTROL` の `idempotency_key` 必須制約もコード上で検証します。
+
+| Tool | 現状 |
+|---|---|
+| `llm_call` | `vsm.llm.LLMProvider` / `FakeLLMProvider` と Sub_Agent 経由の LLM 呼び出し基盤は実装済みです。`ToolInvocation` としての `llm_call` facade、replay 時の tool result 参照契約は未実装です。 |
+| `codex_run` | 未実装です。短期ロードマップでは、外部プロセス実行 Tool として `ToolEffect.EXTERNAL_WRITE` または `CONTROL`、`idempotency_key`、ParentAuthority の filesystem / network scope と組み合わせて導入します。 |
+| `claude_code_run` | 未実装です。`codex_run` と同じ外部プロセス実行 Tool の一種として扱う予定です。 |
+| `web_crawl` | 未実装です。`ToolEffect.EXTERNAL_READ` と ParentAuthority の network scope による制約を前提に導入します。 |
+| `file_io` | 未実装です。`ToolEffect.PURE_READ` / `LOCAL_WRITE` と ParentAuthority の filesystem scope による制約を前提に導入します。 |
+| `spawn_child` | `Node`, `NodeSource`, `LiveTopology` と `node_created` event の projection 基盤は実装済みです。独立した `spawn_child` Tool facade は未実装です。 |
+| `differentiate` | `DifferentiationFacade` と `DifferentiationRequest` を実装済みです。`ParentAuthority.may_differentiate_to` を検証し、冪等な `CONTROL` ToolInvocation を生成します。 |
+| `search_past_subtasks` | `ContextView`, `TaskSummary`, `SearchScope` のモデルは実装済みです。検索 Tool facade と index 実行は未実装です。 |
+| `request_coordination` | `CoordinationFacade` と `CoordinationRequest` を実装済みです。`coordination_key` を `idempotency_key` とする `CONTROL` ToolInvocation を生成します。 |
+| `request_escalation` | `EscalationFacade` と `EscalationRequest` を実装済みです。`escalation_key` を `idempotency_key` とする `CONTROL` ToolInvocation を生成します。 |
+| `request_human_review` | `HumanAgent` モデルは実装済みです。人間レビュー要求を ToolInvocation として記録する facade は未実装です。 |
+| `terminate_node` | `NodeStatus.TERMINATED` と `LiveTopology` の lifecycle projection は実装済みです。権限検証付きの CONTROL Tool facade は未実装です。 |
+| `suspend_node` | `NodeStatus.SUSPENDED` と `LiveTopology` の lifecycle projection は実装済みです。権限検証付きの CONTROL Tool facade は未実装です。 |
+| `resume_node` | `NodeStatus.RUNNING` への lifecycle projection は実装済みです。権限検証付きの CONTROL Tool facade は未実装です。 |
+
 ## Current Scope and Roadmap
 
 Nanihold OS は MVP 境界を越え、VSM ランタイムとしての実装範囲を拡張中です。

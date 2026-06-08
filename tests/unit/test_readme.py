@@ -73,6 +73,27 @@ def test_readme_mentions_recursive_vsm_architecture():
         assert kw in content, f"keyword {kw!r} missing from README"
 
 
+def test_readme_mentions_refactor_tool_statuses():
+    """README lists implementation status for tools named in the refactor doc."""
+    content = _README_PATH.read_text(encoding="utf-8")
+    keywords = [
+        "Tool 群の実装状況",
+        "llm_call",
+        "codex_run",
+        "claude_code_run",
+        "web_crawl",
+        "file_io",
+        "spawn_child",
+        "search_past_subtasks",
+        "request_human_review",
+        "terminate_node",
+        "suspend_node",
+        "resume_node",
+    ]
+    for kw in keywords:
+        assert kw in content, f"keyword {kw!r} missing from README"
+
+
 def test_readme_mentions_quick_start_or_install():
     """README has install or quick-start guidance."""
     content = _README_PATH.read_text(encoding="utf-8")
