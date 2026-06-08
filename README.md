@@ -431,24 +431,34 @@ vsm\
 | Role / Agent / Execution | `RoleSpec`, `AgentSpec`, `PromptTemplate`, `Execution`。Spec versioning と Agent / Tool 実行単位を明示します。 |
 | Memory / Graph / Telemetry | `ContextView`, `TaskSummary`, `GraphProjection`, `TelemetryCorrelation` を軽量モデルとして実装しています。 |
 
-## MVP Scope Boundaries
+## Current Scope and Roadmap
 
-この MVP は VSM アーキテクチャの動作確認用です。S1_Worker は LLM 応答を
-`s1_completion` の `result` に記録しますが、実際にコードを書いたり、
-ファイルを編集したり、外部プロセスを実行したりはしません。
+Nanihold OS は MVP 境界を越え、VSM ランタイムとしての実装範囲を拡張中です。
+S1_Worker は LLM 応答を `s1_completion` の `result` に記録し、S1〜S5 + S3*
+の各 System、Event_Log、Node / ParentAuthority、Tool facade、Projection、
+Role / Agent / Execution の基礎モデルを組み合わせて実行されます。
 
-- REQ 14.1: FSX (Future-State Expansion) の数値最適化・目的関数評価は実装しません。
-- REQ 14.2: 公共性測定および勾配的公共性評価は実装しません。
-- REQ 14.3: 共有剰余の配分ロジックは実装しません。
-- REQ 14.4: 人間の層横断介入、テンポラル・インターフェース、サブ VSM デプロイは実装しません。
-- REQ 14.5: 動的な内部分化・外部包摂による再帰的成長は実装しません。
-- REQ 14.6: S2_Coordinator によるセミステートフル記憶の集団的混合は実装しません。
-- REQ 14.7: HTTP / HTTPS で到達可能な Web UI ダッシュボードは実装しません。
+現在の主要な実装状況は以下の通りです。
 
-永続的な会社運用、Run 間の長期記憶、コード実行サンドボックスも本 PoC の
-スコープ外です。なお、`differentiate` / `request_escalation` などの
-Tool facade と Node / ParentAuthority の基礎モデルは実装済みですが、
-再帰的成長を自律運用するランタイムポリシーはまだ有効化していません。
+- REQ 14.1: FSX (Future-State Expansion) の数値最適化・目的関数評価は未実装です。
+- REQ 14.2: 公共性測定および勾配的公共性評価は未実装です。
+- REQ 14.3: 共有剰余の配分ロジックは未実装です。
+- REQ 14.4: サブ VSM デプロイは機能として実装済みです。人間の層横断介入と
+  テンポラル・インターフェースは今後の拡張対象です。
+- REQ 14.5: 動的な内部分化・外部包摂による再帰的成長は、`differentiate` /
+  `request_escalation` などの Tool facade と Node / ParentAuthority の基礎モデルを
+  実装済みです。自律運用するランタイムポリシーは段階的に有効化します。
+- REQ 14.6: S2_Coordinator によるセミステートフル記憶の集団的混合は未実装です。
+- REQ 14.7: HTTP / HTTPS で到達可能な Web UI ダッシュボードは未実装ですが、実装を予定しています。
+
+コード実行、ファイル編集、外部プロセス実行は短期ロードマップの対象です。
+これらは ToolEffect / ToolInvocation の effect 境界、idempotency key、
+ParentAuthority / Lease による権限管理と組み合わせて、安全な実行単位として
+導入する方針です。
+
+永続的な会社運用と Run 間の長期記憶は、Node と Event_Log を中心に扱う方向で
+設計を進めています。現時点では FSX、公共性評価、共有剰余配分などの評価・分配
+アルゴリズムが主な未実装領域です。
 
 ## 関連ドキュメント
 
