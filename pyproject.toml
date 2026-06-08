@@ -3,13 +3,13 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "vsm-poc-platform"
+name = "nanihold-os"
 version = "0.1.0"
-description = "Viable System Model PoC Platform - Python 3.11+ asyncio implementation"
+description = "Nanihold OS - Viable System Model runtime platform"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
-authors = [{ name = "vsm-poc-platform contributors" }]
+authors = [{ name = "Nanihold OS contributors" }]
 dependencies = [
     "discord.py>=2.7",
     "litellm",

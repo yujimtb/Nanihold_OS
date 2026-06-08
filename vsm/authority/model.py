@@ -45,3 +45,14 @@ class ParentAuthority:
             raise PermissionError(
                 f"differentiation {target.value} exceeds authority {self.may_differentiate_to.value}"
             )
+
+
+@dataclass(frozen=True)
+class Lease:
+    lease_id: str
+    owner_node_id: str
+    resource_ref: str
+    lease_expires_at: datetime
+
+    def is_expired(self, now: datetime) -> bool:
+        return now >= self.lease_expires_at

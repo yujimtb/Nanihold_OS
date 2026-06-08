@@ -1,6 +1,6 @@
 """Property 17 (Out-of-scope absence and rejection). Validates Requirements: 14.1〜14.8.
 
-Feature: vsm-poc-platform, Property 17
+Feature: Nanihold OS, Property 17
 Validates: Requirements 14.1, 14.2, 14.3, 14.4, 14.5, 14.6, 14.7, 14.8
 
 This module implements **Property 17: Out-of-scope absence and rejection**

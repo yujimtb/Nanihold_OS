@@ -8,15 +8,25 @@ import pytest
 
 from vsm.architecture.events import EventEnvelope
 from vsm.architecture.projections import ProjectionCheckpoint
-from vsm.authority import ParentAuthority
+from vsm.authority import Lease, ParentAuthority
 from vsm.clock import SystemClock
 from vsm.eventlog.schema import EVENT_TYPES, EVENT_TYPES_V1, Event, validate_event_payload
 from vsm.eventlog.writer import EventLogWriter
-from vsm.nodes import DifferentiationLevel, NodeStatus, assert_transition_allowed
+from vsm.memory import ContextView, SearchScope, TaskSummary
+from vsm.nodes import DifferentiationLevel, Node, NodeSource, NodeStatus, assert_transition_allowed
+from vsm.runtime import Execution, ExecutionStatus
 from vsm.roles import RoleSpec, SystemRole
 from vsm.runtime.topology import LiveTopology, StaticTopologyEntry
-from vsm.tools import ToolEffect, ToolInvocation
+from vsm.tools import (
+    DifferentiationFacade,
+    DifferentiationRequest,
+    EscalationFacade,
+    EscalationRequest,
+    ToolEffect,
+    ToolInvocation,
+)
 from vsm.tools.coordination import CoordinationFacade, CoordinationRequest
+from vsm.agents import AgentSpec, PromptTemplate
 
 
 def test_event_types_keep_legacy_set_and_add_v1() -> None:
@@ -75,12 +85,30 @@ def test_projection_checkpoint_is_idempotent() -> None:
     assert checkpoint.should_apply(event)
     checkpoint.mark_applied(event)
     assert not checkpoint.should_apply(event)
+    replayed_later = event.model_copy(update={"seq": 2})
+    assert not checkpoint.should_apply(replayed_later)
 
 
 def test_node_lifecycle_and_authority_limits() -> None:
     assert_transition_allowed(NodeStatus.CREATED, NodeStatus.RUNNING)
     with pytest.raises(ValueError):
         assert_transition_allowed(NodeStatus.COMPLETED, NodeStatus.RUNNING)
+
+    static_node = Node(
+        id="static",
+        parent_id=None,
+        vsm_position=SystemRole.S5_POLICY,
+        terminable=False,
+        source=NodeSource.CONFIG,
+    )
+    assert static_node.is_static
+    with pytest.raises(ValueError):
+        Node(
+            id="invalid-static",
+            parent_id=None,
+            vsm_position=SystemRole.S5_POLICY,
+            terminable=False,
+        )
 
     authority = ParentAuthority(
         authority_id="auth-1",
@@ -112,6 +140,41 @@ def test_tool_effect_idempotency_contract() -> None:
         )
 
 
+def test_differentiation_facade_enforces_authority() -> None:
+    authority = ParentAuthority(
+        authority_id="auth-diff",
+        issuer_node_id="parent",
+        subject_node_id="child",
+        issued_at=datetime.now(timezone.utc),
+        may_differentiate_to=DifferentiationLevel.PARTIAL,
+    )
+    facade = DifferentiationFacade()
+    request = DifferentiationRequest(
+        differentiation_key="diff-1",
+        node_id="child",
+        requested_by="child",
+        target_level=DifferentiationLevel.PARTIAL,
+    )
+
+    first = facade.differentiate(request, authority)
+    second = facade.differentiate(request, authority)
+
+    assert first.tool_name == "differentiate"
+    assert first.idempotency_key == "diff-1"
+    assert first.payload["result"] == second.payload["result"]
+
+    with pytest.raises(PermissionError):
+        facade.differentiate(
+            DifferentiationRequest(
+                differentiation_key="diff-2",
+                node_id="child",
+                requested_by="child",
+                target_level=DifferentiationLevel.FULL,
+            ),
+            authority,
+        )
+
+
 def test_role_spec_and_live_topology() -> None:
     role = RoleSpec(
         id="S5_POLICY",
@@ -120,6 +183,8 @@ def test_role_spec_and_live_topology() -> None:
         allowed_tools=("request_escalation",),
     )
     assert role.allowed_tools == ("request_escalation",)
+    assert role.spec_id == "S5_POLICY"
+    assert role.spec_version == 1
 
     topology = LiveTopology.from_static(
         [
@@ -130,6 +195,7 @@ def test_role_spec_and_live_topology() -> None:
     assert topology.nodes["s3_main"].parent_id == "root_s5"
     topology.apply_event(
         {
+            "event_id": "event-node-sales",
             "event_type": "node_created",
             "payload": {
                 "node_id": "sales",
@@ -140,6 +206,65 @@ def test_role_spec_and_live_topology() -> None:
         }
     )
     assert "sales" in topology.nodes["s3_main"].child_ids
+    topology.apply_event(
+        {
+            "event_id": "event-node-sales",
+            "event_type": "node_created",
+            "payload": {"node_id": "sales", "parent_id": "s3_main"},
+        }
+    )
+    assert topology.nodes["s3_main"].child_ids.count("sales") == 1
+    topology.apply_event(
+        {
+            "event_id": "event-node-sales-suspended",
+            "event_type": "node_suspended",
+            "payload": {"node_id": "sales"},
+        }
+    )
+    assert topology.nodes["sales"].status is NodeStatus.SUSPENDED
+
+
+def test_execution_and_spec_versioning_contract() -> None:
+    agent_spec = AgentSpec(
+        spec_id="agent-s5",
+        spec_version=2,
+        model_spec="fake/model",
+    )
+    prompt = PromptTemplate(
+        spec_id="prompt-s5",
+        spec_version=3,
+        body="Decide policy",
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    execution = Execution(
+        execution_id="exec-1",
+        run_id="run-x",
+        node_id="s5",
+        agent_invocation_id="agent-inv-1",
+        status=ExecutionStatus.RUNNING,
+    )
+
+    assert agent_spec.spec_version == 2
+    assert prompt.spec_id == "prompt-s5"
+    assert execution.status is ExecutionStatus.RUNNING
+    with pytest.raises(ValueError):
+        Execution(execution_id="exec-2", run_id="run-x", node_id="s5")
+
+
+def test_context_view_uses_refs_and_default_local_search_scope() -> None:
+    summary = TaskSummary(goal_achieved=True, approach="reuse child summary")
+    view = ContextView(
+        node_id="s5",
+        run_id="run-x",
+        event_refs=("event-1",),
+        summary_refs=("summary-1",),
+        artifact_refs=("artifact-1",),
+        decision_refs=("decision-1",),
+    )
+
+    assert summary.goal_achieved
+    assert view.search_scope is SearchScope.DIRECT_CHILD_SUMMARIES
+    assert view.event_refs == ("event-1",)
 
 
 def test_coordination_facade_is_idempotent() -> None:
@@ -156,3 +281,31 @@ def test_coordination_facade_is_idempotent() -> None:
     assert first.idempotency_key == "coord-1"
     assert second.idempotency_key == "coord-1"
     assert first.payload["result"] == second.payload["result"]
+
+
+def test_escalation_facade_and_lease_contract() -> None:
+    facade = EscalationFacade()
+    request = EscalationRequest(
+        escalation_key="esc-1",
+        reason="budget_exceeded",
+        blocking_issue="need more token budget",
+        requested_by="worker",
+        target_authority="s3",
+    )
+
+    first = facade.request_escalation(request)
+    second = facade.request_escalation(request)
+
+    assert first.tool_name == "request_escalation"
+    assert first.idempotency_key == "esc-1"
+    assert first.effect is ToolEffect.CONTROL
+    assert first.payload["result"] == second.payload["result"]
+
+    lease = Lease(
+        lease_id="lease-1",
+        owner_node_id="worker",
+        resource_ref="external:api",
+        lease_expires_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    assert lease.is_expired(datetime(2026, 1, 2, tzinfo=timezone.utc))
+    assert not lease.is_expired(datetime(2025, 12, 31, tzinfo=timezone.utc))

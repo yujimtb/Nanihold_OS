@@ -1,6 +1,6 @@
-# vsm-poc-platform
+# Nanihold OS
 
-Viable System Model (VSM) Proof-of-Concept Platform.
+Viable System Model (VSM) runtime platform.
 
 Python 3.11+ / asyncio による単一プロセス実装で、S1〜S5 + S3* の各 System
 が LLM ベースの Sub_Agent として動作します。CLI からタスク投入、状態確認、
@@ -45,13 +45,17 @@ docker compose run --rm app python -m vsm --help
 
 ## 概要
 
-`vsm-poc-platform` は Stafford Beer の VSM (Viable System Model) に基づく
+`Nanihold OS` は Stafford Beer の VSM (Viable System Model) に基づく
 「AI 自動会社」の組織アーキテクチャ構想を、動作する PoC ソフトウェアとして
 確認するための基盤です。
 
 各 System (`S1_WORKER`, `S2_COORDINATOR`, `S3_ALLOCATOR`,
 `S3STAR_AUDITOR`, `S4_SCANNER`, `S5_POLICY`) は VSM の標準チャネルを介して
 メッセージを交換し、Run ごとの `events.jsonl` に全イベントを永続化します。
+現在は `refactor_20260608.md` に沿って、従来の System 実装の上に
+Architecture / Role / Agent / Tool / Node / Authority / Projection の層を
+追加しています。Run は Platform の起動停止ではなく、外部入力や監査要求を
+観測・会計する単位として扱い、永続的な責任と履歴は Node が保持します。
 
 ## Windows クイックスタート
 
@@ -394,13 +398,38 @@ vsm\
 ├── errors.py                # 例外階層
 ├── ids.py                   # UUIDv4 / run_id バリデータ
 ├── clock.py                 # UTC clock 抽象
-├── roles.py                 # SystemRole enum
-├── messaging\               # Message_Bus + ChannelId
-├── eventlog\                # JSONL writer / reader / replay
+├── agents\                  # AgentSpec / AgentInvocation / PromptTemplate
+├── architecture\            # EventEnvelope / ProjectionCheckpoint
+├── authority\               # ParentAuthority / Lease
+├── budget\                  # BudgetContext / BudgetLedger
+├── eventlog\                # JSONL writer / reader / replay / schema
+├── graph\                   # SQLite adjacency-list graph projection
 ├── llm\                     # LiteLLM ラッパ + FakeLLMProvider
+├── memory\                  # ContextView / TaskSummary / search scope
+├── messaging\               # Message_Bus + ChannelId
+├── nodes\                   # Node / NodeRunState / lifecycle
+├── roles\                   # SystemRole / RoleSpec
+├── runtime\                 # Platform / topology / Execution
 ├── systems\                 # S1〜S5 + S3* 実装
-└── runtime\                 # Platform オーケストレータ
+├── telemetry\               # Event_Log と OpenTelemetry の相関値
+└── tools\                   # ToolEffect / ToolInvocation / facade
 ```
+
+## Refactor 20260608 実装状況
+
+`refactor_20260608.md` の基礎方針に対して、現在の実装は以下の状態です。
+
+| 項目 | 実装 |
+|---|---|
+| EventEnvelope v1 | `vsm.eventlog.schema.Event` と `vsm.architecture.events.EventEnvelope`。`event_id`, `stream_id`, `stream_version`, `schema_version`, `correlation_id`, `causation_id` を持ちます。 |
+| Projection checkpoint | `vsm.architecture.projections.ProjectionCheckpoint`。処理済み `event_id` を保持して同一イベント再適用を防ぎます。 |
+| Node / NodeRunState | `vsm.nodes.model.Node`, `NodeRunState`。`NodeSource` により `terminable=False` は config 由来の Node のみに制限します。 |
+| static / live topology | `vsm.runtime.topology.StaticTopologyEntry`, `LiveTopology`。Event_Log 由来の `node_created`, `node_differentiated`, lifecycle event を反映します。 |
+| ParentAuthority / Lease | `vsm.authority.ParentAuthority`, `Lease`。分化上限、Tool effect 制限、外部資源 lease を表します。 |
+| ToolEffect / idempotency | `vsm.tools.ToolEffect`, `ToolInvocation`。`EXTERNAL_WRITE` と `CONTROL` は `idempotency_key` 必須です。 |
+| Tool facade | `CoordinationFacade`, `DifferentiationFacade`, `EscalationFacade`。S2 調停、分化、エスカレーション要求を冪等な CONTROL Tool として扱います。 |
+| Role / Agent / Execution | `RoleSpec`, `AgentSpec`, `PromptTemplate`, `Execution`。Spec versioning と Agent / Tool 実行単位を明示します。 |
+| Memory / Graph / Telemetry | `ContextView`, `TaskSummary`, `GraphProjection`, `TelemetryCorrelation` を軽量モデルとして実装しています。 |
 
 ## MVP Scope Boundaries
 
@@ -417,13 +446,16 @@ vsm\
 - REQ 14.7: HTTP / HTTPS で到達可能な Web UI ダッシュボードは実装しません。
 
 永続的な会社運用、Run 間の長期記憶、コード実行サンドボックスも本 PoC の
-スコープ外です。
+スコープ外です。なお、`differentiate` / `request_escalation` などの
+Tool facade と Node / ParentAuthority の基礎モデルは実装済みですが、
+再帰的成長を自律運用するランタイムポリシーはまだ有効化していません。
 
 ## 関連ドキュメント
 
-- `.kiro\specs\vsm-poc-platform\requirements.md`
-- `.kiro\specs\vsm-poc-platform\design.md`
-- `.kiro\specs\vsm-poc-platform\tasks.md`
+- `refactor_20260608.md`
+- `.kiro\specs\nanihold-os\requirements.md`
+- `.kiro\specs\nanihold-os\design.md`
+- `.kiro\specs\nanihold-os\tasks.md`
 
 ## ライセンス
 

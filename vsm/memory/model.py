@@ -22,3 +22,14 @@ class TaskSummary:
     dead_ends: tuple[str, ...] = ()
     open_questions: tuple[str, ...] = ()
     reusability_hints: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ContextView:
+    node_id: str
+    run_id: str
+    event_refs: tuple[str, ...] = ()
+    summary_refs: tuple[str, ...] = ()
+    artifact_refs: tuple[str, ...] = ()
+    decision_refs: tuple[str, ...] = ()
+    search_scope: SearchScope = SearchScope.DIRECT_CHILD_SUMMARIES

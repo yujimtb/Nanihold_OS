@@ -1,1 +1,1 @@
-"""vsm-poc-platform: Viable System Model PoC Platform."""
+"""Nanihold OS: Viable System Model runtime platform."""

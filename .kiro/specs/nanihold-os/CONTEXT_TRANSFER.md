@@ -1,4 +1,4 @@
-# Context Transfer: vsm-poc-platform
+# Context Transfer: Nanihold OS
 
 **最終更新**: 2026-05-24
 **ステータス**: MVP 実装完了、全 285 テスト green、E2E 動作確認済み
@@ -11,13 +11,13 @@
 
 ### 1.1 何を作っているか
 
-`vsm-poc-platform` は、Stafford Beer の **VSM (Viable System Model)** に基づく「AI 自動会社」の組織アーキテクチャ構想を、**動作する Python ソフトウェア** として実装した PoC。
+`Nanihold OS` は、Stafford Beer の **VSM (Viable System Model)** に基づく「AI 自動会社」の組織アーキテクチャ構想を、**動作する Python ソフトウェア** として実装した PoC。
 
 各 System (S1〜S5, S3*) は LLM ベースの AI エージェント (Sub_Agent) として動作し、自前実装の Message_Bus を介してメッセージを交換しながらタスクを処理する。
 
 ### 1.2 構想の出典
 
-`.kiro/specs/vsm-poc-platform/` に隣接する形で、ユーザー (三戸部友治) が提供した構想ドキュメント "AI自動会社の組織アーキテクチャ構想：VSM・FSX・労働の自律性の統合" がある。本 PoC は **構想ドキュメントの FSX に関わる数値最適化部分を意図的に除外**して MVP 化した版。
+`.kiro/specs/nanihold-os/` に隣接する形で、ユーザー (三戸部友治) が提供した構想ドキュメント "AI自動会社の組織アーキテクチャ構想：VSM・FSX・労働の自律性の統合" がある。本 PoC は **構想ドキュメントの FSX に関わる数値最適化部分を意図的に除外**して MVP 化した版。
 
 ### 1.3 MVP のスコープ
 
@@ -46,7 +46,7 @@
 
 ```
 /Users/rkhashim/Kiro/Others/
-├── .kiro/specs/vsm-poc-platform/
+├── .kiro/specs/nanihold-os/
 │   ├── requirements.md       # 14 個の Requirement (EARS パターン)
 │   ├── design.md             # アーキテクチャ + 17 Properties + Mermaid 図
 │   ├── tasks.md              # 84 タスクの実装計画 (全 completed)
@@ -412,4 +412,4 @@ vsm submit "Hello, what is VSM?"
 
 ---
 
-**このドキュメントは vsm-poc-platform の MVP 実装が完了した時点 (2026-05-24) のスナップショットです。後続作業で変更があった場合は、本ファイルも合わせて更新してください。**
+**このドキュメントは Nanihold OS の MVP 実装が完了した時点 (2026-05-24) のスナップショットです。後続作業で変更があった場合は、本ファイルも合わせて更新してください。**

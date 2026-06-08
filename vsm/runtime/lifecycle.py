@@ -91,7 +91,7 @@ from vsm.llm.provider import LLMProvider
 from vsm.llm.types import LLMProviderProtocol
 from vsm.messaging.bus import MessageBus
 from vsm.messaging.channels import ChannelId
-from vsm.nodes import DifferentiationLevel, Node, NodeRunState, NodeStatus
+from vsm.nodes import DifferentiationLevel, Node, NodeRunState, NodeSource, NodeStatus
 from vsm.roles import MANDATORY_ROLES, SystemRole
 from vsm.tools import ToolEffect, ToolInvocation
 
@@ -512,6 +512,7 @@ class Platform:
             goal=f"{role.value} responsibility",
             terminable=node_terminable,
             differentiation_level=DifferentiationLevel.COLLAPSED,
+            source=NodeSource.SPAWN if node_terminable else NodeSource.CONFIG,
             agent_spec={"adapter": system.__class__.__name__},
             status=NodeStatus.CREATED,
         )
@@ -531,6 +532,7 @@ class Platform:
                 "parent_id": node.parent_id,
                 "vsm_position": role.value,
                 "terminable": node.terminable,
+                "source": node.source.value,
                 "differentiation_level": node.differentiation_level.value,
             },
             node_id=node.id,

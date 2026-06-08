@@ -1,4 +1,4 @@
-# Feature: vsm-poc-platform, Properties 1 and 2: Channel rejection and delivery invariants
+# Feature: Nanihold OS, Properties 1 and 2: Channel rejection and delivery invariants
 """Property-based tests for :class:`vsm.messaging.bus.MessageBus`.
 
 This module implements two properties from design.md §Correctness Properties

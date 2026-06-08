@@ -1,7 +1,7 @@
 """Representative scenario integration tests (REQ 12).
 
 This module implements three end-to-end integration tests for the
-``vsm-poc-platform`` representative scenario:
+``Nanihold OS`` representative scenario:
 
 * :func:`test_scenario_success` — REQ 12.1〜12.8: the scenario completes
   within the 1800-second budget, all six mandatory roles are observed in

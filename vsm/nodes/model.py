@@ -27,6 +27,11 @@ class DifferentiationLevel(str, Enum):
     FULL = "FULL"
 
 
+class NodeSource(str, Enum):
+    CONFIG = "config"
+    SPAWN = "spawn"
+
+
 @dataclass
 class Node:
     """Persistent unit that owns responsibility, history, authority and state."""
@@ -40,6 +45,7 @@ class Node:
     termination_condition: str | None = None
     terminable: bool = True
     differentiation_level: DifferentiationLevel = DifferentiationLevel.COLLAPSED
+    source: NodeSource = NodeSource.SPAWN
     predefined_children: tuple[str, ...] = ()
     role_spec: RoleSpec | None = None
     agent_spec: dict[str, Any] = field(default_factory=dict)
@@ -53,6 +59,10 @@ class Node:
     @property
     def is_static(self) -> bool:
         return not self.terminable and self.termination_condition is None
+
+    def __post_init__(self) -> None:
+        if not self.terminable and self.source is not NodeSource.CONFIG:
+            raise ValueError("terminable=False nodes must be config-derived")
 
 
 @dataclass

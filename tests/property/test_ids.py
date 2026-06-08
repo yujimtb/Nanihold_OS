@@ -1,4 +1,4 @@
-# Feature: vsm-poc-platform, Property 13: CLI input validation (run_id portion)
+# Feature: Nanihold OS, Property 13: CLI input validation (run_id portion)
 """Property-based tests for ``vsm.ids`` (run_id boundary).
 
 This module implements the ``run_id`` portion of **Property 13: CLI input

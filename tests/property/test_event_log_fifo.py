@@ -1,6 +1,6 @@
 """Property 6 (FIFO append order). Validates Requirements: 10.8.
 
-Feature: vsm-poc-platform, Property 6
+Feature: Nanihold OS, Property 6
 Validates: Requirements 10.8
 
 This test verifies the single-writer FIFO discipline of

@@ -2,7 +2,7 @@
 
 ## Overview
 
-`vsm-poc-platform` は、VSM (Viable System Model) の S1〜S5 および S3* を **動作する Python ソフトウェア** として実装するための基盤である。本設計は requirements.md の 14 個の Requirement を **トレース可能な単一プロセスの非同期アーキテクチャ** に落とし込む。
+`Nanihold OS` は、VSM (Viable System Model) の S1〜S5 および S3* を **動作する Python ソフトウェア** として実装するための基盤である。本設計は requirements.md の 14 個の Requirement を **トレース可能な単一プロセスの非同期アーキテクチャ** に落とし込む。
 
 ### 設計の中核方針
 
@@ -989,7 +989,7 @@ class CoordinationAckMissing(VSMError):
 PBT は **Hypothesis** ライブラリを採用する (Python 標準的な PBT ライブラリ)。各 property test は **最低 100 イテレーション** (`@settings(max_examples=100)`)。各テストには以下のタグコメントを付与する:
 
 ```python
-# Feature: vsm-poc-platform, Property 5: Event_Log round-trip
+# Feature: Nanihold OS, Property 5: Event_Log round-trip
 @given(...)
 @settings(max_examples=100)
 def test_event_log_round_trip(...):

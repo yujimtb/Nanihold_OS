@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 
@@ -12,6 +13,8 @@ class AgentSpec:
     system_prompt: str = ""
     tools: tuple[str, ...] = ()
     budget: dict[str, float] = field(default_factory=dict)
+    spec_id: str | None = None
+    spec_version: int = 1
 
 
 @dataclass(frozen=True)
@@ -27,3 +30,11 @@ class AgentInvocation:
 class HumanAgent:
     human_id: str
     display_name: str
+
+
+@dataclass(frozen=True)
+class PromptTemplate:
+    spec_id: str
+    spec_version: int
+    body: str
+    created_at: datetime

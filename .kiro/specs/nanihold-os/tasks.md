@@ -1,8 +1,8 @@
-# Implementation Plan: vsm-poc-platform
+# Implementation Plan: Nanihold OS
 
 ## Overview
 
-本実装計画は `vsm-poc-platform` を **Python 3.11+ / asyncio 単一プロセス** で TDD 順 (テスト先行 → 実装) に構築する。基盤レイヤ (errors / ids / clock / config) → ミドル (Message_Bus / Event_Log / LLM Provider) → System 群 → CLI → 統合シナリオの順に依存を解決し、design.md §Correctness Properties の P1〜P17 を Hypothesis ベース PBT として 1 property = 1 sub-task で実装する。各 PBT には `@settings(max_examples=100)` を付与し、各実装タスクには対応する Requirement と Property への参照を明記する。
+本実装計画は `Nanihold OS` を **Python 3.11+ / asyncio 単一プロセス** で TDD 順 (テスト先行 → 実装) に構築する。基盤レイヤ (errors / ids / clock / config) → ミドル (Message_Bus / Event_Log / LLM Provider) → System 群 → CLI → 統合シナリオの順に依存を解決し、design.md §Correctness Properties の P1〜P17 を Hypothesis ベース PBT として 1 property = 1 sub-task で実装する。各 PBT には `@settings(max_examples=100)` を付与し、各実装タスクには対応する Requirement と Property への参照を明記する。
 
 LLM 呼び出しは原則 `FakeLLMProvider` で差し替え、実 LLM は代表シナリオの 1 ケースのみ `@pytest.mark.live_llm` でゲートする。代表シナリオは `tests/integration/test_representative_scenario.py` で 3 ケース (success / timeout / replay-roundtrip) を扱う。
 

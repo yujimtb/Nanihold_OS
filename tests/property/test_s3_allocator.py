@@ -1,6 +1,6 @@
 """Property 8: S1 reuse vs instantiate dichotomy.
 
-Feature: vsm-poc-platform, Property 8
+Feature: Nanihold OS, Property 8
 Validates: Requirements 7.2, 7.3, 13.6
 
 This module implements the **dichotomy half** of Property 8 from

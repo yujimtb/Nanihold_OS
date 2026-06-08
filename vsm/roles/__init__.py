@@ -51,3 +51,9 @@ class RoleSpec:
     allowed_tools: tuple[str, ...] = ()
     escalation_contract: dict[str, Any] = field(default_factory=dict)
     prompt_template: str = ""
+    spec_id: str | None = None
+    spec_version: int = 1
+
+    def __post_init__(self) -> None:
+        if self.spec_id is None:
+            object.__setattr__(self, "spec_id", self.id)
