@@ -53,6 +53,26 @@ def test_readme_mentions_key_scope_keywords():
         assert kw in content, f"keyword {kw!r} missing from README"
 
 
+def test_readme_mentions_recursive_vsm_architecture():
+    """README describes the recursive u-VSM architecture and tool boundary."""
+    content = _README_PATH.read_text(encoding="utf-8")
+    keywords = [
+        "Recursive VSM Architecture",
+        "u-VSM",
+        "DifferentiationLevel",
+        "ParentAuthority",
+        "ToolInvocation",
+        "differentiate",
+        "LiveTopology",
+        "Event_Log",
+        "spawn 直後",
+        "S5 Agent",
+        "実体化していない部分",
+    ]
+    for kw in keywords:
+        assert kw in content, f"keyword {kw!r} missing from README"
+
+
 def test_readme_mentions_quick_start_or_install():
     """README has install or quick-start guidance."""
     content = _README_PATH.read_text(encoding="utf-8")

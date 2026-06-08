@@ -40,6 +40,39 @@ docker compose run --rm app python scripts/smoke_run.py
 docker compose run --rm app python -m vsm --help
 ```
 
+### Codex アプリからの開発
+
+Codex アプリのシェルが Windows PowerShell の場合でも、Windows 側の Python や
+UNC パス上の Docker 実行は使いません。リポジトリ直下のラッパーから、WSL 内の
+`/home/user/projects/Nanihold_OS` と Docker Compose `app` サービスへ転送します。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\codex-dev.ps1 doctor
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\codex-dev.ps1 up
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\codex-dev.ps1 install
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\codex-dev.ps1 test
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\codex-dev.ps1 vsm --help
+```
+
+任意の Compose コマンドやコンテナ内コマンドも同じ入口から実行できます。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\codex-dev.ps1 compose ps
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\codex-dev.ps1 exec python scripts/smoke_run.py
+```
+
+手元の PowerShell から短く実行したい場合は、同梱の `.\codex-dev.cmd` も同じ
+サブコマンドを受け付けます。Codex アプリでは UNC パス警告を避けるため、
+上記の PowerShell 直呼びを優先します。
+
+別の WSL 配布名やチェックアウト先を使う場合は、PowerShell 側で次の環境変数を
+指定します。
+
+```powershell
+$env:NANIHOLD_WSL_DISTRO = "Ubuntu"
+$env:NANIHOLD_WSL_PROJECT_DIR = "/home/user/projects/Nanihold_OS"
+```
+
 実 LLM を使う場合は、各自の WSL 側リポジトリ直下に `.env` を作成します。
 `.env` は Git 管理しません。キー名の雛形は `.env.example` を参照してください。
 
@@ -415,19 +448,97 @@ vsm\
 └── tools\                   # ToolEffect / ToolInvocation / facade
 ```
 
+## Recursive VSM Architecture
+
+`refactor_20260608.md` では、Nanihold OS の中核単位を「すべての Node は
+u-VSM として振る舞える」という再帰構造に置いています。Run は Platform の
+起動停止ではなく、外部入力、業務依頼、定期処理、監査要求などに対応する
+実行・観測・会計の単位です。永続する責任、履歴、権限、状態は Node が保持し、
+Agent は Execution ごとに生成される一時的な実行主体として扱います。
+
+```text
+Run
+  外部入力・業務依頼・定期処理・監査要求の実行 / 観測 / 会計単位
+  |
+  v
+Event_Log (append-only Source of Truth)
+  |
+  +--> LiveTopology projection
+  +--> GraphProjection / ContextView / TaskSummary
+  +--> TelemetryCorrelation
+
+Parent Node
+  |
+  +-- ParentAuthority
+      capability / budget / data_scope / filesystem_scope / network_scope
+      may_differentiate_to / allowed_tool_classes / denied_tool_classes
+  |
+  v
+Node = u-VSM
+  responsibility / history / authority / state
+  |
+  +-- RoleSpec
+  |     VSM position, responsibility, schema, allowed_tools,
+  |     escalation_contract, prompt_template
+  |
+  +-- AgentSpec + Execution
+  |     LLM / Codex / Claude Code / HumanAgent を差し替え可能な一時主体
+  |
+  +-- ToolInvocation
+  |     PURE_READ / LOCAL_WRITE / EXTERNAL_READ / EXTERNAL_WRITE / CONTROL / HUMAN
+  |     EXTERNAL_WRITE と CONTROL は idempotency_key 必須
+  |       |
+  |       +-- request_coordination -> S2 Node
+  |       +-- differentiate        -> child u-VSM / node_differentiated event
+  |       +-- request_escalation   -> parent / S4 / human authority
+  |
+  +-- Child Nodes
+        各 child も同じく u-VSM として再帰的に分化可能
+```
+
+u-VSM はまず `COLLAPSED` 状態で spawn されます。そこから分化を選択した
+主体 Agent は、その u-VSM の S5 として残り続けます。展開度は、S5 以外の
+System がどこまで実体化しているかを表します。まだ実体化していない System の
+責任は、分化主体である S5 Agent が兼ねます。
+
+```text
+COLLAPSED
+  spawn 直後の未分化 u-VSM。まだ S5 と他 System の展開を開始していない。
+
+S5_ONLY
+  分化を選択した主体 Agent が S5 となり、VSM 全体を兼ねる。
+  S1, S2, S3, S3*, S4 はまだ実体化していない。
+
+PARTIAL
+  S5 以外の一部 System のみ実体化している。
+  実体化していない部分は S5 Agent が兼ねる。
+
+FULL
+  S1, S2, S3, S3*, S4, S5 が実体化している。
+```
+
+分化は `differentiate` Tool を通じて行い、`ParentAuthority.may_differentiate_to`
+を超えられません。`differentiate` は分化主体を別の System に置き換える操作ではなく、
+S5 である主体のもとに S1 / S2 / S3 / S3* / S4 を実体化していく操作です。
+構造変更は `node_created` / `node_differentiated` / lifecycle event として
+Event_Log に残り、`LiveTopology` や graph は Event_Log から再構成される
+projection として扱います。
+
 ## Refactor 20260608 実装状況
 
 `refactor_20260608.md` の基礎方針に対して、現在の実装は以下の状態です。
 
 | 項目 | 実装 |
 |---|---|
+| Architecture / Role / Agent / Tool / Node 分離 | `vsm.architecture`, `vsm.roles`, `vsm.agents`, `vsm.tools`, `vsm.nodes` に分離済みです。Architecture 層は VSM 構造、Role 層は契約、Agent 層は一時実行主体、Tool 層は具体手続き、Node 層は責任・履歴・権限・状態を扱います。 |
 | EventEnvelope v1 | `vsm.eventlog.schema.Event` と `vsm.architecture.events.EventEnvelope`。`event_id`, `stream_id`, `stream_version`, `schema_version`, `correlation_id`, `causation_id` を持ちます。 |
 | Projection checkpoint | `vsm.architecture.projections.ProjectionCheckpoint`。処理済み `event_id` を保持して同一イベント再適用を防ぎます。 |
-| Node / NodeRunState | `vsm.nodes.model.Node`, `NodeRunState`。`NodeSource` により `terminable=False` は config 由来の Node のみに制限します。 |
+| Node / u-VSM / NodeRunState | `vsm.nodes.model.Node`, `DifferentiationLevel`, `NodeRunState`。すべての Node を u-VSM として扱い、Run 固有状態は `NodeRunState` に分離します。`NodeSource` により `terminable=False` は config 由来の Node のみに制限します。 |
 | static / live topology | `vsm.runtime.topology.StaticTopologyEntry`, `LiveTopology`。Event_Log 由来の `node_created`, `node_differentiated`, lifecycle event を反映します。 |
 | ParentAuthority / Lease | `vsm.authority.ParentAuthority`, `Lease`。分化上限、Tool effect 制限、外部資源 lease を表します。 |
 | ToolEffect / idempotency | `vsm.tools.ToolEffect`, `ToolInvocation`。`EXTERNAL_WRITE` と `CONTROL` は `idempotency_key` 必須です。 |
 | Tool facade | `CoordinationFacade`, `DifferentiationFacade`, `EscalationFacade`。S2 調停、分化、エスカレーション要求を冪等な CONTROL Tool として扱います。 |
+| サブ VSM デプロイ | `differentiate` Tool と `LiveTopology` により、親 Authority の範囲内で child Node を u-VSM として展開する基礎機能を実装済みです。 |
 | Role / Agent / Execution | `RoleSpec`, `AgentSpec`, `PromptTemplate`, `Execution`。Spec versioning と Agent / Tool 実行単位を明示します。 |
 | Memory / Graph / Telemetry | `ContextView`, `TaskSummary`, `GraphProjection`, `TelemetryCorrelation` を軽量モデルとして実装しています。 |
 
