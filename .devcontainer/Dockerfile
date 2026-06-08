@@ -29,6 +29,6 @@ COPY --chown=${USERNAME}:${USERNAME} pyproject.toml README.md ./
 COPY --chown=${USERNAME}:${USERNAME} vsm ./vsm
 
 RUN python -m pip install --upgrade pip \
-    && python -m pip install .
+    && python -m pip install -e .
 
 USER ${USERNAME}

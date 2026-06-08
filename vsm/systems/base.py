@@ -168,6 +168,20 @@ class SubAgent:
         # PBT 等で「ちょうど 60.1 秒経過」のような決定論的シナリオを
         # 構成できる。
         started_monotonic = self._clock.monotonic()
+        tool_invocation_id = generate_uuid()
+        await self._eventlog.append(
+            "tool_invoked",
+            {
+                "tool_invocation_id": tool_invocation_id,
+                "tool_name": "llm_call",
+                "effect": "EXTERNAL_READ",
+                "requested_by_node_id": self.system_id,
+                "model": model,
+            },
+            node_id=self.system_id,
+            actor_type="agent",
+            actor_id=self.sub_agent_id,
+        )
 
         try:
             response = await asyncio.wait_for(
@@ -188,6 +202,21 @@ class SubAgent:
                     "sub_agent_id": self.sub_agent_id,
                     "elapsed_ms": elapsed_ms,
                 },
+                node_id=self.system_id,
+                actor_type="agent",
+                actor_id=self.sub_agent_id,
+            )
+            await self._eventlog.append(
+                "tool_failed",
+                {
+                    "tool_invocation_id": tool_invocation_id,
+                    "tool_name": "llm_call",
+                    "reason": "timeout",
+                    "elapsed_ms": elapsed_ms,
+                },
+                node_id=self.system_id,
+                actor_type="agent",
+                actor_id=self.sub_agent_id,
             )
             # ``from None`` で TimeoutError チェーンを切り、呼び出し元には
             # VSM の typed error だけが見えるようにする (design.md
@@ -206,6 +235,21 @@ class SubAgent:
                     "provider_code": str(exc.code),
                     "provider_message": exc.message,
                 },
+                node_id=self.system_id,
+                actor_type="agent",
+                actor_id=self.sub_agent_id,
+            )
+            await self._eventlog.append(
+                "tool_failed",
+                {
+                    "tool_invocation_id": tool_invocation_id,
+                    "tool_name": "llm_call",
+                    "reason": str(exc.code),
+                    "message": exc.message,
+                },
+                node_id=self.system_id,
+                actor_type="agent",
+                actor_id=self.sub_agent_id,
             )
             raise
 
@@ -225,6 +269,25 @@ class SubAgent:
                 "tokens_in": response.tokens_in,
                 "tokens_out": response.tokens_out,
             },
+            node_id=self.system_id,
+            actor_type="agent",
+            actor_id=self.sub_agent_id,
+        )
+        await self._eventlog.append(
+            "tool_completed",
+            {
+                "tool_invocation_id": tool_invocation_id,
+                "tool_name": "llm_call",
+                "result": {
+                    "model": response.model,
+                    "latency_ms": response.latency_ms,
+                    "tokens_in": response.tokens_in,
+                    "tokens_out": response.tokens_out,
+                },
+            },
+            node_id=self.system_id,
+            actor_type="agent",
+            actor_id=self.sub_agent_id,
         )
         return response
 

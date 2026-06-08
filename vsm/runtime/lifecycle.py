@@ -77,9 +77,11 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from vsm.authority import ParentAuthority
 from vsm.clock import Clock, SystemClock
 from vsm.config import LLMConfig, RunConfig
 from vsm.errors import ConfigError, RunDirectoryError, SystemInstantiationError
@@ -89,7 +91,9 @@ from vsm.llm.provider import LLMProvider
 from vsm.llm.types import LLMProviderProtocol
 from vsm.messaging.bus import MessageBus
 from vsm.messaging.channels import ChannelId
+from vsm.nodes import DifferentiationLevel, Node, NodeRunState, NodeStatus
 from vsm.roles import MANDATORY_ROLES, SystemRole
+from vsm.tools import ToolEffect, ToolInvocation
 
 if TYPE_CHECKING:
     # 型注釈用のみ。実体クラスは Tasks 12〜17 で実装されるため、
@@ -191,6 +195,13 @@ class Platform:
         # 役割別 System インスタンス。``MANDATORY_ROLES`` 各役割に対して
         # 1 つずつ、S1_WORKER については :meth:`spawn_s1` が動的に追加。
         self.systems: dict[SystemRole, list[System]] = {}
+
+        # Refactor 20260608: Systems remain the execution adapter, while Node
+        # owns persistent responsibility/history/authority.
+        self.nodes: dict[str, Node] = {}
+        self.node_run_states: dict[tuple[str, str], NodeRunState] = {}
+        self.authorities: dict[str, ParentAuthority] = {}
+        self.tool_invocations: dict[str, ToolInvocation] = {}
 
         # 動的 S1 生成回数のカウンタ。``s1_dynamic_max`` (REQ 13.6) と
         # ``s1_max`` (REQ 1.3) の双方を :meth:`spawn_s1` が確認する。
@@ -429,6 +440,7 @@ class Platform:
                     instance.register_sub_agent(label="default")
 
                 platform.systems.setdefault(role, []).append(instance)
+                await platform._attach_system_node(instance, role)
 
                 # **REQ 2.x の隠れた前提**: System の ``run()`` ループは
                 # 起動後の最初の文で ``bus.subscribe`` を呼ぶ。だが
@@ -455,6 +467,8 @@ class Platform:
                         "role": role.value,
                         "sub_agent_count": instance.sub_agent_count,
                     },
+                    node_id=instance.system_id,
+                    actor_id=instance.system_id,
                 )
         except Exception as exc:
             # REQ 1.7: 必須 System の生成失敗は致命的。事後 cleanup を best
@@ -479,6 +493,106 @@ class Platform:
 
         return platform
 
+    async def _attach_system_node(
+        self,
+        system: "System",
+        role: SystemRole,
+        *,
+        parent_id: str | None = None,
+        terminable: bool | None = None,
+    ) -> None:
+        """Register a live System adapter as a persistent Node."""
+
+        node_parent_id = parent_id if parent_id is not None else self._default_parent_for_role(role)
+        node_terminable = role is SystemRole.S1_WORKER if terminable is None else terminable
+        node = Node(
+            id=system.system_id,
+            parent_id=node_parent_id,
+            vsm_position=role,
+            goal=f"{role.value} responsibility",
+            terminable=node_terminable,
+            differentiation_level=DifferentiationLevel.COLLAPSED,
+            agent_spec={"adapter": system.__class__.__name__},
+            status=NodeStatus.CREATED,
+        )
+        self.nodes[node.id] = node
+        self.node_run_states[(self.run_id, node.id)] = NodeRunState(
+            run_id=self.run_id,
+            node_id=node.id,
+            status=NodeStatus.CREATED,
+        )
+        if node.parent_id and node.parent_id in self.nodes:
+            self.nodes[node.parent_id].child_ids.append(node.id)
+
+        await self.eventlog.append(
+            "node_created",
+            {
+                "node_id": node.id,
+                "parent_id": node.parent_id,
+                "vsm_position": role.value,
+                "terminable": node.terminable,
+                "differentiation_level": node.differentiation_level.value,
+            },
+            node_id=node.id,
+            actor_id=node.parent_id,
+        )
+
+        authority = ParentAuthority(
+            authority_id=generate_uuid(),
+            issuer_node_id=node.parent_id or node.id,
+            subject_node_id=node.id,
+            issued_at=datetime.now(timezone.utc),
+            may_differentiate_to=DifferentiationLevel.FULL,
+            max_depth=4,
+            max_spawn_count=self.run_config.s1_dynamic_max,
+            allowed_tool_classes=frozenset(
+                {
+                    ToolEffect.PURE_READ,
+                    ToolEffect.LOCAL_WRITE,
+                    ToolEffect.EXTERNAL_READ,
+                    ToolEffect.CONTROL,
+                    ToolEffect.HUMAN,
+                }
+            ),
+        )
+        self.authorities[authority.authority_id] = authority
+        await self.eventlog.append(
+            "authority_granted",
+            {
+                "authority_id": authority.authority_id,
+                "issuer_node_id": authority.issuer_node_id,
+                "subject_node_id": authority.subject_node_id,
+                "may_differentiate_to": authority.may_differentiate_to.value,
+                "max_spawn_count": authority.max_spawn_count,
+            },
+            node_id=node.id,
+            actor_id=authority.issuer_node_id,
+        )
+        await self.eventlog.append(
+            "agent_attached",
+            {
+                "node_id": node.id,
+                "agent_kind": system.__class__.__name__,
+                "role": role.value,
+            },
+            node_id=node.id,
+            actor_id=node.id,
+        )
+
+    def _default_parent_for_role(self, role: SystemRole) -> str | None:
+        if role is SystemRole.S5_POLICY:
+            return None
+        if role in {SystemRole.S3_ALLOCATOR, SystemRole.S4_SCANNER}:
+            s5 = self.systems.get(SystemRole.S5_POLICY, [])
+            return s5[0].system_id if s5 else None
+        if role is SystemRole.S3STAR_AUDITOR:
+            s3 = self.systems.get(SystemRole.S3_ALLOCATOR, [])
+            return s3[0].system_id if s3 else None
+        if role in {SystemRole.S2_COORDINATOR, SystemRole.S1_WORKER}:
+            s3 = self.systems.get(SystemRole.S3_ALLOCATOR, [])
+            return s3[0].system_id if s3 else None
+        return None
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -499,6 +613,16 @@ class Platform:
         for systems_for_role in self.systems.values():
             for system in systems_for_role:
                 await system.start()
+                node = self.nodes.get(system.system_id)
+                if node is not None and node.status is NodeStatus.CREATED:
+                    node.status = NodeStatus.RUNNING
+                    self.node_run_states[(self.run_id, node.id)].status = NodeStatus.RUNNING
+                    await self.eventlog.append(
+                        "node_started",
+                        {"node_id": node.id, "status": NodeStatus.RUNNING.value},
+                        node_id=node.id,
+                        actor_id=node.id,
+                    )
 
     async def shutdown(self) -> None:
         """Gracefully tear down all Systems, the EventLogWriter, and lockfile.
@@ -533,6 +657,16 @@ class Platform:
         ]
         for system in snapshot:
             await system.shutdown()
+            node = self.nodes.get(system.system_id)
+            if node is not None and node.status is NodeStatus.RUNNING:
+                node.status = NodeStatus.IDLE
+                self.node_run_states[(self.run_id, node.id)].status = NodeStatus.IDLE
+                await self.eventlog.append(
+                    "node_idled",
+                    {"node_id": node.id, "status": NodeStatus.IDLE.value},
+                    node_id=node.id,
+                    actor_id=node.id,
+                )
 
         # 2. EventLogWriter の停止。これより後の ``append`` 呼び出しは
         # 失敗するが、System が全て停止しているので呼ばれることは無い。
@@ -617,6 +751,37 @@ class Platform:
                 "cannot spawn more S1_Workers"
             )
 
+        requested_by = (
+            self.systems.get(SystemRole.S3_ALLOCATOR, [None])[0].system_id
+            if self.systems.get(SystemRole.S3_ALLOCATOR)
+            else self.run_id
+        )
+        spawn_key = f"{self.run_id}:spawn_s1:{specialization}:{self._s1_count + 1}"
+        invocation = ToolInvocation(
+            invocation_id=generate_uuid(),
+            tool_name="spawn_child",
+            effect=ToolEffect.CONTROL,
+            requested_by_node_id=requested_by,
+            payload={
+                "specialization": specialization,
+                "initial_assignment": initial_assignment,
+            },
+            idempotency_key=spawn_key,
+        )
+        self.tool_invocations[invocation.invocation_id] = invocation
+        await self.eventlog.append(
+            "tool_invoked",
+            {
+                "tool_invocation_id": invocation.invocation_id,
+                "tool_name": invocation.tool_name,
+                "effect": invocation.effect.value,
+                "idempotency_key": invocation.idempotency_key,
+                "requested_by_node_id": invocation.requested_by_node_id,
+            },
+            node_id=requested_by,
+            actor_id=requested_by,
+        )
+
         # 遅延 import: ``S1Worker`` は Task 17.1 で実装される。
         from vsm.systems.s1_worker import S1Worker  # type: ignore[import-not-found]
 
@@ -641,6 +806,12 @@ class Platform:
         # 集計と一致させるため)。
         self.systems.setdefault(SystemRole.S1_WORKER, []).append(s1)
         self._s1_count += 1
+        await self._attach_system_node(
+            s1,
+            SystemRole.S1_WORKER,
+            parent_id=requested_by,
+            terminable=True,
+        )
 
         # REQ 7.4: ``s1_instantiated`` を 1 秒以内に append。``initial_assignment``
         # は schema 上 ``str`` のため、dict が来たら ``str(...)`` で
@@ -656,6 +827,8 @@ class Platform:
                     else str(initial_assignment)
                 ),
             },
+            node_id=s1.system_id,
+            actor_id=requested_by,
         )
 
         # REQ 1.6: 動的生成された S1 も ``system_instantiated`` を発行する
@@ -669,6 +842,8 @@ class Platform:
                 "role": SystemRole.S1_WORKER.value,
                 "sub_agent_count": s1.sub_agent_count,
             },
+            node_id=s1.system_id,
+            actor_id=s1.system_id,
         )
 
         # **REQ 7.6 の隠れた前提**: S3_Allocator は ``spawn_s1`` の return 直後に
@@ -689,6 +864,26 @@ class Platform:
         # platform.spawn_s1(...)`` の戻り値を ``current_assignments`` に
         # 追加するだけで済む)。
         await s1.start()
+        node = self.nodes.get(s1.system_id)
+        if node is not None:
+            node.status = NodeStatus.RUNNING
+            self.node_run_states[(self.run_id, node.id)].status = NodeStatus.RUNNING
+            await self.eventlog.append(
+                "node_started",
+                {"node_id": node.id, "status": NodeStatus.RUNNING.value},
+                node_id=node.id,
+                actor_id=node.id,
+            )
+        await self.eventlog.append(
+            "tool_completed",
+            {
+                "tool_invocation_id": invocation.invocation_id,
+                "tool_name": invocation.tool_name,
+                "result": {"node_id": s1.system_id},
+            },
+            node_id=s1.system_id,
+            actor_id=s1.system_id,
+        )
         return s1
 
     @property

@@ -28,13 +28,17 @@ Validates Requirements
 
 from __future__ import annotations
 
-from typing import Any, Literal, Mapping
+from typing import Any, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from vsm.ids import generate_uuid
 
 __all__ = [
     "EventType",
     "EVENT_TYPES",
+    "EVENT_TYPES_V1",
+    "KNOWN_EVENT_TYPES",
     "Event",
     "SystemInstantiatedPayload",
     "SystemInstantiationFailedPayload",
@@ -63,6 +67,8 @@ __all__ = [
     "AuditReportSentPayload",
     "EventLogAppendErrorPayload",
     "PAYLOAD_MODELS",
+    "PAYLOAD_MODELS_V1",
+    "KNOWN_PAYLOAD_MODELS",
     "validate_event_payload",
 ]
 
@@ -105,37 +111,40 @@ EVENT_TYPES: tuple[str, ...] = (
     "event_log_append_error",
 )
 
-# REQ 10.7: the ``event_type`` field of the Event envelope is constrained to
-# this closed set. Any unknown string raises ``ValidationError`` at append
-# time, which prevents stray writes from polluting the JSONL stream.
-EventType = Literal[
-    "system_instantiated",
-    "system_instantiation_failed",
-    "task_submitted",
-    "task_state_changed",
-    "channel_message",
-    "channel_rejected",
-    "llm_invocation",
-    "llm_timeout",
-    "llm_error",
-    "s4_assessment_produced",
-    "sub_agent_error",
-    "delivery_error",
-    "policy_decision",
-    "dispatch_error",
-    "s1_instantiated",
-    "s1_instantiation_error",
-    "s1_assignment_sent",
-    "s1_completion",
-    "coordination_conflict",
-    "coordination_directive",
-    "coordination_ack",
-    "coordination_ack_missing",
-    "audit_observation",
-    "audit_finding",
-    "audit_report_sent",
-    "event_log_append_error",
-]
+# ``EVENT_TYPES`` intentionally remains the legacy 26-event public constant.
+# The refactor document adds domain/control events for Node, authority and
+# tool execution. They are exposed separately so old compatibility tests and
+# consumers that expect the legacy set can continue to rely on it.
+EVENT_TYPES_V1: tuple[str, ...] = (
+    "node_created",
+    "node_started",
+    "node_idled",
+    "node_suspended",
+    "node_resumed",
+    "node_completed",
+    "node_terminated",
+    "node_failed",
+    "node_differentiated",
+    "agent_attached",
+    "spec_revised",
+    "tool_invoked",
+    "tool_completed",
+    "tool_failed",
+    "budget_consumed",
+    "authority_granted",
+    "authority_revised",
+    "coordination_requested",
+    "coordination_decided",
+    "escalation_requested",
+    "human_review_requested",
+    "summary_generated",
+    "artifact_created",
+)
+
+KNOWN_EVENT_TYPES: tuple[str, ...] = EVENT_TYPES + EVENT_TYPES_V1
+
+# Kept as a named alias for callers that imported EventType historically.
+EventType = str
 
 
 class _StrictModel(BaseModel):
@@ -181,23 +190,10 @@ class Event(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    ts: str = Field(
-        pattern=_TS_PATTERN,
-        description=(
-            "UTC ISO 8601 timestamp with millisecond precision and trailing "
-            "'Z' (REQ 10.7)."
-        ),
-    )
-    run_id: str = Field(
+    event_id: str = Field(
+        default_factory=generate_uuid,
         min_length=1,
-        max_length=64,
-        description="Run identifier, 1..64 ASCII characters (REQ 10.2 / 10.7).",
-    )
-    event_type: EventType = Field(
-        description=(
-            "Closed-set event type identifier; see design.md §Data Models "
-            "§Event スキーマ for the full table (REQ 10.7)."
-        ),
+        description="Unique event identifier for v1 EventEnvelope.",
     )
     seq: int = Field(
         ge=0,
@@ -206,12 +202,101 @@ class Event(BaseModel):
             "writer task (REQ 10.5 / 10.8)."
         ),
     )
+    run_id: str = Field(
+        min_length=1,
+        max_length=64,
+        description="Run identifier, 1..64 ASCII characters (REQ 10.2 / 10.7).",
+    )
+    node_id: str | None = Field(
+        default=None,
+        description="Node that owns the event, when known.",
+    )
+    stream_id: str | None = Field(
+        default=None,
+        description="Consistency boundary stream identifier.",
+    )
+    stream_version: int = Field(
+        default=0,
+        ge=0,
+        description="Version within stream_id after this event is appended.",
+    )
+    event_type: EventType = Field(
+        description="Known legacy or v1 event type identifier.",
+    )
+    schema_version: int = Field(
+        default=1,
+        ge=1,
+        description="Payload schema version.",
+    )
+    ts: str = Field(
+        pattern=_TS_PATTERN,
+        description=(
+            "UTC ISO 8601 timestamp with millisecond precision and trailing "
+            "'Z' (REQ 10.7)."
+        ),
+    )
+    actor_type: str = Field(
+        default="system",
+        min_length=1,
+        description="Actor class that caused the event.",
+    )
+    actor_id: str | None = Field(
+        default=None,
+        description="Concrete actor identifier, when known.",
+    )
+    correlation_id: str | None = Field(
+        default=None,
+        description="Business-flow correlation identifier.",
+    )
+    causation_id: str | None = Field(
+        default=None,
+        description="Direct predecessor event_id, when known.",
+    )
     payload: dict[str, Any] = Field(
         description=(
             "Per-event-type payload object. Structural validation is handled "
             "by PAYLOAD_MODELS / validate_event_payload."
         ),
     )
+
+    @field_validator("run_id")
+    @classmethod
+    def _run_id_must_be_ascii(cls, v: str) -> str:
+        """REQ 10.2: ``run_id`` must contain only ASCII characters."""
+        if not v.isascii():
+            raise ValueError(
+                "run_id must contain only ASCII characters (REQ 10.2)"
+            )
+        return v
+
+    @field_validator("event_type")
+    @classmethod
+    def _event_type_must_be_known(cls, v: str) -> str:
+        if v not in KNOWN_EVENT_TYPES:
+            raise ValueError(
+                f"unknown event_type {v!r}; expected one of "
+                f"{sorted(KNOWN_EVENT_TYPES)}"
+            )
+        return v
+
+
+class LegacyEvent(BaseModel):
+    """Compatibility shape documented by the original PoC.
+
+    The production writer emits :class:`Event`, but this model is useful for
+    tooling that deliberately wants to validate the old five-field contract.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ts: str = Field(pattern=_TS_PATTERN)
+    run_id: str = Field(
+        min_length=1,
+        max_length=64,
+    )
+    event_type: EventType
+    seq: int = Field(ge=0)
+    payload: dict[str, Any]
 
     @field_validator("run_id")
     @classmethod
@@ -545,6 +630,16 @@ class EventLogAppendErrorPayload(_StrictModel):
     reason: str = Field(min_length=1)
 
 
+class GenericV1Payload(BaseModel):
+    """Permissive payload model for new v1 domain/control events.
+
+    Subsystems define stronger typed contracts at their own boundary. The
+    Event_Log layer only requires that payloads are JSON objects.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+
 # ---------------------------------------------------------------------------
 # Registry and helper
 # ---------------------------------------------------------------------------
@@ -582,6 +677,15 @@ PAYLOAD_MODELS: Mapping[str, type[BaseModel]] = {
     "event_log_append_error": EventLogAppendErrorPayload,
 }
 
+PAYLOAD_MODELS_V1: Mapping[str, type[BaseModel]] = {
+    event_type: GenericV1Payload for event_type in EVENT_TYPES_V1
+}
+
+KNOWN_PAYLOAD_MODELS: Mapping[str, type[BaseModel]] = {
+    **PAYLOAD_MODELS,
+    **PAYLOAD_MODELS_V1,
+}
+
 
 def validate_event_payload(event_type: str, payload: dict[str, Any]) -> BaseModel:
     """Validate ``payload`` against the model registered for ``event_type``.
@@ -611,11 +715,11 @@ def validate_event_payload(event_type: str, payload: dict[str, Any]) -> BaseMode
     pydantic.ValidationError
         If ``payload`` does not satisfy the registered model's schema.
     """
-    model_cls = PAYLOAD_MODELS.get(event_type)
+    model_cls = KNOWN_PAYLOAD_MODELS.get(event_type)
     if model_cls is None:
         raise ValueError(
             f"unknown event_type {event_type!r}; expected one of "
-            f"{sorted(PAYLOAD_MODELS)}"
+            f"{sorted(KNOWN_PAYLOAD_MODELS)}"
         )
     return model_cls.model_validate(payload)
 

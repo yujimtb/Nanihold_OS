@@ -236,7 +236,7 @@ _NON_ASCII_RUN_ID = st.text(
 
 @pytest.mark.parametrize("subcommand", ["status", "replay", "tail"])
 @given(rid=_TOO_LONG_RUN_ID)
-@settings(max_examples=100)
+@settings(max_examples=100, deadline=None)
 def test_observation_subcommands_reject_too_long_run_id(
     subcommand: str, rid: str
 ) -> None:
@@ -253,7 +253,7 @@ def test_observation_subcommands_reject_too_long_run_id(
 
 @pytest.mark.parametrize("subcommand", ["status", "replay", "tail"])
 @given(rid=_NON_ASCII_RUN_ID)
-@settings(max_examples=100)
+@settings(max_examples=100, deadline=None)
 def test_observation_subcommands_reject_non_ascii_run_id(
     subcommand: str, rid: str
 ) -> None:

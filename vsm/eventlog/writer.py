@@ -64,6 +64,16 @@ _MAX_APPEND_ATTEMPTS = 3
 # to assert that the retry interval lower bound is honoured.
 _RETRY_BACKOFF_SECONDS = 0.1
 
+# Bind-mounted Docker/WSL filesystems can make per-line fsync take hundreds of
+# milliseconds, which blocks the single asyncio event loop. ``flush`` is enough
+# for the CLI/read-side visibility SLA; set this env var when crash-durable
+# fsync is required for an operational run.
+_DURABLE_FSYNC = os.environ.get("VSM_EVENTLOG_FSYNC", "").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
 
 class EventLogWriter:
     """Single-task writer for a Run's ``events.jsonl``.
@@ -106,7 +116,7 @@ class EventLogWriter:
         # REQ 10.5 / 10.8: the queue is the synchronisation point between
         # callers and the writer task. ``append`` enqueues from any coroutine,
         # ``_writer_loop`` is the sole consumer.
-        self._queue: asyncio.Queue[tuple[str, dict[str, Any], str]] = (
+        self._queue: asyncio.Queue[tuple[str, dict[str, Any], str, dict[str, Any]]] = (
             asyncio.Queue()
         )
 
@@ -114,6 +124,7 @@ class EventLogWriter:
         # writer task, which guarantees a strict monotonic sequence even
         # under concurrent enqueues.
         self._seq: int = 0
+        self._stream_versions: dict[str, int] = {}
 
         # REQ 10.3 / 10.5: open the JSONL file in append mode with UTF-8
         # encoding and line buffering. ``buffering=1`` causes Python's text
@@ -163,7 +174,19 @@ class EventLogWriter:
             finally:
                 self._fh.close()
 
-    async def append(self, event_type: str, payload: dict[str, Any]) -> None:
+    async def append(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        node_id: str | None = None,
+        stream_id: str | None = None,
+        actor_type: str = "system",
+        actor_id: str | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        schema_version: int = 1,
+    ) -> None:
         """Enqueue an event for the writer task to persist.
 
         Validates ``payload`` synchronously against the pydantic model
@@ -201,7 +224,16 @@ class EventLogWriter:
         # completes well within the 100 ms append-visibility SLA. The
         # ``await`` allows the event loop to schedule the writer task
         # promptly when there is no contention.
-        await self._queue.put((event_type, payload, ts))
+        metadata = {
+            "node_id": node_id,
+            "stream_id": stream_id,
+            "actor_type": actor_type,
+            "actor_id": actor_id,
+            "correlation_id": correlation_id,
+            "causation_id": causation_id,
+            "schema_version": schema_version,
+        }
+        await self._queue.put((event_type, payload, ts, metadata))
 
     async def _writer_loop(self) -> None:
         """Drain the queue and persist each event in FIFO order.
@@ -215,20 +247,31 @@ class EventLogWriter:
         4. delegates the durable write to :meth:`_write_with_retry`.
         """
         while True:
-            event_type, payload, ts = await self._queue.get()
+            event_type, payload, ts, metadata = await self._queue.get()
 
             # REQ 10.8: ``seq`` is assigned only here, on the single writer
             # task, so the assignment is race-free by construction.
             seq = self._seq
             self._seq += 1
+            stream_id = metadata.get("stream_id") or metadata.get("node_id") or self._run_id
+            stream_version = self._stream_versions.get(stream_id, 0) + 1
+            self._stream_versions[stream_id] = stream_version
 
             # REQ 10.7: ``Event`` validates the envelope (timestamp pattern,
             # run_id length, event_type membership, non-negative seq).
             event = Event(
                 ts=ts,
                 run_id=self._run_id,
+                node_id=metadata.get("node_id"),
+                stream_id=stream_id,
+                stream_version=stream_version,
                 event_type=event_type,
+                schema_version=metadata.get("schema_version") or 1,
                 seq=seq,
+                actor_type=metadata.get("actor_type") or "system",
+                actor_id=metadata.get("actor_id"),
+                correlation_id=metadata.get("correlation_id") or self._run_id,
+                causation_id=metadata.get("causation_id"),
                 payload=payload,
             )
 
@@ -269,7 +312,8 @@ class EventLogWriter:
                 # commit the write so the entry is observable to ``vsm tail``
                 # within the 100 ms SLA.
                 self._fh.flush()
-                os.fsync(self._fh.fileno())
+                if _DURABLE_FSYNC:
+                    os.fsync(self._fh.fileno())
                 return
             except OSError as exc:
                 # REQ 10.6: surface a typed error after the third failure.
