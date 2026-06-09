@@ -15,6 +15,7 @@ from vsm.eventlog.writer import EventLogWriter
 from vsm.memory import ContextView, SearchScope, TaskSummary
 from vsm.nodes import DifferentiationLevel, Node, NodeSource, NodeStatus, assert_transition_allowed
 from vsm.runtime import Execution, ExecutionStatus
+from vsm.runtime.lifecycle import _role_spec_for_system_role
 from vsm.roles import RoleSpec, SystemRole
 from vsm.runtime.topology import LiveTopology, StaticTopologyEntry
 from vsm.tools import (
@@ -222,6 +223,12 @@ def test_role_spec_and_live_topology() -> None:
         }
     )
     assert topology.nodes["sales"].status is NodeStatus.SUSPENDED
+
+
+def test_all_system_roles_attach_codex_run_tool() -> None:
+    for role in SystemRole:
+        role_spec = _role_spec_for_system_role(role)
+        assert "codex_run" in role_spec.allowed_tools
 
 
 def test_execution_and_spec_versioning_contract() -> None:

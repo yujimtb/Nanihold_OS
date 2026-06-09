@@ -92,7 +92,7 @@ from vsm.llm.types import LLMProviderProtocol
 from vsm.messaging.bus import MessageBus
 from vsm.messaging.channels import ChannelId
 from vsm.nodes import DifferentiationLevel, Node, NodeRunState, NodeSource, NodeStatus
-from vsm.roles import MANDATORY_ROLES, SystemRole
+from vsm.roles import MANDATORY_ROLES, RoleSpec, SystemRole
 from vsm.tools import ToolEffect, ToolInvocation
 
 if TYPE_CHECKING:
@@ -135,6 +135,15 @@ _ROLE_INBOUND_CHANNELS: dict[SystemRole, tuple[ChannelId, ...]] = {
         ChannelId.S3STAR_S5_AUDIT,
     ),
 }
+
+
+def _role_spec_for_system_role(role: SystemRole) -> RoleSpec:
+    return RoleSpec(
+        id=role.value,
+        vsm_position=role,
+        responsibility=f"{role.value} responsibility",
+        allowed_tools=("codex_run",),
+    )
 
 
 class Platform:
@@ -505,6 +514,7 @@ class Platform:
 
         node_parent_id = parent_id if parent_id is not None else self._default_parent_for_role(role)
         node_terminable = role is SystemRole.S1_WORKER if terminable is None else terminable
+        role_spec = _role_spec_for_system_role(role)
         node = Node(
             id=system.system_id,
             parent_id=node_parent_id,
@@ -513,6 +523,7 @@ class Platform:
             terminable=node_terminable,
             differentiation_level=DifferentiationLevel.COLLAPSED,
             source=NodeSource.SPAWN if node_terminable else NodeSource.CONFIG,
+            role_spec=role_spec,
             agent_spec={"adapter": system.__class__.__name__},
             status=NodeStatus.CREATED,
         )
@@ -552,10 +563,12 @@ class Platform:
                     ToolEffect.PURE_READ,
                     ToolEffect.LOCAL_WRITE,
                     ToolEffect.EXTERNAL_READ,
+                    ToolEffect.EXTERNAL_WRITE,
                     ToolEffect.CONTROL,
                     ToolEffect.HUMAN,
                 }
             ),
+            filesystem_scope=(str(self.run_dir.parent.resolve(strict=False)),),
         )
         self.authorities[authority.authority_id] = authority
         await self.eventlog.append(
@@ -576,6 +589,7 @@ class Platform:
                 "node_id": node.id,
                 "agent_kind": system.__class__.__name__,
                 "role": role.value,
+                "tools": list(role_spec.allowed_tools),
             },
             node_id=node.id,
             actor_id=node.id,
