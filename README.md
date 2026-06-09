@@ -3,8 +3,9 @@
 Viable System Model (VSM) runtime platform.
 
 Python 3.11+ / asyncio による単一プロセス実装で、S1〜S5 + S3* の各 System
-が LLM ベースの Sub_Agent として動作します。CLI からタスク投入、状態確認、
-イベントログ追跡、リプレイを実行できます。
+が LLM ベースの Sub_Agent として動作します。現行の `vsm` 系 CLI は MVP /
+テスト実装用の入口であり、タスク投入、状態確認、イベントログ追跡、
+リプレイを実行できます。
 
 この README は Windows 版の実行手順を基準にしています。
 
@@ -254,6 +255,10 @@ $env:AWS_REGION = "us-west-2"
 ```
 
 ## VSM CLI コマンド集
+
+現行の `vsm submit` / `vsm status` / `vsm tail` / `vsm replay` は MVP /
+テスト実装用のコマンドです。`vsm submit` が使う S4→S5→S3→S1→S3* の
+固定フローは検証用の暫定実装であり、将来のランタイム実装では外す前提です。
 
 | コマンド | 説明 |
 |---|---|
