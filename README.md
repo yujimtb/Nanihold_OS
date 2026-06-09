@@ -542,7 +542,7 @@ projection として扱います。
 | static / live topology | `vsm.runtime.topology.StaticTopologyEntry`, `LiveTopology`。Event_Log 由来の `node_created`, `node_differentiated`, lifecycle event を反映します。 |
 | ParentAuthority / Lease | `vsm.authority.ParentAuthority`, `Lease`。分化上限、Tool effect 制限、外部資源 lease を表します。 |
 | ToolEffect / idempotency | `vsm.tools.ToolEffect`, `ToolInvocation`。`EXTERNAL_WRITE` と `CONTROL` は `idempotency_key` 必須です。 |
-| Tool facade | `CoordinationFacade`, `DifferentiationFacade`, `EscalationFacade`。S2 調停、分化、エスカレーション要求を冪等な CONTROL Tool として扱います。 |
+| Tool facade | `CodexRunFacade`, `CoordinationFacade`, `DifferentiationFacade`, `EscalationFacade`。Codex CLI 実行、S2 調停、分化、エスカレーション要求を ToolInvocation として扱います。 |
 | サブ VSM デプロイ | `differentiate` Tool と `LiveTopology` により、親 Authority の範囲内で child Node を u-VSM として展開する基礎機能を実装済みです。 |
 | Role / Agent / Execution | `RoleSpec`, `AgentSpec`, `PromptTemplate`, `Execution`。Spec versioning と Agent / Tool 実行単位を明示します。 |
 | Memory / Graph / Telemetry | `ContextView`, `TaskSummary`, `GraphProjection`, `TelemetryCorrelation` を軽量モデルとして実装しています。 |
@@ -556,7 +556,7 @@ projection として扱います。
 | Tool | 現状 |
 |---|---|
 | `llm_call` | `vsm.llm.LLMProvider` / `FakeLLMProvider` と Sub_Agent 経由の LLM 呼び出し基盤は実装済みです。`ToolInvocation` としての `llm_call` facade、replay 時の tool result 参照契約は未実装です。 |
-| `codex_run` | 未実装です。短期ロードマップでは、外部プロセス実行 Tool として `ToolEffect.EXTERNAL_WRITE` または `CONTROL`、`idempotency_key`、ParentAuthority の filesystem / network scope と組み合わせて導入します。 |
+| `codex_run` | `CodexRunFacade`, `CodexRunRequest`, `CodexRunPolicy`, `CodexRunResult` を実装済みです。Codex CLI を外部プロセス実行 Tool として呼び出し、`ToolEffect.EXTERNAL_READ` / `EXTERNAL_WRITE` / `CONTROL`、`idempotency_key`、`ParentAuthority.filesystem_scope`、sandbox allow-list による policy 制約を検証します。全 System role の `RoleSpec.allowed_tools` に `codex_run` をアタッチし、`agent_attached` event にも tools として記録します。現時点では VSM 内部 Tool であり、専用 CLI サブコマンドはありません。 |
 | `claude_code_run` | 未実装です。`codex_run` と同じ外部プロセス実行 Tool の一種として扱う予定です。 |
 | `web_crawl` | 未実装です。`ToolEffect.EXTERNAL_READ` と ParentAuthority の network scope による制約を前提に導入します。 |
 | `file_io` | 未実装です。`ToolEffect.PURE_READ` / `LOCAL_WRITE` と ParentAuthority の filesystem scope による制約を前提に導入します。 |
