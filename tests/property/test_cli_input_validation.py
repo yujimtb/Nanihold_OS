@@ -8,7 +8,7 @@ Per design.md:
     below, the CLI SHALL terminate with a non-zero exit code and write to
     stderr a message identifying the violated constraint, and SHALL NOT
     create a Run directory or emit any Event_Log entries:
-    - description length outside [1, 8192] ASCII characters (REQ 4.2),
+    - description length outside [1, 8192] Unicode characters (REQ 4.2),
     - file path argument that does not exist, exceeds 1 MB, is not valid
       UTF-8, or cannot be read (REQ 4.5),
     - run_id outside [1, 64] ASCII characters when used in observation
@@ -78,28 +78,11 @@ def test_empty_description_rejected() -> None:
     )
 
 
-@given(
-    non_ascii=st.text(
-        alphabet=st.characters(min_codepoint=0x4E00, max_codepoint=0x9FFF),
-        min_size=1,
-        max_size=10,
-    )
-)
-@settings(max_examples=100)
-def test_non_ascii_description_rejected(non_ascii: str) -> None:
-    """REQ 4.2: any description containing non-ASCII characters exits 2.
+def test_japanese_description_passes_input_validation() -> None:
+    """REQ 4.2: Japanese descriptions are accepted by input validation."""
+    from vsm.cli import _validate_description
 
-    The strategy samples from the CJK Unified Ideographs block (U+4E00 ..
-    U+9FFF) so that the description has length in [1, 10] (i.e. inside
-    the [1, 8192] window) and the only failing predicate is the
-    ASCII-only requirement.
-    """
-    result = runner.invoke(app, ["submit", non_ascii])
-    assert result.exit_code == 2
-    assert (
-        "out of range" in result.stderr
-        or "description length" in result.stderr
-    )
+    _validate_description("日本語で計画を作成してください")
 
 
 # ---------------------------------------------------------------------------

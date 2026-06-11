@@ -4,9 +4,32 @@ services:
       context: .
       dockerfile: .devcontainer/Dockerfile
     working_dir: /workspace
-    command: sleep infinity
+    command: uvicorn vsm.web.app:app --host 0.0.0.0 --port 8000 --reload
     env_file:
       - path: .env
         required: false
+    environment:
+      NANIHOLD_RUNS_DIR: /workspace/runs
+    ports:
+      - "8000:8000"
     volumes:
       - .:/workspace:cached
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    working_dir: /workspace
+    command: npm run dev -- --host 0.0.0.0
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/workspace:cached
+      - frontend_node_modules:/workspace/node_modules
+    depends_on:
+      - app
+
+volumes:
+  frontend_node_modules:

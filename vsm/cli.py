@@ -219,22 +219,20 @@ def _scope_guard(ctx: typer.Context) -> None:
 
 
 def _validate_description(description: str) -> None:
-    """REQ 4.2: enforce ``1 <= len(description) <= 8192`` and ASCII-only.
+    """REQ 4.2: enforce ``1 <= len(description) <= 8192``.
 
     On violation, writes the canonical message to stderr and exits with
-    code 2. The message intentionally references both bounds and the
-    ASCII constraint so that downstream log-greppers can match either
-    failure mode against a single regex.
+    code 2. Length is measured in Python Unicode characters, so Japanese
+    input is accepted without special handling.
     """
     length = len(description)
     if (
         length < _DESCRIPTION_MIN
         or length > _DESCRIPTION_MAX
-        or not description.isascii()
     ):
         typer.echo(
             f"description length out of range "
-            f"[{_DESCRIPTION_MIN}, {_DESCRIPTION_MAX}] ASCII",
+            f"[{_DESCRIPTION_MIN}, {_DESCRIPTION_MAX}]",
             err=True,
         )
         raise typer.Exit(code=2)
@@ -312,7 +310,7 @@ def _require_events_path(run_id: str) -> Path:
 def submit(
     description: str = typer.Argument(
         ...,
-        help="Task description (1..8192 ASCII characters, REQ 4.2).",
+        help="Task description (1..8192 characters, REQ 4.2).",
     ),
     file: Optional[list[Path]] = typer.Option(
         None,
