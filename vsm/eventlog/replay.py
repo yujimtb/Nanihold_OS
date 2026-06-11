@@ -206,6 +206,18 @@ def _apply_audit_finding(
         )
 
 
+def _apply_tool_completed(
+    state: ReconstructedState, seq: int, payload: dict[str, Any]
+) -> None:
+    """Cache completed Tool results for deterministic replay consumers."""
+    invocation_id = payload["tool_invocation_id"]
+    state.tool_results[invocation_id] = {
+        "tool_name": payload["tool_name"],
+        "result": dict(payload.get("result") or {}),
+        "seq": seq,
+    }
+
+
 # Dispatch table: ``event_type`` -> handler. Events not listed here are
 # either pure observability events (no impact on REQ 10.10 projections) or
 # error/diagnostic events; in both cases the correct behaviour at replay
@@ -222,6 +234,7 @@ _HANDLERS: dict[
     "channel_message": _apply_channel_message,
     "channel_rejected": _apply_channel_rejected,
     "audit_finding": _apply_audit_finding,
+    "tool_completed": _apply_tool_completed,
 }
 
 

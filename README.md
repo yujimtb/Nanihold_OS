@@ -542,7 +542,7 @@ projection として扱います。
 | static / live topology | `vsm.runtime.topology.StaticTopologyEntry`, `LiveTopology`。Event_Log 由来の `node_created`, `node_differentiated`, lifecycle event を反映します。 |
 | ParentAuthority / Lease | `vsm.authority.ParentAuthority`, `Lease`。分化上限、Tool effect 制限、外部資源 lease を表します。 |
 | ToolEffect / idempotency | `vsm.tools.ToolEffect`, `ToolInvocation`。`EXTERNAL_WRITE` と `CONTROL` は `idempotency_key` 必須です。 |
-| Tool facade | `CodexRunFacade`, `CoordinationFacade`, `DifferentiationFacade`, `EscalationFacade`。Codex CLI 実行、S2 調停、分化、エスカレーション要求を ToolInvocation として扱います。 |
+| Tool facade | `LLMCallFacade`, `CodexRunFacade`, `SpawnChildFacade`, `DifferentiationFacade`, `SearchPastSubtasksFacade`, `CoordinationFacade`, `EscalationFacade`, `HumanReviewFacade`, `NodeControlFacade`。LLM / Codex CLI 実行、S1 起動、分化、永続 TaskSummary 検索、調停、エスカレーション、人間レビュー、Node lifecycle 制御を ToolInvocation として扱います。 |
 | サブ VSM デプロイ | `differentiate` Tool と `LiveTopology` により、親 Authority の範囲内で child Node を u-VSM として展開する基礎機能を実装済みです。 |
 | Role / Agent / Execution | `RoleSpec`, `AgentSpec`, `PromptTemplate`, `Execution`。Spec versioning と Agent / Tool 実行単位を明示します。 |
 | Memory / Graph / Telemetry | `ContextView`, `TaskSummary`, `GraphProjection`, `TelemetryCorrelation` を軽量モデルとして実装しています。 |
@@ -555,20 +555,20 @@ projection として扱います。
 
 | Tool | 現状 |
 |---|---|
-| `llm_call` | `vsm.llm.LLMProvider` / `FakeLLMProvider` と Sub_Agent 経由の LLM 呼び出し基盤は実装済みです。`ToolInvocation` としての `llm_call` facade、replay 時の tool result 参照契約は未実装です。 |
+| `llm_call` | `LLMCallFacade`, `LLMCallRequest`, `LLMCallResult` を実装済みです。`ToolEffect.EXTERNAL_READ` の `ToolInvocation` として LLM provider を呼び出し、replay 時は `tool_completed` の保存済み result を `ReconstructedState.tool_results` から参照できます。 |
 | `codex_run` | `CodexRunFacade`, `CodexRunRequest`, `CodexRunPolicy`, `CodexRunResult` を実装済みです。Codex CLI を外部プロセス実行 Tool として呼び出し、`ToolEffect.EXTERNAL_READ` / `EXTERNAL_WRITE` / `CONTROL`、`idempotency_key`、`ParentAuthority.filesystem_scope`、sandbox allow-list による policy 制約を検証します。全 System role の `RoleSpec.allowed_tools` に `codex_run` をアタッチし、`agent_attached` event にも tools として記録します。現時点では VSM 内部 Tool であり、専用 CLI サブコマンドはありません。 |
 | `claude_code_run` | 未実装です。`codex_run` と同じ外部プロセス実行 Tool の一種として扱う予定です。 |
 | `web_crawl` | 未実装です。`ToolEffect.EXTERNAL_READ` と ParentAuthority の network scope による制約を前提に導入します。 |
 | `file_io` | 未実装です。`ToolEffect.PURE_READ` / `LOCAL_WRITE` と ParentAuthority の filesystem scope による制約を前提に導入します。 |
-| `spawn_child` | `Node`, `NodeSource`, `LiveTopology` と `node_created` event の projection 基盤は実装済みです。独立した `spawn_child` Tool facade は未実装です。 |
+| `spawn_child` | `SpawnChildFacade`, `SpawnChildRequest`, `SpawnChildResult` を実装済みです。`CONTROL` ToolInvocation を生成し、`Platform.spawn_s1` では facade 経由で実際の `S1Worker` 生成、bus 事前購読、`start()`、`tool_completed` 記録まで行います。 |
 | `differentiate` | `DifferentiationFacade` と `DifferentiationRequest` を実装済みです。`ParentAuthority.may_differentiate_to` を検証し、冪等な `CONTROL` ToolInvocation を生成します。 |
-| `search_past_subtasks` | `ContextView`, `TaskSummary`, `SearchScope` のモデルは実装済みです。検索 Tool facade と index 実行は未実装です。 |
+| `search_past_subtasks` | `TaskSummaryIndex`, `SearchPastSubtasksFacade`, `IndexedTaskSummary` を実装済みです。`TaskSummary` を JSONL の永続 index に保存し、`SearchScope` / query / limit で検索する `PURE_READ` ToolInvocation を生成します。 |
 | `request_coordination` | `CoordinationFacade` と `CoordinationRequest` を実装済みです。`coordination_key` を `idempotency_key` とする `CONTROL` ToolInvocation を生成します。 |
 | `request_escalation` | `EscalationFacade` と `EscalationRequest` を実装済みです。`escalation_key` を `idempotency_key` とする `CONTROL` ToolInvocation を生成します。 |
-| `request_human_review` | `HumanAgent` モデルは実装済みです。人間レビュー要求を ToolInvocation として記録する facade は未実装です。 |
-| `terminate_node` | `NodeStatus.TERMINATED` と `LiveTopology` の lifecycle projection は実装済みです。権限検証付きの CONTROL Tool facade は未実装です。 |
-| `suspend_node` | `NodeStatus.SUSPENDED` と `LiveTopology` の lifecycle projection は実装済みです。権限検証付きの CONTROL Tool facade は未実装です。 |
-| `resume_node` | `NodeStatus.RUNNING` への lifecycle projection は実装済みです。権限検証付きの CONTROL Tool facade は未実装です。 |
+| `request_human_review` | `HumanReviewFacade` と `HumanReviewRequest` を実装済みです。`HumanAgent` を任意に指定し、人間レビュー要求を `ToolEffect.HUMAN` の `ToolInvocation` として記録します。 |
+| `terminate_node` | `NodeControlFacade.terminate_node` を実装済みです。`CONTROL` effect、`ParentAuthority.termination_authority`、`Node.terminable`、Node lifecycle transition を検証します。 |
+| `suspend_node` | `NodeControlFacade.suspend_node` を実装済みです。`CONTROL` effect と Node lifecycle transition を検証し、`NodeStatus.SUSPENDED` へ遷移させます。 |
+| `resume_node` | `NodeControlFacade.resume_node` を実装済みです。`CONTROL` effect と Node lifecycle transition を検証し、`NodeStatus.RUNNING` へ遷移させます。 |
 
 ## Current Scope and Roadmap
 

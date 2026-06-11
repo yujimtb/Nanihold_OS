@@ -21,6 +21,9 @@ convenience for the ``vsm status`` CLI subcommand (REQ 11.1) which needs the
 ``(system_id, sub_agent_count)`` tuples; it is *not* one of the four
 projections that REQ 10.10 requires to round-trip.
 
+Tool completion results are also retained so replay callers can consult
+previous ``tool_completed`` payloads without re-running external tools.
+
 Validates Requirements
 ----------------------
 - REQ 10.1: every projection here is sourced exclusively from the
@@ -205,3 +208,6 @@ class ReconstructedState:
 
     # Convenience for ``vsm status`` (REQ 11.1); not part of REQ 10.10.
     systems: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    # Tool result cache reconstructed from ``tool_completed`` events.
+    tool_results: dict[str, dict[str, Any]] = field(default_factory=dict)

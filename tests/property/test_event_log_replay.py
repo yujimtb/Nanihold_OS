@@ -97,6 +97,36 @@ async def test_replay_empty(tmp_path):
     assert state.s1_lifecycle == {}
     assert state.channel_events == []
     assert state.audit_findings == {}
+    assert state.tool_results == {}
+
+
+@pytest.mark.asyncio
+async def test_replay_tool_completed_result_cache(tmp_path):
+    """``tool_completed`` results are available without re-running tools."""
+    path = tmp_path / "events.jsonl"
+    await _write_events(
+        path,
+        [
+            (
+                "tool_completed",
+                {
+                    "tool_invocation_id": "tool-1",
+                    "tool_name": "llm_call",
+                    "result": {
+                        "model": "fake/model",
+                        "latency_ms": 12,
+                        "tokens_in": 3,
+                        "tokens_out": 5,
+                    },
+                },
+            ),
+        ],
+    )
+
+    state = replay(path)
+
+    assert state.tool_results["tool-1"]["tool_name"] == "llm_call"
+    assert state.tool_results["tool-1"]["result"]["model"] == "fake/model"
 
 
 @pytest.mark.asyncio
