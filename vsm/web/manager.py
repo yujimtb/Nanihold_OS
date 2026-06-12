@@ -48,7 +48,7 @@ class RunManager:
                 run.status = WebRunStatus.FAILED
                 run.error = "アプリケーションの再起動により実行が中断されました。"
                 run.updated_at = utc_now()
-                self.store.save(run)
+                self.store.record_state(run, "application_restarted")
 
     def list_runs(self) -> list[dict[str, Any]]:
         return [self._summary(run) for run in sorted(self._runs.values(), key=lambda item: item.updated_at, reverse=True)]
@@ -95,7 +95,7 @@ class RunManager:
             )
             self._runs[run_id] = run
             self._active_run_id = run_id
-            self.store.save(run)
+            self.store.create(run)
             self._start_generation(run, instruction="")
             return run
 
@@ -114,7 +114,7 @@ class RunManager:
         self._mark_generation(run, "cancelled")
         self._append_control(run, "run_cancelled", {"reason": "user_requested"})
         self._release_active(run_id)
-        self.store.save(run)
+        self.store.record_state(run, "cancelled_by_user")
         return run
 
     async def interrupt(self, run_id: str, instruction: str) -> WebRun:
@@ -137,7 +137,7 @@ class RunManager:
             "instruction_received",
             {"instruction": cleaned, "generation": run.generation},
         )
-        self.store.save(run)
+        self.store.record_state(run, "instruction_received")
 
         task = self._tasks.get(run_id)
         if task and not task.done():
@@ -162,6 +162,7 @@ class RunManager:
             self._active_run_id = run_id
         run.error = None
         run.status = WebRunStatus.QUEUED
+        self._append_control(run, "retry_started", {})
         self._start_generation(run, instruction=run.pending_instruction or "")
         return run
 
@@ -176,7 +177,7 @@ class RunManager:
         self._append_control(run, "partial_result_accepted", {})
         self._write_artifacts(run)
         self._release_active(run_id)
-        self.store.save(run)
+        self.store.record_state(run, "partial_result_accepted")
         return run
 
     def delete(self, run_id: str) -> None:
@@ -193,6 +194,13 @@ class RunManager:
             raise ValueError("Run名を入力してください")
         run.title = cleaned[:80]
         run.updated_at = utc_now()
+        self.store.append_event(
+            run,
+            "web_run_renamed",
+            {"title": run.title, "updated_at": run.updated_at},
+            actor_type="human",
+            actor_id="local-user",
+        )
         self.store.save(run)
         return run
 
@@ -263,7 +271,17 @@ class RunManager:
         run.current_stage = "実行準備"
         run.progress = 2
         run.updated_at = utc_now()
-        self.store.save(run)
+        self.store.append_event(
+            run,
+            "web_generation_started",
+            {
+                "generation": generation,
+                "runtime_run_id": runtime_run_id,
+                "instruction": instruction,
+                "started_at": run.generations[-1].started_at,
+            },
+        )
+        self.store.record_state(run, "generation_started")
         self._tasks[run.run_id] = asyncio.create_task(
             self._execute_generation(run, generation, runtime_run_id, instruction),
             name=f"web-run[{run.run_id}:g{generation}]",
@@ -281,7 +299,7 @@ class RunManager:
             run.status = WebRunStatus.RUNNING
             run.current_stage = "VSMを起動"
             run.updated_at = utc_now()
-            self.store.save(run)
+            self.store.record_state(run, "platform_starting")
 
             llm_config, run_config = load_config(None)
             use_fake = os.environ.get("NANIHOLD_USE_FAKE_LLM", "").lower() in {"1", "true", "yes"}
@@ -327,7 +345,7 @@ class RunManager:
             run.current_stage = "最終回答を統合"
             run.progress = 96
             run.updated_at = utc_now()
-            self.store.save(run)
+            self.store.record_state(run, "final_answer_synthesis")
             run.final_answer = await self._synthesise_answer(platform, run, events, instruction)
             run.status = WebRunStatus.COMPLETED
             run.current_stage = "完了"
@@ -338,11 +356,14 @@ class RunManager:
             self._append_control(
                 run,
                 "run_completed",
-                {"generation": generation, "final_answer": run.final_answer},
+                {
+                    "generation": generation,
+                    "answer_ref": "artifacts/final-answer.md",
+                },
             )
             self._write_artifacts(run)
             self._release_active(run.run_id)
-            self.store.save(run)
+            self.store.record_state(run, "completed")
         except asyncio.CancelledError:
             if platform is not None:
                 await platform.shutdown()
@@ -363,7 +384,7 @@ class RunManager:
                 run.error = str(exc)
                 run.updated_at = utc_now()
                 self._mark_generation(run, "failed")
-                self.store.save(run)
+                self.store.record_state(run, "automatic_retries_exhausted")
         finally:
             if platform is not None:
                 await platform.shutdown()
@@ -385,7 +406,7 @@ class RunManager:
                 run.current_stage = stage
                 run.progress = progress
                 run.updated_at = utc_now()
-                self.store.save(run)
+                self.store.record_state(run, f"runtime_stage:{stage}")
             if count and completion_seen_at is None:
                 completion_seen_at = loop.time()
             if (
@@ -454,33 +475,37 @@ class RunManager:
                 projected = project_event(event, generation.generation, superseded)
                 if projected:
                     timeline.append(projected)
-        control_path = run.run_dir / "control-events.jsonl"
-        if control_path.exists():
-            for index, line in enumerate(control_path.read_text(encoding="utf-8").splitlines()):
-                if not line.strip():
-                    continue
-                event = json.loads(line)
+        control_types = {
+            "web_instruction_received",
+            "web_retry_started",
+            "web_run_cancelled",
+            "web_run_completed",
+            "web_partial_result_accepted",
+        }
+        for event in self.store.read_events(run):
+            if event["event_type"] in control_types:
+                payload = event.get("payload", {})
                 timeline.append(
                     {
-                        "id": f"control:{index}",
-                        "generation": event.get("generation", run.generation),
-                        "seq": 1_000_000 + index,
+                        "id": event["event_id"],
+                        "generation": payload.get("generation", run.generation),
+                        "seq": 1_000_000 + event["seq"],
                         "ts": event.get("ts"),
-                        "type": event["type"],
+                        "type": event["event_type"],
                         "stage": "ユーザー操作",
                         "progress": run.progress,
                         "system": "You",
                         "title": {
-                            "instruction_received": "追加指示を受け付けました",
-                            "automatic_retry": "自動再試行を開始しました",
-                            "run_cancelled": "実行を停止しました",
-                            "run_completed": "最終回答を確定しました",
-                            "partial_result_accepted": "部分結果を採用しました",
-                        }.get(event["type"], event["type"]),
-                        "summary": event.get("payload", {}).get("instruction")
-                        or event.get("payload", {}).get("reason")
+                            "web_instruction_received": "追加指示を受け付けました",
+                            "web_retry_started": "再試行を開始しました",
+                            "web_run_cancelled": "実行を停止しました",
+                            "web_run_completed": "最終回答を確定しました",
+                            "web_partial_result_accepted": "部分結果を採用しました",
+                        }.get(event["event_type"], event["event_type"]),
+                        "summary": payload.get("instruction")
+                        or payload.get("reason")
                         or "",
-                        "details": event.get("payload", {}),
+                        "details": payload,
                         "superseded": False,
                     }
                 )
@@ -520,14 +545,30 @@ class RunManager:
         return "VSMを起動", 3
 
     def _append_control(self, run: WebRun, event_type: str, payload: dict[str, Any]) -> None:
-        self.store.append_control_event(
+        mapped_type = {
+            "instruction_received": "web_instruction_received",
+            "automatic_retry": "web_retry_started",
+            "retry_started": "web_retry_started",
+            "run_cancelled": "web_run_cancelled",
+            "run_completed": "web_run_completed",
+            "partial_result_accepted": "web_partial_result_accepted",
+        }[event_type]
+        self.store.append_event(
             run,
-            {
-                "type": event_type,
-                "ts": utc_now(),
-                "generation": run.generation,
-                "payload": payload,
-            },
+            mapped_type,
+            {"generation": run.generation, **payload},
+            actor_type="human" if event_type in {
+                "instruction_received",
+                "retry_started",
+                "run_cancelled",
+                "partial_result_accepted",
+            } else "system",
+            actor_id="local-user" if event_type in {
+                "instruction_received",
+                "retry_started",
+                "run_cancelled",
+                "partial_result_accepted",
+            } else "web-runtime",
         )
 
     def _write_artifacts(self, run: WebRun) -> None:
@@ -541,11 +582,35 @@ class RunManager:
             json.dumps(self._timeline(run), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        for name, media_type in (
+            ("final-answer.md", "text/markdown"),
+            ("process-log.json", "application/json"),
+        ):
+            path = directory / name
+            self.store.append_event(
+                run,
+                "artifact_created",
+                {
+                    "artifact_ref": str(path.relative_to(run.run_dir)),
+                    "name": name,
+                    "media_type": media_type,
+                    "size": path.stat().st_size,
+                },
+            )
 
     def _mark_generation(self, run: WebRun, status: str) -> None:
         if run.generations:
             run.generations[-1].status = status
             run.generations[-1].finished_at = utc_now()
+            self.store.append_event(
+                run,
+                "web_generation_finished",
+                {
+                    "generation": run.generations[-1].generation,
+                    "status": status,
+                    "finished_at": run.generations[-1].finished_at,
+                },
+            )
 
     def _release_active(self, run_id: str) -> None:
         if self._active_run_id == run_id:
