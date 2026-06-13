@@ -1,7 +1,7 @@
 """VSM role identifiers and role contract specs.
 
 This package keeps the historical ``vsm.roles`` import surface while adding
-the RoleSpec layer described by ``refactor_20260608.md``.
+the RoleSpec layer described by ``docs/architecture.md``.
 """
 
 from __future__ import annotations

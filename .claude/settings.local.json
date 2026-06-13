@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd '\\\\\\\\wsl.localhost\\\\ubuntu\\\\home\\\\user\\\\projects\\\\Nanihold_OS')",
+      "Bash(wc -l .kiro/specs/nanihold-os/*.md .kiro/specs/vsm-task-orchestration-poc/*.md message.txt deprecated_refactor_20260603.md)",
+      "Bash(cd '\\\\\\\\wsl.localhost\\\\ubuntu\\\\home\\\\user\\\\projects\\\\Nanihold_OS' 2>/dev/null; echo \"=== codex.py ===\"; grep -n \"refactor_20260608\\\\|\\\\.kiro\\\\|tasks\\\\.md\\\\|message\\\\.txt\\\\|roadmap\" vsm/tools/codex.py; echo \"=== roles/__init__.py ===\"; grep -n \"refactor_20260608\\\\|\\\\.kiro\\\\|tasks\\\\.md\\\\|roadmap\" vsm/roles/__init__.py; echo \"=== events.py ===\"; grep -n \"refactor_20260608\\\\|\\\\.kiro\\\\|tasks\\\\.md\\\\|roadmap\" vsm/architecture/events.py; echo \"=== property tests ===\"; grep -rn \"refactor_20260608\\\\|\\\\.kiro\\\\|tasks\\\\.md\\\\|message\\\\.txt\" tests/property/ tests/unit/ | grep -v test_readme)",
+      "Bash(wsl --cd /home/user/projects/Nanihold_OS -- git ls-files refactor_20260608.md deprecated_refactor_20260603.md message.txt tasks.md .kiro)"
+    ]
+  }
+}

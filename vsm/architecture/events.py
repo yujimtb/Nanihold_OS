@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class EventEnvelope(BaseModel):
-    """Append-only source-of-truth envelope described by refactor_20260608."""
+    """Append-only source-of-truth envelope described by docs/architecture.md."""
 
     model_config = ConfigDict(extra="forbid")
 

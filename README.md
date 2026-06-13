@@ -1,634 +1,167 @@
 # Nanihold OS
 
-Viable System Model (VSM) runtime platform.
+**Viable System Model (VSM) runtime platform — LLM エージェントが運営する「AI 自動会社」のランタイム。**
 
-Python 3.11+ / asyncio による単一プロセス実装で、S1〜S5 + S3* の各 System
-が LLM ベースの Sub_Agent として動作します。現行の `vsm` 系 CLI は MVP /
-テスト実装用の入口であり、タスク投入、状態確認、イベントログ追跡、
-リプレイを実行できます。
+## これは何か
 
-この README は Windows 版の実行手順を基準にしています。
+Nanihold OS は、**組織を AI エージェント群で自律運営する**ための実行基盤(PoC)です。
 
-## WSL / コンテナ開発
+土台にあるのは Stafford Beer の **VSM (Viable System Model)** — 生命体が環境変化のなかで存続し
+続けるのと同じ構造を、組織に当てはめた管理サイバネティクスのモデルです。VSM では、どんな
+「存続可能な組織」も次の役割に分解できるとされます。
 
-Windows でコンテナ開発する場合は、WSL2 + Ubuntu 上にリポジトリを置き、
-Docker Desktop の WSL integration を有効にして使います。Windows 側の
-`D:\...` 配下を直接 bind mount するより、WSL の Linux ファイルシステム
-(`~/projects/Nanihold_OS` など) に置く方がファイル I/O と権限差分が安定します。
+| System | 役割 | このソフトでの担当 |
+|---|---|---|
+| **S1** WORKER | 実務を遂行する現場 | LLM エージェント(動的に増殖) |
+| **S2** COORDINATOR | 現場どうしの衝突・振動を抑える調整 | LLM エージェント |
+| **S3** ALLOCATOR | いまある資源を配分し最適化する | LLM エージェント |
+| **S3\*** AUDITOR | 現場を直接監査する | LLM エージェント |
+| **S4** SCANNER | 外部環境を観測し将来に備える | LLM エージェント |
+| **S5** POLICY | 方針を決め最終判断を下す | LLM エージェント |
 
-```powershell
-wsl --install -d Ubuntu
-wsl -l -v
+Nanihold OS は、この S1〜S5 + S3\* の各 System を **LLM ベースの Sub_Agent** として実装し、
+VSM の標準チャネル経由でメッセージを交換させることで、タスクを組織的に処理します。Python
+3.11+ / asyncio による単一プロセス実装で、すべてのやり取りは Run ごとの `events.jsonl`
+(Event_Log)に追記され、後から完全にリプレイできます。
+
+現行の `vsm` CLI は MVP / 検証用の入口で、タスク投入・状態確認・イベント追跡・リプレイを
+提供します。
+
+### VSM システム構成
+
+VSM は一方向のパイプラインではありません。**長期稼働を前提とし、外界との相互作用からタスクを
+生成し、解決し、その成果を環境へ返す——というループを回し続けることで存続**します。外部環境
+とのやり取りは **S1(担当業務の現場環境と直接やり取り)** と **S4(より広い環境と将来を観測)**
+の二経路で行われ、各 System は VSM の標準チャネルで継続的に交信します。固定された処理順序は
+持ちません。
+
+```mermaid
+flowchart TB
+    ENV([外部環境])
+
+    subgraph META [経営・管理 metasystem]
+        direction TB
+        S5["S5 · POLICY<br/>方針・最終判断"]
+        S4["S4 · SCANNER<br/>環境スキャン・将来探索"]
+        S3["S3 · ALLOCATOR<br/>資源配分・現在最適化"]
+        S3S["S3* · AUDITOR<br/>監査"]
+    end
+
+    subgraph OPS [現場 operation]
+        direction TB
+        S2["S2 · COORDINATOR<br/>調整・振動抑制"]
+        S1["S1 · WORKER<br/>実務遂行 (動的増殖)"]
+    end
+
+    ENV <-->|"環境スキャン・将来探索"| S4
+    ENV <-->|"実務・働きかけ"| S1
+
+    S5 <--> S4
+    S5 <--> S3
+    S3 <--> S4
+    S3 <--> S1
+    S1 <--> S2
+    S3S -. 監査 .-> S1
+    S3S -. 監査報告 .-> S5
 ```
 
-Ubuntu 側でリポジトリを開きます。
+> 環境からの入力でタスクが生まれ、VSM が処理・解決し、成果が環境へ戻る。この往復(生存ループ)を
+> 回し続けることが「存続」であり、これが VSM の目的です。
+> (現行の `vsm` CLI は検証用に S4→S5→S3→S1→S3\* の固定フローを使いますが、これは暫定実装で、
+> 本来のランタイムは固定経路を持ちません。)
 
-```bash
-mkdir -p ~/projects
-cd ~/projects
-git clone <repo-url> Nanihold_OS
-cd Nanihold_OS
-code .
+### ランタイムの考え方(Run / Event_Log / Node)
+
+一般的なジョブ実行系と違い、Nanihold OS では **VSM 自体が長期稼働する前提**です。
+
+- **Run** は Platform の起動停止ではなく、外部入力・業務依頼・定期処理・監査要求などに対応する
+  「実行・観測・会計の単位」。
+- **Event_Log** は append-only の唯一の真実(Source of Truth)。LiveTopology や Graph、各種
+  ビューはすべて Event_Log から再生成される projection。
+- **永続的な責任・履歴・権限・状態は Node が保持**し、Agent は Execution ごとに生成される
+  一時的な実行主体。
+- すべての Node は spawn 時に **`COLLAPSED` 状態の u-VSM** として生まれる。分化を選択した主体
+  Agent はその u-VSM の **S5 として残り続け**、`differentiate` で親の権限
+  (`ParentAuthority.may_differentiate_to`)の範囲内で S1〜S4 を実体化していく。まだ実体化して
+  いない System の責任は S5 Agent が兼ねる。
+- 分化は **`COLLAPSED` → `S5_ONLY` → `PARTIAL` → `FULL` の一方向**で進み、一度分化した u-VSM が
+  未分化へ戻ることはない。こうして実体化した各 System(子 Node)も、それ自体が u-VSM として
+  再帰的に分化できる。
+
+```mermaid
+flowchart LR
+    IN["外部入力 / 業務依頼<br/>定期処理 / 監査要求"] --> RUN["Run<br/>実行・観測・会計の単位"]
+    RUN -->|append| EL[("Event_Log<br/>append-only<br/>Source of Truth")]
+    EL --> LT["LiveTopology"]
+    EL --> GR["Graph / ContextView"]
+    EL --> TM["Telemetry"]
+
+    NODE["Node = u-VSM<br/>責任・履歴・権限・状態"] -->|Tool 実行| RUN
+    NODE -->|"differentiate<br/>(一方向に展開)"| NODE
+    NODE -. spawn_child .-> CHILD["子 Node = u-VSM<br/>(これ自体も分化可能)"]
 ```
 
-VS Code Dev Containers を使う場合は、`Reopen in Container` を実行します。
-エディタ非依存で使う場合は Docker Compose から同じ環境を起動できます。
+### 構成の概略
+
+実装は **Architecture / Role / Agent / Tool / Node** の層に分離されています。
+
+| 層 | 役割 | パッケージ |
+|---|---|---|
+| Architecture | VSM の骨格(System・Channel・Event_Log・再帰構造)。LLM を知らない | `vsm.architecture`, `vsm.messaging`, `vsm.eventlog` |
+| Role | Node の VSM 上の位置に紐づく責任契約 | `vsm.roles` |
+| Agent | Role を一時的に実行する主体(LLM / Codex / 人間を同一抽象で扱う) | `vsm.agents` |
+| Tool | 具体的な手続き。`ToolEffect` で副作用境界を型付けし、外部書込/制御は冪等キー必須 | `vsm.tools` |
+| Node | 責任・履歴・権限・状態を保持する永続単位。`ParentAuthority` で権限委譲 | `vsm.nodes`, `vsm.authority` |
+
+設計の全体像は [docs/architecture.md](docs/architecture.md)、実装の到達状況は
+[docs/implementation-status.md](docs/implementation-status.md) を参照してください。
+
+## クイックスタート
+
+標準の開発環境は **WSL2 + Docker Compose**。
 
 ```bash
 docker compose build
-docker compose run --rm app python -m pytest
-docker compose run --rm app python scripts/smoke_run.py
+docker compose run --rm app python scripts/smoke_run.py   # LLM なしの smoke test
 docker compose run --rm app python -m vsm --help
 ```
 
-### Web UI
-
-ローカルのダッシュボードでは、日本語のタスク投入、添付ファイル、リアルタイムの
-処理過程、追加指示による再実行、停止、履歴、最終回答と成果物のダウンロードを
-利用できます。
+Web UI を起動する場合:
 
 ```bash
-docker compose up --build
+docker compose up --build      # http://localhost:5173
 ```
 
-起動後に `http://localhost:5173` を開きます。バックエンド API は
-`http://localhost:8000` です。同時に実行できるRunは1件です。
-
-`.env` または `vsm.toml` にモデルを設定していない場合は、外部APIを呼ばない
-デモモデルで動作します。実モデルを使う場合は `.env.example` を参考に
-`LITELLM_PROVIDER` と対応するAPIキーを設定し、Composeを再起動してください。
-
-実行画面では進捗と処理ログが随時更新されます。「指示する」は現在のGenerationを
-打ち切り、最新の追加指示を優先した新しいGenerationを開始します。旧Generationの
-ログは「差し替え済み」として履歴に残ります。「停止」は現在の処理を中止します。
-完了後はMarkdownの最終回答とJSONの処理ログをRun単位でダウンロードできます。
-
-### Codex アプリからの開発
-
-Codex アプリのシェルが Windows PowerShell の場合でも、Windows 側の Python や
-UNC パス上の Docker 実行は使いません。リポジトリ直下のラッパーから、WSL 内の
-`/home/user/projects/Nanihold_OS` と Docker Compose `app` サービスへ転送します。
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\codex-dev.ps1 doctor
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\codex-dev.ps1 up
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\codex-dev.ps1 install
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\codex-dev.ps1 test
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\codex-dev.ps1 vsm --help
-```
-
-任意の Compose コマンドやコンテナ内コマンドも同じ入口から実行できます。
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\codex-dev.ps1 compose ps
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\codex-dev.ps1 exec python scripts/smoke_run.py
-```
-
-手元の PowerShell から短く実行したい場合は、同梱の `.\codex-dev.cmd` も同じ
-サブコマンドを受け付けます。Codex アプリでは UNC パス警告を避けるため、
-上記の PowerShell 直呼びを優先します。
-
-別の WSL 配布名やチェックアウト先を使う場合は、PowerShell 側で次の環境変数を
-指定します。
-
-```powershell
-$env:NANIHOLD_WSL_DISTRO = "Ubuntu"
-$env:NANIHOLD_WSL_PROJECT_DIR = "/home/user/projects/Nanihold_OS"
-```
-
-実 LLM を使う場合は、各自の WSL 側リポジトリ直下に `.env` を作成します。
-`.env` は Git 管理しません。キー名の雛形は `.env.example` を参照してください。
-
-## 概要
-
-`Nanihold OS` は Stafford Beer の VSM (Viable System Model) に基づく
-「AI 自動会社」の組織アーキテクチャ構想を、動作する PoC ソフトウェアとして
-確認するための基盤です。
-
-各 System (`S1_WORKER`, `S2_COORDINATOR`, `S3_ALLOCATOR`,
-`S3STAR_AUDITOR`, `S4_SCANNER`, `S5_POLICY`) は VSM の標準チャネルを介して
-メッセージを交換し、Run ごとの `events.jsonl` に全イベントを永続化します。
-現在は `refactor_20260608.md` に沿って、従来の System 実装の上に
-Architecture / Role / Agent / Tool / Node / Authority / Projection の層を
-追加しています。Run は Platform の起動停止ではなく、外部入力や監査要求を
-観測・会計する単位として扱い、永続的な責任と履歴は Node が保持します。
-
-## Windows クイックスタート
-
-以下は PowerShell での手順です。作業ディレクトリはこのリポジトリのルートです。
-
-```powershell
-cd D:\userdata\docs\projects\Nanihold_OS
-```
-
-### 1. Python 仮想環境を作成
-
-Python 3.11 以上が必要です。
+Windows ネイティブ環境で動かす場合は Python 3.11+ の仮想環境を使う。
 
 ```powershell
 py -3.11 -m venv .venv-win
-.\.venv-win\Scripts\python.exe -m pip install --upgrade pip
 .\.venv-win\Scripts\python.exe -m pip install -e .
-```
-
-開発用のテスト依存も入れる場合:
-
-```powershell
-.\.venv-win\Scripts\python.exe -m pip install -e ".[dev]"
-```
-
-### 2. CLI の起動確認
-
-PowerShell では同梱のラッパーを使うのが簡単です。
-
-```powershell
 .\vsm.ps1 --help
 ```
 
-`Activate.ps1` や `vsm.ps1` が実行ポリシーで止まる場合は、その PowerShell
-セッションだけ一時的に許可してから再実行します。
+詳しい手順、LLM プロバイダ設定、CLI の使い方は下記ドキュメントを参照。
 
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\vsm.ps1 --help
-```
+## ドキュメント
 
-`cmd.exe` から使う場合:
+ドキュメントは [docs/](docs/README.md) に整理している。
 
-```bat
-cd /d D:\userdata\docs\projects\Nanihold_OS
-vsm.cmd --help
-```
+**使い方**
 
-仮想環境を有効化して使う場合:
+- [docs/setup.md](docs/setup.md) — 環境構築(WSL / Docker、Windows ネイティブ、Codex アプリ、LLM プロバイダ設定)
+- [docs/cli.md](docs/cli.md) — `vsm` CLI コマンド、Run の確認、終了コード、開発コマンド、ファイルレイアウト
+- [docs/web-ui.md](docs/web-ui.md) — ローカル Web UI ダッシュボード
+- [docs/discord-bot.md](docs/discord-bot.md) — Discord Codex Bot
 
-```powershell
-.\.venv-win\Scripts\Activate.ps1
-vsm.exe --help
-```
+**設計・計画**
 
-仮想環境を有効化せず、Python モジュールとして直接実行する場合:
+- [docs/architecture.md](docs/architecture.md) — VSM ランタイムの設計リファレンス
+- [docs/implementation-status.md](docs/implementation-status.md) — 実装到達状況とスコープ
+- [docs/roadmap.md](docs/roadmap.md) — 製品化までのロードマップ
 
-```powershell
-.\.venv-win\Scripts\python.exe -m vsm --help
-```
-
-## LLM なしで動作確認
-
-API キーなしで、VSM の構造、メッセージング、Event_Log、リプレイ可能な
-イベント永続化を確認できます。`FakeLLMProvider` が固定応答を返します。
-
-```powershell
-cd D:\userdata\docs\projects\Nanihold_OS
-.\.venv-win\Scripts\python.exe scripts\smoke_run.py
-```
-
-これは LLM の推論品質を見るものではなく、S4 → S5 → S3 → S1 → S3* の
-イベント伝播とランタイム構造を確認するための smoke test です。
-
-## 実 LLM で VSM を使う
-
-`vsm submit` は LiteLLM 経由でモデルを呼び出します。プロバイダは
-`LITELLM_PROVIDER` 環境変数、または `vsm.toml` / `.env` で設定します。
-
-### 既に `.env` に API キーとモデルを書いてある場合
-
-リポジトリ直下の `.env` に `LITELLM_PROVIDER` とプロバイダ別 API キー
-(`OPENROUTER_API_KEY`, `OPENAI_API_KEY` など) が入っている場合は、
-PowerShell で `$env:...` を設定する必要はありません。
-
-```powershell
-cd D:\userdata\docs\projects\Nanihold_OS
-.\vsm.ps1 submit "Write a Python function that reverses a string"
-```
-
-`cmd.exe` でも同じ `.env` が読み込まれます。
-
-```bat
-cd /d D:\userdata\docs\projects\Nanihold_OS
-vsm.cmd submit "Write a Python function that reverses a string"
-```
-
-Run が完了したら、表示された `run_id` で状態確認できます。
-
-```powershell
-.\vsm.ps1 status <run_id>
-.\vsm.ps1 replay <run_id>
-```
-
-`.env` は `vsm submit` の実行時に読み込まれます。シェル側で
-`LITELLM_PROVIDER` を設定している場合は、シェルの値が `.env` より優先されます。
-
-### OpenAI を使う例
-
-PowerShell:
-
-```powershell
-cd D:\userdata\docs\projects\Nanihold_OS
-$env:LITELLM_PROVIDER = "openai/gpt-4o-mini"
-$env:OPENAI_API_KEY = "sk-..."
-
-.\vsm.ps1 submit "Write a Python function that reverses a string"
-```
-
-`cmd.exe`:
-
-```bat
-cd /d D:\userdata\docs\projects\Nanihold_OS
-set LITELLM_PROVIDER=openai/gpt-4o-mini
-set OPENAI_API_KEY=sk-...
-
-vsm.cmd submit "Write a Python function that reverses a string"
-```
-
-### OpenRouter を使う例
-
-`.env` に設定すると、毎回 PowerShell で `$env:...` を設定せずに使えます。
-`.env` は Git 管理しないローカル認証情報として扱ってください。
-
-```dotenv
-LITELLM_PROVIDER=openrouter/openai/gpt-oss-20b:free
-OPENROUTER_API_KEY=sk-or-v1-...
-```
-
-`.env` 設定済みなら、実行コマンドはこれだけです。
-
-```powershell
-.\vsm.ps1 submit "Write a Python function that reverses a string"
-```
-
-OpenRouter のモデル ID は LiteLLM 向けに先頭へ `openrouter/` を付けます。
-たとえば OpenRouter 側のモデル ID が `openai/gpt-oss-20b:free` の場合、
-`LITELLM_PROVIDER` は `openrouter/openai/gpt-oss-20b:free` です。
-
-無料モデルは availability や rate limit で失敗することがあります。その場合は
-OpenRouter の Models 画面で別の `:free` モデル ID を選び、同じく
-`openrouter/` を付けて指定します。
-
-### Bedrock を使う例
-
-AWS 認証と Bedrock のモデルアクセス権限がある場合:
-
-```powershell
-$env:LITELLM_PROVIDER = "bedrock/anthropic.claude-3-5-haiku-20241022-v1:0"
-$env:AWS_REGION = "us-west-2"
-
-.\vsm.ps1 submit "Summarize the current VSM architecture"
-```
-
-## VSM CLI コマンド集
-
-現行の `vsm submit` / `vsm status` / `vsm tail` / `vsm replay` は MVP /
-テスト実装用のコマンドです。`vsm submit` が使う S4→S5→S3→S1→S3* の
-固定フローは検証用の暫定実装であり、将来のランタイム実装では外す前提です。
-
-| コマンド | 説明 |
-|---|---|
-| `.\vsm.ps1 submit "<description>"` | タスクを投入し、新しい Run を起動します。 |
-| `.\vsm.ps1 submit "<description>" --file path\to\file.txt` | UTF-8 の補足ファイル付きでタスクを投入します。`--file` は複数指定できます。 |
-| `.\vsm.ps1 status <run_id>` | `events.jsonl` から Task / System の状態サマリを再構成して表示します。 |
-| `.\vsm.ps1 tail <run_id>` | Run の `events.jsonl` に追従して新着イベントを JSONL で表示します。 |
-| `.\vsm.ps1 tail <run_id> --system <system_id>` | system_id / sender / receiver の一致でイベントを絞り込みます。 |
-| `.\vsm.ps1 tail <run_id> --channel S4-S5` | channel の一致でイベントを絞り込みます。 |
-| `.\vsm.ps1 replay <run_id>` | 完了済み Run の全イベントを append 順で人間可読形式に表示します。 |
-
-`cmd.exe` では `.\vsm.ps1` の代わりに `vsm.cmd` を使います。
-
-```bat
-vsm.cmd submit "Write a Python function that reverses a string"
-vsm.cmd status <run_id>
-vsm.cmd replay <run_id>
-```
-
-## Run の確認
-
-`submit` が完了すると `run_id` と `task_id` が表示されます。
-
-```text
-run_id=<run_id>
-task_id=<task_id>
-```
-
-Run のイベントログは以下に作成されます。
-
-```text
-runs\<run_id>\events.jsonl
-```
-
-最近の Run を確認する例:
-
-```powershell
-Get-ChildItem .\runs | Sort-Object LastWriteTime -Descending | Select-Object -First 5
-```
-
-Run の中身を見る例:
-
-```powershell
-.\vsm.ps1 status <run_id>
-.\vsm.ps1 replay <run_id>
-.\vsm.ps1 tail <run_id>
-.\vsm.ps1 tail <run_id> --system <system_id>
-.\vsm.ps1 tail <run_id> --channel S4-S5
-```
-
-## 設定ファイル
-
-環境変数の代わりに `vsm.toml` にモデルを設定できます。
-
-```toml
-[llm]
-provider = "openai/gpt-4o-mini"
-```
-
-`LITELLM_PROVIDER` 環境変数が設定されている場合は、`vsm.toml` の
-`[llm].provider` より優先されます。
-
-## 環境変数
-
-| 環境変数 | 説明 |
-|---|---|
-| `LITELLM_PROVIDER` | LiteLLM のモデル文字列。例: `openai/gpt-4o-mini`, `openrouter/openai/gpt-oss-20b:free` |
-| `OPENAI_API_KEY` | OpenAI を使う場合の API キー。 |
-| `OPENROUTER_API_KEY` | OpenRouter を使う場合の API キー。 |
-| `ANTHROPIC_API_KEY` | Anthropic を使う場合の API キー。 |
-| `AWS_REGION` | Bedrock を使う場合の AWS リージョン。 |
-
-## 終了コード
-
-| code | 意味 |
-|---|---|
-| 0 | 正常終了 |
-| 1 | 内部例外 |
-| 2 | CLI 入力バリデーション違反 |
-| 3 | 構造制約違反 |
-| 4 | Run ディレクトリ / Event_Log 作成失敗 |
-| 5 | MVP スコープ外機能要求 |
-| 6 | 代表シナリオの 1800 秒タイムアウト |
-
-## 開発コマンド
-
-```powershell
-cd D:\userdata\docs\projects\Nanihold_OS
-.\.venv-win\Scripts\python.exe -m pip install -e ".[dev]"
-
-.\.venv-win\Scripts\python.exe -m pytest
-.\.venv-win\Scripts\python.exe -m pytest tests\unit
-.\.venv-win\Scripts\python.exe -m pytest tests\integration
-.\.venv-win\Scripts\python.exe -m pytest -m live_llm
-```
-
-Python の構文チェック:
-
-```powershell
-.\.venv-win\Scripts\python.exe -m py_compile vsm\cli.py vsm\messaging\bus.py vsm\eventlog\reader.py
-```
-
-## Discord Codex Bot
-
-WSL 側のリポジトリ (`/home/user/projects/Nanihold_OS`) で Codex CLI を実行し、
-Discord スレッドから自然言語でコーディングを依頼できます。
-
-Ubuntu 側で Codex CLI と bot 依存を用意します。
-
-```bash
-sudo apt-get install -y nodejs npm
-sudo npm install -g @openai/codex
-cd /home/user/projects/Nanihold_OS
-. .venv/bin/activate
-python -m pip install -e .
-```
-
-WSL 側で Codex 認証も済ませます。
-
-```bash
-codex login
-codex doctor
-```
-
-`.env` に Discord bot 用の値を追加します。
-
-```dotenv
-DISCORD_BOT_TOKEN=...
-DISCORD_ALLOWED_USER_IDS=123456789012345678,234567890123456789
-DISCORD_ALLOWED_CHANNEL_IDS=345678901234567890
-CODEX_WORKDIR=/home/user/projects/Nanihold_OS
-CODEX_BIN=codex
-CODEX_TIMEOUT_SECONDS=1800
-CODEX_LOG_DIR=logs/discord-codex
-```
-
-Discord Developer Portal では bot の `Message Content Intent` を有効にしてください。
-通常チャンネルでは `!codex <依頼内容>` または bot へのメンションで開始します。
-bot が作成した `codex-...` スレッド内では、その後の自然文メッセージを Codex に渡します。
-
-設定確認と手動起動:
-
-```bash
-python bot/discord_codex_bot.py --check
-python bot/discord_codex_bot.py
-```
-
-常駐化:
-
-```bash
-mkdir -p ~/.config/systemd/user
-cp deploy/discord-codex-bot.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now discord-codex-bot
-systemctl --user status discord-codex-bot
-journalctl --user -u discord-codex-bot -f
-```
-
-初期設定では `git push`、`git reset --hard`、`.env` の内容表示などは bot 側で
-止めます。Codex 実行ログは `logs/discord-codex/` に保存されます。
-
-## ファイルレイアウト
-
-```text
-runs\{run_id}\events.jsonl   # 全イベントの Source of Truth
-runs\{run_id}\RUNNING        # アクティブ Run のロックファイル
-
-vsm.cmd                      # cmd.exe 用 VSM ラッパー
-vsm.ps1                      # PowerShell 用 VSM ラッパー
-
-vsm\
-├── __main__.py              # python -m vsm エントリポイント
-├── cli.py                   # CLI エントリポイント
-├── config.py                # vsm.toml + .env + 環境変数のローダ
-├── errors.py                # 例外階層
-├── ids.py                   # UUIDv4 / run_id バリデータ
-├── clock.py                 # UTC clock 抽象
-├── agents\                  # AgentSpec / AgentInvocation / PromptTemplate
-├── architecture\            # EventEnvelope / ProjectionCheckpoint
-├── authority\               # ParentAuthority / Lease
-├── budget\                  # BudgetContext / BudgetLedger
-├── eventlog\                # JSONL writer / reader / replay / schema
-├── graph\                   # SQLite adjacency-list graph projection
-├── llm\                     # LiteLLM ラッパ + FakeLLMProvider
-├── memory\                  # ContextView / TaskSummary / search scope
-├── messaging\               # Message_Bus + ChannelId
-├── nodes\                   # Node / NodeRunState / lifecycle
-├── roles\                   # SystemRole / RoleSpec
-├── runtime\                 # Platform / topology / Execution
-├── systems\                 # S1〜S5 + S3* 実装
-├── telemetry\               # Event_Log と OpenTelemetry の相関値
-└── tools\                   # ToolEffect / ToolInvocation / facade
-```
-
-## Recursive VSM Architecture
-
-`refactor_20260608.md` では、Nanihold OS の中核単位を「すべての Node は
-u-VSM として振る舞える」という再帰構造に置いています。Run は Platform の
-起動停止ではなく、外部入力、業務依頼、定期処理、監査要求などに対応する
-実行・観測・会計の単位です。永続する責任、履歴、権限、状態は Node が保持し、
-Agent は Execution ごとに生成される一時的な実行主体として扱います。
-
-```text
-Run
-  外部入力・業務依頼・定期処理・監査要求の実行 / 観測 / 会計単位
-  |
-  v
-Event_Log (append-only Source of Truth)
-  |
-  +--> LiveTopology projection
-  +--> GraphProjection / ContextView / TaskSummary
-  +--> TelemetryCorrelation
-
-Parent Node
-  |
-  +-- ParentAuthority
-      capability / budget / data_scope / filesystem_scope / network_scope
-      may_differentiate_to / allowed_tool_classes / denied_tool_classes
-  |
-  v
-Node = u-VSM
-  responsibility / history / authority / state
-  |
-  +-- RoleSpec
-  |     VSM position, responsibility, schema, allowed_tools,
-  |     escalation_contract, prompt_template
-  |
-  +-- AgentSpec + Execution
-  |     LLM / Codex / Claude Code / HumanAgent を差し替え可能な一時主体
-  |
-  +-- ToolInvocation
-  |     PURE_READ / LOCAL_WRITE / EXTERNAL_READ / EXTERNAL_WRITE / CONTROL / HUMAN
-  |     EXTERNAL_WRITE と CONTROL は idempotency_key 必須
-  |       |
-  |       +-- request_coordination -> S2 Node
-  |       +-- differentiate        -> child u-VSM / node_differentiated event
-  |       +-- request_escalation   -> parent / S4 / human authority
-  |
-  +-- Child Nodes
-        各 child も同じく u-VSM として再帰的に分化可能
-```
-
-u-VSM はまず `COLLAPSED` 状態で spawn されます。そこから分化を選択した
-主体 Agent は、その u-VSM の S5 として残り続けます。展開度は、S5 以外の
-System がどこまで実体化しているかを表します。まだ実体化していない System の
-責任は、分化主体である S5 Agent が兼ねます。
-
-```text
-COLLAPSED
-  spawn 直後の未分化 u-VSM。まだ S5 と他 System の展開を開始していない。
-
-S5_ONLY
-  分化を選択した主体 Agent が S5 となり、VSM 全体を兼ねる。
-  S1, S2, S3, S3*, S4 はまだ実体化していない。
-
-PARTIAL
-  S5 以外の一部 System のみ実体化している。
-  実体化していない部分は S5 Agent が兼ねる。
-
-FULL
-  S1, S2, S3, S3*, S4, S5 が実体化している。
-```
-
-分化は `differentiate` Tool を通じて行い、`ParentAuthority.may_differentiate_to`
-を超えられません。`differentiate` は分化主体を別の System に置き換える操作ではなく、
-S5 である主体のもとに S1 / S2 / S3 / S3* / S4 を実体化していく操作です。
-構造変更は `node_created` / `node_differentiated` / lifecycle event として
-Event_Log に残り、`LiveTopology` や graph は Event_Log から再構成される
-projection として扱います。
-
-## Refactor 20260608 実装状況
-
-`refactor_20260608.md` の基礎方針に対して、現在の実装は以下の状態です。
-
-| 項目 | 実装 |
-|---|---|
-| Architecture / Role / Agent / Tool / Node 分離 | `vsm.architecture`, `vsm.roles`, `vsm.agents`, `vsm.tools`, `vsm.nodes` に分離済みです。Architecture 層は VSM 構造、Role 層は契約、Agent 層は一時実行主体、Tool 層は具体手続き、Node 層は責任・履歴・権限・状態を扱います。 |
-| EventEnvelope v1 | `vsm.eventlog.schema.Event` と `vsm.architecture.events.EventEnvelope`。`event_id`, `stream_id`, `stream_version`, `schema_version`, `correlation_id`, `causation_id` を持ちます。 |
-| Projection checkpoint | `vsm.architecture.projections.ProjectionCheckpoint`。処理済み `event_id` を保持して同一イベント再適用を防ぎます。 |
-| Node / u-VSM / NodeRunState | `vsm.nodes.model.Node`, `DifferentiationLevel`, `NodeRunState`。すべての Node を u-VSM として扱い、Run 固有状態は `NodeRunState` に分離します。`NodeSource` により `terminable=False` は config 由来の Node のみに制限します。 |
-| static / live topology | `vsm.runtime.topology.StaticTopologyEntry`, `LiveTopology`。Event_Log 由来の `node_created`, `node_differentiated`, lifecycle event を反映します。 |
-| ParentAuthority / Lease | `vsm.authority.ParentAuthority`, `Lease`。分化上限、Tool effect 制限、外部資源 lease を表します。 |
-| ToolEffect / idempotency | `vsm.tools.ToolEffect`, `ToolInvocation`。`EXTERNAL_WRITE` と `CONTROL` は `idempotency_key` 必須です。 |
-| Tool facade | `LLMCallFacade`, `CodexRunFacade`, `SpawnChildFacade`, `DifferentiationFacade`, `SearchPastSubtasksFacade`, `CoordinationFacade`, `EscalationFacade`, `HumanReviewFacade`, `NodeControlFacade`。LLM / Codex CLI 実行、S1 起動、分化、永続 TaskSummary 検索、調停、エスカレーション、人間レビュー、Node lifecycle 制御を ToolInvocation として扱います。 |
-| サブ VSM デプロイ | `differentiate` Tool と `LiveTopology` により、親 Authority の範囲内で child Node を u-VSM として展開する基礎機能を実装済みです。 |
-| Role / Agent / Execution | `RoleSpec`, `AgentSpec`, `PromptTemplate`, `Execution`。Spec versioning と Agent / Tool 実行単位を明示します。 |
-| Memory / Graph / Telemetry | `ContextView`, `TaskSummary`, `GraphProjection`, `TelemetryCorrelation` を軽量モデルとして実装しています。 |
-
-### Tool 群の実装状況
-
-`refactor_20260608.md` の Tool examples に対する現在の実装状況です。
-共通契約としては `ToolEffect`, `ToolSpec`, `ToolInvocation` を実装済みで、
-`EXTERNAL_WRITE` と `CONTROL` の `idempotency_key` 必須制約もコード上で検証します。
-
-| Tool | 現状 |
-|---|---|
-| `llm_call` | `LLMCallFacade`, `LLMCallRequest`, `LLMCallResult` を実装済みです。`ToolEffect.EXTERNAL_READ` の `ToolInvocation` として LLM provider を呼び出し、replay 時は `tool_completed` の保存済み result を `ReconstructedState.tool_results` から参照できます。 |
-| `codex_run` | `CodexRunFacade`, `CodexRunRequest`, `CodexRunPolicy`, `CodexRunResult` を実装済みです。Codex CLI を外部プロセス実行 Tool として呼び出し、`ToolEffect.EXTERNAL_READ` / `EXTERNAL_WRITE` / `CONTROL`、`idempotency_key`、`ParentAuthority.filesystem_scope`、sandbox allow-list による policy 制約を検証します。全 System role の `RoleSpec.allowed_tools` に `codex_run` をアタッチし、`agent_attached` event にも tools として記録します。現時点では VSM 内部 Tool であり、専用 CLI サブコマンドはありません。 |
-| `claude_code_run` | 未実装です。`codex_run` と同じ外部プロセス実行 Tool の一種として扱う予定です。 |
-| `web_crawl` | 未実装です。`ToolEffect.EXTERNAL_READ` と ParentAuthority の network scope による制約を前提に導入します。 |
-| `file_io` | 未実装です。`ToolEffect.PURE_READ` / `LOCAL_WRITE` と ParentAuthority の filesystem scope による制約を前提に導入します。 |
-| `spawn_child` | `SpawnChildFacade`, `SpawnChildRequest`, `SpawnChildResult` を実装済みです。`CONTROL` ToolInvocation を生成し、`Platform.spawn_s1` では facade 経由で実際の `S1Worker` 生成、bus 事前購読、`start()`、`tool_completed` 記録まで行います。 |
-| `differentiate` | `DifferentiationFacade` と `DifferentiationRequest` を実装済みです。`ParentAuthority.may_differentiate_to` を検証し、冪等な `CONTROL` ToolInvocation を生成します。 |
-| `search_past_subtasks` | `TaskSummaryIndex`, `SearchPastSubtasksFacade`, `IndexedTaskSummary` を実装済みです。`TaskSummary` を JSONL の永続 index に保存し、`SearchScope` / query / limit で検索する `PURE_READ` ToolInvocation を生成します。 |
-| `request_coordination` | `CoordinationFacade` と `CoordinationRequest` を実装済みです。`coordination_key` を `idempotency_key` とする `CONTROL` ToolInvocation を生成します。 |
-| `request_escalation` | `EscalationFacade` と `EscalationRequest` を実装済みです。`escalation_key` を `idempotency_key` とする `CONTROL` ToolInvocation を生成します。 |
-| `request_human_review` | `HumanReviewFacade` と `HumanReviewRequest` を実装済みです。`HumanAgent` を任意に指定し、人間レビュー要求を `ToolEffect.HUMAN` の `ToolInvocation` として記録します。 |
-| `terminate_node` | `NodeControlFacade.terminate_node` を実装済みです。`CONTROL` effect、`ParentAuthority.termination_authority`、`Node.terminable`、Node lifecycle transition を検証します。 |
-| `suspend_node` | `NodeControlFacade.suspend_node` を実装済みです。`CONTROL` effect と Node lifecycle transition を検証し、`NodeStatus.SUSPENDED` へ遷移させます。 |
-| `resume_node` | `NodeControlFacade.resume_node` を実装済みです。`CONTROL` effect と Node lifecycle transition を検証し、`NodeStatus.RUNNING` へ遷移させます。 |
-
-## Current Scope and Roadmap
-
-Nanihold OS は MVP 境界を越え、VSM ランタイムとしての実装範囲を拡張中です。
-S1_Worker は LLM 応答を `s1_completion` の `result` に記録し、S1〜S5 + S3*
-の各 System、Event_Log、Node / ParentAuthority、Tool facade、Projection、
-Role / Agent / Execution の基礎モデルを組み合わせて実行されます。
-
-現在の主要な実装状況は以下の通りです。
-
-- REQ 14.1: FSX (Future-State Expansion) の数値最適化・目的関数評価は未実装です。
-- REQ 14.2: 公共性測定および勾配的公共性評価は未実装です。
-- REQ 14.3: 共有剰余の配分ロジックは未実装です。
-- REQ 14.4: サブ VSM デプロイは機能として実装済みです。人間の層横断介入と
-  テンポラル・インターフェースは今後の拡張対象です。
-- REQ 14.5: 動的な内部分化・外部包摂による再帰的成長は、`differentiate` /
-  `request_escalation` などの Tool facade と Node / ParentAuthority の基礎モデルを
-  実装済みです。自律運用するランタイムポリシーは段階的に有効化します。
-- REQ 14.6: S2_Coordinator によるセミステートフル記憶の集団的混合は未実装です。
-- REQ 14.7: ローカルHTTPで到達可能な Web UI ダッシュボードを実装済みです。
-  タスク投入、Run履歴、リアルタイム進捗、追加指示、停止、結果表示を扱います。
-
-コード実行、ファイル編集、外部プロセス実行は短期ロードマップの対象です。
-これらは ToolEffect / ToolInvocation の effect 境界、idempotency key、
-ParentAuthority / Lease による権限管理と組み合わせて、安全な実行単位として
-導入する方針です。
-
-永続的な会社運用と Run 間の長期記憶は、Node と Event_Log を中心に扱う方向で
-設計を進めています。現時点では FSX、公共性評価、共有剰余配分などの評価・分配
-アルゴリズムが主な未実装領域です。
-
-## 関連ドキュメント
-
-- `refactor_20260608.md`
-- `.kiro\specs\nanihold-os\requirements.md`
-- `.kiro\specs\nanihold-os\design.md`
-- `.kiro\specs\nanihold-os\tasks.md`
+エージェント(Codex / Claude Code 等)向けの開発規約は [AGENTS.md](AGENTS.md)。過去の作業文書・
+廃止済みスペックは [docs/archive/](docs/archive/README.md) に保管している。
 
 ## ライセンス
 
-Proprietary. 本 PoC のライセンスは未確定です。
+Proprietary. 本 PoC のライセンスは未確定。
