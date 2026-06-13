@@ -271,11 +271,16 @@ class S2Coordinator(System):
             # 同サイクル内で append まで完了するため、REQ 8.7 の 1 秒
             # SLA を構造的に満たす。
             drain_task = asyncio.create_task(q_s1_s2.get(), name="s2_s1_s2_get")
-            done, _ = await asyncio.wait(
-                {drain_task},
-                timeout=_CONFLICT_DETECTION_INTERVAL,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            try:
+                done, _ = await asyncio.wait(
+                    {drain_task},
+                    timeout=_CONFLICT_DETECTION_INTERVAL,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            except asyncio.CancelledError:
+                drain_task.cancel()
+                await asyncio.gather(drain_task, return_exceptions=True)
+                raise
             if drain_task in done:
                 first_msg: Message = drain_task.result()
                 await self._handle_s1_s2_message(first_msg)
@@ -293,6 +298,7 @@ class S2Coordinator(System):
                 # ``queue.get`` の cancel はメッセージ消費を起こさない
                 # ので、次サイクルで再生成しても取りこぼしは無い。
                 drain_task.cancel()
+                await asyncio.gather(drain_task, return_exceptions=True)
 
             # --------------------------------------------------------------
             # 2. conflict scan + directive 配信 (REQ 8.1〜8.4, 8.7)

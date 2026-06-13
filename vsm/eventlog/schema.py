@@ -139,6 +139,16 @@ EVENT_TYPES_V1: tuple[str, ...] = (
     "human_review_requested",
     "summary_generated",
     "artifact_created",
+    "web_run_created",
+    "web_run_state_changed",
+    "web_generation_started",
+    "web_generation_finished",
+    "web_instruction_received",
+    "web_run_renamed",
+    "web_retry_started",
+    "web_run_cancelled",
+    "web_partial_result_accepted",
+    "web_run_completed",
 )
 
 KNOWN_EVENT_TYPES: tuple[str, ...] = EVENT_TYPES + EVENT_TYPES_V1

@@ -12,13 +12,17 @@ license = { text = "Proprietary" }
 authors = [{ name = "Nanihold OS contributors" }]
 dependencies = [
     "discord.py>=2.7",
+    "fastapi>=0.115",
     "litellm",
     "hypothesis",
+    "python-multipart>=0.0.20",
+    "pypdf>=5",
     "pytest",
     "pytest-asyncio",
     "python-dotenv",
     "typer",
     "pydantic>=2",
+    "uvicorn[standard]>=0.34",
 ]
 
 [project.scripts]

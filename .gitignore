@@ -8,6 +8,11 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
 
 # Test / type checker caches
 .pytest_cache/
