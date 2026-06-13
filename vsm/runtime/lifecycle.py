@@ -93,7 +93,13 @@ from vsm.messaging.bus import MessageBus
 from vsm.messaging.channels import ChannelId
 from vsm.nodes import DifferentiationLevel, Node, NodeRunState, NodeSource, NodeStatus
 from vsm.roles import MANDATORY_ROLES, RoleSpec, SystemRole
-from vsm.tools import ToolEffect, ToolInvocation
+from vsm.tools import (
+    SpawnChildFacade,
+    SpawnChildRequest,
+    SpawnChildResult,
+    ToolEffect,
+    ToolInvocation,
+)
 
 if TYPE_CHECKING:
     # 型注釈用のみ。実体クラスは Tasks 12〜17 で実装されるため、
@@ -142,7 +148,19 @@ def _role_spec_for_system_role(role: SystemRole) -> RoleSpec:
         id=role.value,
         vsm_position=role,
         responsibility=f"{role.value} responsibility",
-        allowed_tools=("codex_run",),
+        allowed_tools=(
+            "llm_call",
+            "codex_run",
+            "spawn_child",
+            "differentiate",
+            "search_past_subtasks",
+            "request_coordination",
+            "request_escalation",
+            "request_human_review",
+            "terminate_node",
+            "suspend_node",
+            "resume_node",
+        ),
     )
 
 
@@ -773,17 +791,30 @@ class Platform:
             else self.run_id
         )
         spawn_key = f"{self.run_id}:spawn_s1:{specialization}:{self._s1_count + 1}"
-        invocation = ToolInvocation(
-            invocation_id=generate_uuid(),
-            tool_name="spawn_child",
-            effect=ToolEffect.CONTROL,
-            requested_by_node_id=requested_by,
-            payload={
-                "specialization": specialization,
-                "initial_assignment": initial_assignment,
-            },
-            idempotency_key=spawn_key,
+        facade = SpawnChildFacade(runner=self._run_spawn_child)
+        request = SpawnChildRequest(
+            spawn_key=spawn_key,
+            requested_by=requested_by,
+            specialization=specialization,
+            initial_assignment=initial_assignment,
         )
+        authority = ParentAuthority(
+            authority_id=f"{self.run_id}:spawn_child",
+            issuer_node_id=requested_by,
+            subject_node_id=requested_by,
+            issued_at=datetime.now(timezone.utc),
+            max_spawn_count=self.run_config.s1_dynamic_max,
+            allowed_tool_classes=frozenset({ToolEffect.CONTROL}),
+        )
+        _, result = await facade.spawn_child(request, authority)
+        return self.systems[SystemRole.S1_WORKER][-1]
+
+    async def _run_spawn_child(
+        self,
+        request: SpawnChildRequest,
+        invocation: ToolInvocation,
+    ) -> SpawnChildResult:
+        """Execute the concrete S1Worker spawn behind ``spawn_child``."""
         self.tool_invocations[invocation.invocation_id] = invocation
         await self.eventlog.append(
             "tool_invoked",
@@ -794,8 +825,8 @@ class Platform:
                 "idempotency_key": invocation.idempotency_key,
                 "requested_by_node_id": invocation.requested_by_node_id,
             },
-            node_id=requested_by,
-            actor_id=requested_by,
+            node_id=request.requested_by,
+            actor_id=request.requested_by,
         )
 
         # 遅延 import: ``S1Worker`` は Task 17.1 で実装される。
@@ -809,7 +840,7 @@ class Platform:
             clock=self.clock,
             platform=self,
             run_config=self.run_config,
-            specialization=specialization,
+            specialization=request.specialization,
         )
 
         # Defensive: S1Worker.__init__ が Sub_Agent を登録しなかった場合は
@@ -825,7 +856,7 @@ class Platform:
         await self._attach_system_node(
             s1,
             SystemRole.S1_WORKER,
-            parent_id=requested_by,
+            parent_id=request.requested_by,
             terminable=True,
         )
 
@@ -836,15 +867,15 @@ class Platform:
             "s1_instantiated",
             {
                 "s1_id": s1.system_id,
-                "specialization": specialization,
+                "specialization": request.specialization,
                 "initial_assignment": (
-                    initial_assignment
-                    if isinstance(initial_assignment, str)
-                    else str(initial_assignment)
+                    request.initial_assignment
+                    if isinstance(request.initial_assignment, str)
+                    else str(request.initial_assignment)
                 ),
             },
             node_id=s1.system_id,
-            actor_id=requested_by,
+            actor_id=request.requested_by,
         )
 
         # REQ 1.6: 動的生成された S1 も ``system_instantiated`` を発行する
@@ -900,7 +931,7 @@ class Platform:
             node_id=s1.system_id,
             actor_id=s1.system_id,
         )
-        return s1
+        return SpawnChildResult(node_id=s1.system_id)
 
     @property
     def s1_count(self) -> int:

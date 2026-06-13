@@ -226,9 +226,25 @@ def test_role_spec_and_live_topology() -> None:
 
 
 def test_all_system_roles_attach_codex_run_tool() -> None:
+    expected_tools = {
+        "llm_call",
+        "codex_run",
+        "spawn_child",
+        "differentiate",
+        "search_past_subtasks",
+        "request_coordination",
+        "request_escalation",
+        "request_human_review",
+        "terminate_node",
+        "suspend_node",
+        "resume_node",
+    }
     for role in SystemRole:
         role_spec = _role_spec_for_system_role(role)
-        assert "codex_run" in role_spec.allowed_tools
+        assert expected_tools.issubset(set(role_spec.allowed_tools))
+        assert "claude_code_run" not in role_spec.allowed_tools
+        assert "web_crawl" not in role_spec.allowed_tools
+        assert "file_io" not in role_spec.allowed_tools
 
 
 def test_execution_and_spec_versioning_contract() -> None:
