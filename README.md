@@ -124,7 +124,15 @@ cd D:\userdata\docs\projects\Nanihold_OS
 ```
 
 これは LLM の推論品質を見るものではなく、S4 → S5 → S3 → S1 → S3* の
-イベント伝播とランタイム構造を確認するための smoke test です。
+イベント伝播とランタイム構造を確認するための smoke test です。イベントログは
+通常の Run と同じく `runs\<run_id>\events.jsonl` に作成されます。
+出力された `run_id` はそのまま `runs` / `status` / `replay` で確認できます。
+
+```powershell
+.\vsm.ps1 runs
+.\vsm.ps1 status <smoke run_id>
+.\vsm.ps1 replay <smoke run_id>
+```
 
 ## 実 LLM で VSM を使う
 
@@ -220,18 +228,22 @@ $env:AWS_REGION = "us-west-2"
 
 | コマンド | 説明 |
 |---|---|
-| `.\vsm.ps1 submit "<description>"` | タスクを投入し、新しい Run を起動します。 |
+| `.\vsm.ps1 submit "<description>"` | タスクを投入し、新しい Run を起動します。実行中の進捗は stderr に表示され、完了時の stdout は `run_id=...` / `task_id=...` の2行だけです。 |
 | `.\vsm.ps1 submit "<description>" --file path\to\file.txt` | UTF-8 の補足ファイル付きでタスクを投入します。`--file` は複数指定できます。 |
-| `.\vsm.ps1 status <run_id>` | `events.jsonl` から Task / System の状態サマリを再構成して表示します。 |
+| `.\vsm.ps1 runs` | `runs\` 配下の Run を新しい順に一覧表示します。短縮 run_id、開始時刻、導出状態、イベント数、タスク概要を確認できます。 |
+| `.\vsm.ps1 runs --full-id` | 詳細確認に使うフル run_id 付きで Run 一覧を表示します。 |
+| `.\vsm.ps1 status <run_id>` | `events.jsonl` から Task / System の状態サマリを再構成して表示します。`s1_completion` などの既存イベントから完了状態を導出します。 |
 | `.\vsm.ps1 tail <run_id>` | Run の `events.jsonl` に追従して新着イベントを JSONL で表示します。 |
 | `.\vsm.ps1 tail <run_id> --system <system_id>` | system_id / sender / receiver の一致でイベントを絞り込みます。 |
 | `.\vsm.ps1 tail <run_id> --channel S4-S5` | channel の一致でイベントを絞り込みます。 |
-| `.\vsm.ps1 replay <run_id>` | 完了済み Run の全イベントを append 順で人間可読形式に表示します。 |
+| `.\vsm.ps1 replay <run_id>` | 完了済み Run の全イベントを append 順で表示し、主な payload を短く要約します。 |
+| `.\vsm.ps1 replay <run_id> --raw` | 旧来の1イベント1行形式で表示します。 |
 
 `cmd.exe` では `.\vsm.ps1` の代わりに `vsm.cmd` を使います。
 
 ```bat
 vsm.cmd submit "Write a Python function that reverses a string"
+vsm.cmd runs
 vsm.cmd status <run_id>
 vsm.cmd replay <run_id>
 ```
@@ -254,7 +266,9 @@ runs\<run_id>\events.jsonl
 最近の Run を確認する例:
 
 ```powershell
-Get-ChildItem .\runs | Sort-Object LastWriteTime -Descending | Select-Object -First 5
+.\vsm.ps1 runs
+.\vsm.ps1 runs --limit 5
+.\vsm.ps1 runs --full-id
 ```
 
 Run の中身を見る例:
@@ -313,6 +327,14 @@ cd D:\userdata\docs\projects\Nanihold_OS
 .\.venv-win\Scripts\python.exe -m pytest -m live_llm
 ```
 
+`dev` extra にはテスト実行に必要な `pytest`、`pytest-asyncio`、`hypothesis`
+を含めています。Discord bot は VSM CLI 本体とは別用途なので `bot` extra に
+分けています。bot も同じ環境で動かす場合は次を使います。
+
+```powershell
+.\.venv-win\Scripts\python.exe -m pip install -e ".[dev,bot]"
+```
+
 Python の構文チェック:
 
 ```powershell
@@ -331,7 +353,7 @@ sudo apt-get install -y nodejs npm
 sudo npm install -g @openai/codex
 cd /home/user/projects/Nanihold_OS
 . .venv/bin/activate
-python -m pip install -e .
+python -m pip install -e ".[bot]"
 ```
 
 WSL 側で Codex 認証も済ませます。

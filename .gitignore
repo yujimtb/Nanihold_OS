@@ -11,6 +11,7 @@ dist/
 
 # Test / type checker caches
 .pytest_cache/
+.pytest-tmp/
 .hypothesis/
 .mypy_cache/
 .ruff_cache/

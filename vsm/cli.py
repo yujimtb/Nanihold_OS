@@ -48,7 +48,9 @@ code Meaning
 from __future__ import annotations
 
 import json
+import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -134,7 +136,10 @@ class _ScopeGuardGroup(TyperGroup):
 
 app = typer.Typer(
     name="vsm",
-    help="Viable System Model PoC Platform CLI.",
+    help=(
+        "VSM PoC platform CLI. Submit tasks, list Runs, inspect status, "
+        "tail events, and replay completed Runs."
+    ),
     no_args_is_help=True,
     add_completion=False,
     cls=_ScopeGuardGroup,
@@ -159,6 +164,10 @@ _RUN_TIMEOUT_SECONDS: float = 1800.0
 # 30-minute scenario budget while keeping idle CPU usage negligible.
 _COMPLETION_POLL_INTERVAL_SECONDS: float = 1.0
 
+# Submit progress heartbeat. Milestone events are printed immediately;
+# this heartbeat keeps long LLM waits from looking stuck.
+_PROGRESS_HEARTBEAT_SECONDS: float = 30.0
+
 # Roles whose presence in the Event_Log is required for a Run to be
 # considered complete (REQ 12.7, 12.8). Mirrors the canonical role
 # strings emitted by ``system_instantiated`` payloads (see
@@ -173,6 +182,29 @@ _REQUIRED_COMPLETION_ROLES: frozenset[str] = frozenset(
         "S5_POLICY",
     }
 )
+
+_ROLE_DISPLAY_ORDER: tuple[str, ...] = (
+    "S5_POLICY",
+    "S4_SCANNER",
+    "S3_ALLOCATOR",
+    "S3STAR_AUDITOR",
+    "S2_COORDINATOR",
+    "S1_WORKER",
+)
+
+_FAILURE_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "system_instantiation_failed",
+        "llm_timeout",
+        "llm_error",
+        "sub_agent_error",
+        "s1_instantiation_error",
+        "event_log_append_error",
+    }
+)
+
+_RUN_ID_EXAMPLE = "run-1234567890abcdef1234567890abcdef"
+_REQ_REF_RE = re.compile(r"\s*\(REQ [^)]+\)")
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +250,23 @@ def _scope_guard(ctx: typer.Context) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _clean_error_text(text: object) -> str:
+    return _single_line(_REQ_REF_RE.sub("", str(text)))
+
+
+def _emit_cli_error(
+    message: str,
+    *,
+    example: str | None = None,
+    next_step: str | None = None,
+) -> None:
+    typer.echo(f"Error: {message}", err=True)
+    if example is not None:
+        typer.echo(f"Example: {example}", err=True)
+    if next_step is not None:
+        typer.echo(f"Next: {next_step}", err=True)
+
+
 def _validate_description(description: str) -> None:
     """REQ 4.2: enforce ``1 <= len(description) <= 8192`` and ASCII-only.
 
@@ -232,10 +281,22 @@ def _validate_description(description: str) -> None:
         or length > _DESCRIPTION_MAX
         or not description.isascii()
     ):
-        typer.echo(
-            f"description length out of range "
-            f"[{_DESCRIPTION_MIN}, {_DESCRIPTION_MAX}] ASCII",
-            err=True,
+        if length < _DESCRIPTION_MIN:
+            message = "Task description cannot be empty."
+        elif length > _DESCRIPTION_MAX:
+            message = (
+                f"Task description length is {length}; the maximum is "
+                f"{_DESCRIPTION_MAX} ASCII characters."
+            )
+        else:
+            message = (
+                "Task description must use ASCII characters. "
+                "Japanese or other non-ASCII text is not accepted here yet."
+            )
+        _emit_cli_error(
+            message,
+            example='vsm submit "Write a short architecture summary"',
+            next_step="Rewrite the description as 1 to 8192 ASCII characters.",
         )
         raise typer.Exit(code=2)
 
@@ -248,7 +309,11 @@ def _read_context_file(path: Path) -> str:
     stable so callers can pattern-match on it.
     """
     if not path.exists():
-        typer.echo(f"file {path}: does not exist", err=True)
+        _emit_cli_error(
+            f"Context file does not exist: {path}",
+            example='vsm submit "Review this note" --file notes.txt',
+            next_step="Check the path, then pass an existing UTF-8 text file.",
+        )
         raise typer.Exit(code=2)
     try:
         size = path.stat().st_size
@@ -256,22 +321,41 @@ def _read_context_file(path: Path) -> str:
         # ``stat`` after a successful ``exists`` should not normally fail
         # in production, but we handle it defensively to keep CLI errors
         # uniform.
-        typer.echo(f"file {path}: cannot stat ({exc})", err=True)
+        _emit_cli_error(
+            f"Cannot inspect context file: {path}",
+            next_step=f"Check the file permissions and try again. Details: {exc}",
+        )
         raise typer.Exit(code=2) from None
     if size > _FILE_MAX_BYTES:
-        typer.echo(
-            f"file {path}: exceeds {_FILE_MAX_BYTES} bytes (REQ 4.5)",
-            err=True,
+        _emit_cli_error(
+            f"Context file exceeds {_FILE_MAX_BYTES} bytes: {path}",
+            next_step="Use a smaller UTF-8 text file or split the context across smaller files.",
         )
         raise typer.Exit(code=2)
     try:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
-        typer.echo(f"file {path}: not valid UTF-8", err=True)
+        _emit_cli_error(
+            f"Context file is not valid UTF-8: {path}",
+            next_step="Save the file as UTF-8 text, then run the command again.",
+        )
         raise typer.Exit(code=2) from None
     except OSError as exc:
-        typer.echo(f"file {path}: read failed ({exc})", err=True)
+        _emit_cli_error(
+            f"Could not read context file: {path}",
+            next_step=f"Check the file permissions and try again. Details: {exc}",
+        )
         raise typer.Exit(code=2) from None
+
+
+def _run_id_validation_message(run_id: str) -> str:
+    if not run_id:
+        return "Run id cannot be empty."
+    if len(run_id) > 64:
+        return f"Run id is {len(run_id)} characters; the maximum is 64 ASCII characters."
+    if not run_id.isascii():
+        return "Run id must contain only ASCII characters."
+    return "Run id is not valid."
 
 
 def _validate_run_id_or_exit(run_id: str) -> None:
@@ -285,7 +369,13 @@ def _validate_run_id_or_exit(run_id: str) -> None:
     try:
         validate_run_id(run_id)
     except CLIError as exc:
-        typer.echo(str(exc), err=True)
+        _emit_cli_error(
+            _run_id_validation_message(run_id),
+            example=f"vsm status {_RUN_ID_EXAMPLE}",
+            next_step=(
+                "Use a run_id printed by vsm submit or shown by vsm runs."
+            ),
+        )
         raise typer.Exit(code=exc.exit_code) from None
 
 
@@ -298,9 +388,295 @@ def _require_events_path(run_id: str) -> Path:
     """REQ 11.7: return the events path or exit 2 with the canonical message."""
     path = _events_path_for(run_id)
     if not path.exists():
-        typer.echo(f"Event_Log not found for run {run_id}", err=True)
+        _emit_cli_error(
+            f"No events found for run {run_id}.",
+            example=f"vsm status {_RUN_ID_EXAMPLE}",
+            next_step=(
+                "Run vsm runs to see available run ids, or check that "
+                f"runs/{run_id}/events.jsonl exists."
+            ),
+        )
         raise typer.Exit(code=2)
     return path
+
+
+@dataclass(frozen=True)
+class _RunSummary:
+    run_id: str
+    short_run_id: str
+    started_at: str
+    state: str
+    event_count: int
+    task_description: str
+    active: bool
+    sort_mtime: float
+
+
+def _short_id(value: str, visible: int = 8) -> str:
+    """Return a stable, readable prefix for long UUID-like identifiers."""
+    if len(value) <= visible:
+        return value
+    if value.startswith("run-"):
+        return value[: 4 + visible]
+    return value[:visible]
+
+
+def _single_line(text: object) -> str:
+    return " ".join(str(text).split())
+
+
+def _short_text(text: object, width: int) -> str:
+    line = _single_line(text)
+    if len(line) <= width:
+        return line
+    if width <= 3:
+        return line[:width]
+    return f"{line[: width - 3]}..."
+
+
+def _format_timestamp(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        return "-"
+    if "T" in value:
+        value = value.replace("T", " ", 1)
+    if value.endswith(".000Z"):
+        value = f"{value[:-5]}Z"
+    return value
+
+
+def _format_elapsed(seconds: float) -> str:
+    total = max(0, int(seconds))
+    minutes, secs = divmod(total, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def _read_events(path: Path) -> list[dict[str, Any]]:
+    from vsm.eventlog.reader import read_all
+
+    return read_all(path)
+
+
+def _event_types(events: list[dict[str, Any]]) -> set[str]:
+    return {
+        event_type
+        for evt in events
+        if isinstance(event_type := evt.get("event_type"), str)
+    }
+
+
+def _derive_task_state(
+    current_state: object,
+    events: list[dict[str, Any]],
+) -> tuple[str, str]:
+    """Derive a useful Task state from existing events without schema changes."""
+    state = current_state if isinstance(current_state, str) else "submitted"
+    if state and state != "submitted":
+        return state, "task_state_changed"
+
+    types = _event_types(events)
+    if "s1_completion" in types:
+        return "completed", "s1_completion"
+    failures = sorted(types & _FAILURE_EVENT_TYPES)
+    if failures:
+        return "failed", failures[0]
+    if "s1_assignment_sent" in types or "s1_instantiated" in types:
+        return "executing", "s1_assignment"
+    if "policy_decision" in types:
+        return "allocating", "policy_decision"
+    if "s4_assessment_produced" in types:
+        return "scanning", "s4_assessment"
+    if "task_submitted" in types:
+        return "submitted", "task_submitted"
+    return state or "unknown", "events"
+
+
+def _run_started_at(events: list[dict[str, Any]]) -> str:
+    for evt in events:
+        if evt.get("event_type") == "task_submitted":
+            payload = evt.get("payload", {}) or {}
+            submitted_at = payload.get("submitted_at")
+            if isinstance(submitted_at, str):
+                return submitted_at
+    for evt in events:
+        ts = evt.get("ts")
+        if isinstance(ts, str):
+            return ts
+    return "-"
+
+
+def _role_sort_key(item: tuple[str, dict[str, Any]]) -> tuple[int, str]:
+    system_id, info = item
+    role = info.get("role", "")
+    try:
+        index = _ROLE_DISPLAY_ORDER.index(role)
+    except ValueError:
+        index = len(_ROLE_DISPLAY_ORDER)
+    return index, system_id
+
+
+def _progress_for_event(evt: dict[str, Any]) -> tuple[str, str] | None:
+    event_type = evt.get("event_type")
+    payload = evt.get("payload", {}) or {}
+    if event_type == "system_instantiated":
+        role = payload.get("role")
+        if isinstance(role, str):
+            return role, "System ready"
+        return None
+    if event_type == "task_submitted":
+        return "S4_SCANNER", "Task accepted"
+    if event_type == "s4_assessment_produced":
+        return "S4_SCANNER", "Assessment produced"
+    if event_type == "policy_decision":
+        return "S5_POLICY", "Policy decision produced"
+    if event_type == "s1_instantiated":
+        return "S3_ALLOCATOR", "S1 worker created"
+    if event_type == "s1_assignment_sent":
+        return "S3_ALLOCATOR", "Work assigned to S1"
+    if event_type == "s1_completion":
+        return "S1_WORKER", "Work completed"
+    if event_type == "audit_observation":
+        return "S3STAR_AUDITOR", "Audit observation"
+    if event_type == "audit_finding":
+        return "S3STAR_AUDITOR", "Audit finding"
+    if event_type == "audit_report_sent":
+        return "S3STAR_AUDITOR", "Audit report sent"
+    if isinstance(event_type, str) and event_type in _FAILURE_EVENT_TYPES:
+        return "ERROR", event_type
+    return None
+
+
+def _emit_progress(
+    *,
+    clock: SystemClock,
+    started: float,
+    phase: str,
+    message: str,
+) -> None:
+    elapsed = _format_elapsed(clock.monotonic() - started)
+    typer.echo(f"[{elapsed}] {phase}: {message}", err=True)
+
+
+def _summarise_run_dir(run_dir: Path) -> _RunSummary:
+    events_path = run_dir / "events.jsonl"
+    active = (run_dir / "RUNNING").exists()
+    sort_mtime = run_dir.stat().st_mtime
+    events = _read_events(events_path)
+    from vsm.eventlog.replay import replay as replay_events
+
+    state = replay_events(events_path)
+    task_description = ""
+    task_state = "no_task"
+    if state.tasks:
+        _task_id, info = next(iter(state.tasks.items()))
+        task_description = _short_text(info.get("description", ""), 72)
+        task_state, _source = _derive_task_state(info.get("state"), events)
+    return _RunSummary(
+        run_id=run_dir.name,
+        short_run_id=_short_id(run_dir.name),
+        started_at=_format_timestamp(_run_started_at(events)),
+        state=task_state,
+        event_count=len(events),
+        task_description=task_description,
+        active=active,
+        sort_mtime=sort_mtime,
+    )
+
+
+def _plural(count: int, singular: str, plural: str) -> str:
+    return singular if count == 1 else plural
+
+
+def _event_summary(evt: dict[str, Any]) -> str | None:
+    event_type = evt.get("event_type")
+    payload = evt.get("payload", {}) or {}
+    if not isinstance(payload, dict):
+        return None
+
+    if event_type == "task_submitted":
+        description = payload.get("description")
+        if isinstance(description, str):
+            return f"task: {_short_text(description, 96)}"
+
+    if event_type == "llm_invocation":
+        response = payload.get("response")
+        if isinstance(response, str):
+            return f"llm response: {_short_text(response, 96)}"
+
+    if event_type == "llm_timeout":
+        elapsed_ms = payload.get("elapsed_ms")
+        return f"error: LLM call timed out after {elapsed_ms} ms"
+
+    if event_type == "llm_error":
+        code = payload.get("provider_code")
+        message = payload.get("provider_message")
+        detail = f"{code}: {message}" if code else message
+        return f"error: LLM provider {_short_text(detail, 96)}"
+
+    if event_type == "sub_agent_error":
+        reason = payload.get("reason")
+        if isinstance(reason, str):
+            return f"error: sub-agent {_short_text(reason, 96)}"
+
+    if event_type in {
+        "system_instantiation_failed",
+        "delivery_error",
+        "dispatch_error",
+        "s1_instantiation_error",
+        "event_log_append_error",
+    }:
+        reason = payload.get("reason")
+        if isinstance(reason, str):
+            return f"error: {_short_text(reason, 96)}"
+
+    if event_type == "channel_rejected":
+        channel = payload.get("channel")
+        sender = payload.get("sender")
+        receiver = payload.get("receiver")
+        return f"error: channel rejected {sender} -> {receiver} on {channel}"
+
+    if event_type == "s1_completion":
+        result = payload.get("result")
+        if isinstance(result, dict):
+            success = result.get("success")
+            text = result.get("text")
+            if isinstance(text, str):
+                return f"result: success={success} {_short_text(text, 96)}"
+            return f"result: {_short_text(json.dumps(result, ensure_ascii=False, sort_keys=True), 96)}"
+
+    if event_type == "policy_decision":
+        directive = payload.get("directive")
+        if isinstance(directive, str):
+            return f"decision: {_short_text(directive, 96)}"
+
+    if event_type == "s4_assessment_produced":
+        opportunities = payload.get("opportunities") or []
+        threats = payload.get("threats") or []
+        return f"assessment: opportunities={len(opportunities)} threats={len(threats)}"
+
+    if event_type == "audit_finding":
+        content = payload.get("content")
+        if isinstance(content, str):
+            return f"finding: {_short_text(content, 96)}"
+
+    return None
+
+
+def _replay_line(evt: dict[str, Any]) -> str:
+    ts = evt.get("ts", "-")
+    payload = evt.get("payload", {}) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    # ``system_id`` is the canonical lifecycle field; fall back to
+    # ``sender`` for Channel events, which carry sender/receiver but
+    # no system_id. ``-`` renders for events without either (e.g.
+    # ``policy_decision``, ``task_submitted``).
+    sys_id = payload.get("system_id") or payload.get("sender") or "-"
+    channel = payload.get("channel") or "-"
+    event_type = evt.get("event_type", "-")
+    return f"{ts} {sys_id} {channel} {event_type}"
 
 
 # ---------------------------------------------------------------------------
@@ -312,25 +688,24 @@ def _require_events_path(run_id: str) -> Path:
 def submit(
     description: str = typer.Argument(
         ...,
-        help="Task description (1..8192 ASCII characters, REQ 4.2).",
+        help="Task description, 1..8192 ASCII characters.",
     ),
     file: Optional[list[Path]] = typer.Option(
         None,
         "--file",
         "-f",
-        help="Optional context file path (repeatable, REQ 4.3).",
+        help="Optional UTF-8 context file. Repeat the option for multiple files.",
     ),
 ) -> None:
-    """Submit a Task and run it through the VSM platform (REQ 4.1〜4.7).
+    """Submit a task and wait for the VSM Run to finish.
 
-    Validates the description (REQ 4.2) and any ``--file`` arguments
-    (REQ 4.5) synchronously, generates fresh UUIDv4 ``run_id`` and
-    ``task_id`` identifiers (REQ 4.6), bootstraps the Platform via
-    :func:`vsm.runtime.lifecycle.start_run`, appends the ``task_submitted``
-    event, triggers S4_Scanner with the Task, and waits up to
-    1800 seconds (REQ 12.9) for the Run to complete. On success the
-    identifiers are written to stdout in the documented format
-    (REQ 4.7); on failure the appropriate exit code is returned.
+    Progress is printed to stderr while the Run is active. On success,
+    stdout contains only run_id=... and task_id=... so scripts can parse
+    the identifiers safely.
+
+    Examples:
+      vsm submit "Write a short architecture summary"
+      vsm submit "Review this design note" --file notes.txt
     """
     # ---- input validation -------------------------------------------------
     _validate_description(description)
@@ -373,7 +748,17 @@ def submit(
             llm_config=llm_config,
         )
         events_path = platform.run_dir / "events.jsonl"
+        progress_started = clock.monotonic()
+        last_progress_at = progress_started
+        last_seq_seen = -1
+        current_phase = "S4_SCANNER"
         try:
+            _emit_progress(
+                clock=clock,
+                started=progress_started,
+                phase=current_phase,
+                message="Run started",
+            )
             # REQ 4.6: persist the Task acceptance on the Event_Log.
             await platform.eventlog.append("task_submitted", task_payload)
 
@@ -414,6 +799,30 @@ def submit(
                         role = evt.get("payload", {}).get("role")
                         if isinstance(role, str):
                             roles_seen.add(role)
+
+                    seq = evt.get("seq")
+                    if isinstance(seq, int) and seq > last_seq_seen:
+                        progress = _progress_for_event(evt)
+                        if progress is not None:
+                            current_phase, message = progress
+                            _emit_progress(
+                                clock=clock,
+                                started=progress_started,
+                                phase=current_phase,
+                                message=message,
+                            )
+                            last_progress_at = clock.monotonic()
+                        last_seq_seen = max(last_seq_seen, seq)
+
+                now = clock.monotonic()
+                if now - last_progress_at >= _PROGRESS_HEARTBEAT_SECONDS:
+                    _emit_progress(
+                        clock=clock,
+                        started=progress_started,
+                        phase=current_phase,
+                        message="Still running",
+                    )
+                    last_progress_at = now
                 if (
                     "s1_completion" in event_types
                     and _REQUIRED_COMPLETION_ROLES.issubset(roles_seen)
@@ -421,10 +830,9 @@ def submit(
                     return
 
             # REQ 12.9: 1800 second deadline exceeded.
-            typer.echo(
-                f"run {run_id} timed out after {_RUN_TIMEOUT_SECONDS:.0f}s "
-                "(REQ 12.9)",
-                err=True,
+            _emit_cli_error(
+                f"Run {run_id} did not finish within {_RUN_TIMEOUT_SECONDS:.0f} seconds.",
+                next_step=f"Inspect the partial run with: vsm replay {run_id}",
             )
             raise typer.Exit(code=6)
         finally:
@@ -437,11 +845,28 @@ def submit(
         # System missing). The lifecycle layer has already written
         # ``missing required systems: ...`` to stderr; we just translate
         # the typed error into exit code 3.
-        typer.echo(str(exc), err=True)
+        detail = _clean_error_text(exc.detail)
+        if "LLM provider" in detail:
+            _emit_cli_error(
+                "No LLM provider is configured.",
+                example='$env:LITELLM_PROVIDER = "openai/gpt-4o-mini"',
+                next_step=(
+                    "Set LITELLM_PROVIDER in the shell, .env, or vsm.toml "
+                    "before running vsm submit."
+                ),
+            )
+        else:
+            _emit_cli_error(
+                f"Configuration is invalid: {detail}",
+                next_step="Fix the configuration, then run vsm submit again.",
+            )
         raise typer.Exit(code=3) from None
     except RunDirectoryError as exc:
         # REQ 10.4: ``runs/{run_id}/`` could not be created.
-        typer.echo(str(exc), err=True)
+        _emit_cli_error(
+            f"Could not create the run directory. {_clean_error_text(exc)}",
+            next_step="Check write access to runs/ and remove any conflicting run directory.",
+        )
         raise typer.Exit(code=4) from None
     except typer.Exit:
         # ``_run`` raises ``typer.Exit(code=6)`` on the timeout path;
@@ -461,16 +886,16 @@ def submit(
 
 @app.command()
 def status(
-    run_id: str = typer.Argument(..., help="Run identifier (REQ 10.2)."),
+    run_id: str = typer.Argument(..., help="Run identifier."),
 ) -> None:
-    """Print task and System summaries reconstructed from ``events.jsonl``.
+    """Show a readable summary for one Run.
 
-    Validates Requirements: 10.2, 11.1, 11.7.
+    The summary is rebuilt from events.jsonl. Task state is derived from
+    existing events such as s1_completion, so completed Runs no longer
+    appear stuck at submitted.
 
-    For each Task in the reconstructed state, prints
-    ``(task_id, state)``; for each System, prints
-    ``(system_id, sub_agent_count)``. One row per line so the output is
-    grep-friendly.
+    Example:
+      vsm status run-1234567890abcdef1234567890abcdef
     """
     _validate_run_id_or_exit(run_id)
     path = _require_events_path(run_id)
@@ -478,14 +903,142 @@ def status(
     # Heavy import deferred until after argument validation.
     from vsm.eventlog.replay import replay
 
+    events = _read_events(path)
     state = replay(path)
 
-    # REQ 11.1: tasks first, then systems. Each entry is a single-line
-    # tuple-formatted record.
+    typer.echo(f"Run: {run_id}")
+    typer.echo(f"Events: {len(events)}")
+    typer.echo("")
+    typer.echo("Tasks:")
+    if not state.tasks:
+        typer.echo("  none")
     for task_id, info in state.tasks.items():
-        typer.echo(f"({task_id}, {info['state']})")
-    for system_id, info in state.systems.items():
-        typer.echo(f"({system_id}, {info['sub_agent_count']})")
+        derived_state, source = _derive_task_state(info.get("state"), events)
+        description = _short_text(info.get("description", ""), 96)
+        submitted_at = _format_timestamp(info.get("submitted_at"))
+        file_count = len(info.get("file_paths", []) or [])
+        typer.echo(
+            f"  - task {_short_id(task_id)}  state: {derived_state} "
+            f"(from {source})"
+        )
+        typer.echo(f"    description: {description}")
+        typer.echo(f"    submitted: {submitted_at}  files: {file_count}")
+
+    typer.echo("")
+    typer.echo("Systems:")
+    if not state.systems:
+        typer.echo("  none")
+    for system_id, info in sorted(state.systems.items(), key=_role_sort_key):
+        role = info.get("role", "UNKNOWN")
+        sub_agent_count = info.get("sub_agent_count", "?")
+        typer.echo(
+            f"  - {role:<17} id: {_short_id(system_id)}  "
+            f"Sub_Agents: {sub_agent_count}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# runs
+# ---------------------------------------------------------------------------
+
+
+@app.command("runs")
+def list_runs(
+    limit: int = typer.Option(
+        20,
+        "--limit",
+        "-n",
+        min=1,
+        help="Maximum number of Runs to show.",
+    ),
+    full_id: bool = typer.Option(
+        False,
+        "--full-id",
+        help="Show full Run ids instead of shortened ids.",
+    ),
+    runs_dir: Path = typer.Option(
+        Path("runs"),
+        "--runs-dir",
+        help="Directory that contains Run folders.",
+    ),
+) -> None:
+    """List recent Runs in a readable format.
+
+    Runs are sorted newest first. Each row shows a shortened Run id, start
+    time, derived state, event count, and the first Task description.
+
+    Examples:
+      vsm runs
+      vsm runs --limit 5
+    """
+    if not runs_dir.exists():
+        typer.echo(f"No Runs found under {runs_dir}.")
+        return
+    if not runs_dir.is_dir():
+        _emit_cli_error(
+            f"Runs path is not a directory: {runs_dir}",
+            example="vsm runs --runs-dir runs",
+            next_step="Pass a directory that contains run-* folders.",
+        )
+        raise typer.Exit(code=2)
+
+    all_dirs = [path for path in runs_dir.iterdir() if path.is_dir()]
+    run_dirs = [path for path in all_dirs if (path / "events.jsonl").is_file()]
+    skipped_count = len(all_dirs) - len(run_dirs)
+    if not run_dirs:
+        typer.echo(f"No Runs found under {runs_dir}.")
+        if skipped_count:
+            typer.echo(
+                f"Note: ignored {skipped_count} "
+                f"{_plural(skipped_count, 'directory', 'directories')} "
+                "without events.jsonl."
+            )
+        return
+
+    summaries = [_summarise_run_dir(path) for path in run_dirs]
+    summaries.sort(key=lambda item: item.sort_mtime, reverse=True)
+    summaries = summaries[:limit]
+
+    rows = []
+    for summary in summaries:
+        state = f"{summary.state}+active" if summary.active else summary.state
+        display_id = summary.run_id if full_id else summary.short_run_id
+        rows.append(
+            (
+                display_id,
+                summary.started_at,
+                state,
+                str(summary.event_count),
+                summary.task_description,
+            )
+        )
+
+    id_width = max(len("RUN ID"), *(len(row[0]) for row in rows))
+    started_width = max(len("STARTED"), *(len(row[1]) for row in rows))
+    state_width = max(len("STATE"), *(len(row[2]) for row in rows))
+    events_width = max(len("EVENTS"), *(len(row[3]) for row in rows))
+    typer.echo("Run list (newest first)")
+    typer.echo(
+        f"{'RUN ID':<{id_width}}  "
+        f"{'STARTED':<{started_width}}  "
+        f"{'STATE':<{state_width}}  "
+        f"{'EVENTS':>{events_width}}  "
+        "TASK"
+    )
+    for display_id, started_at, state, event_count, task_description in rows:
+        typer.echo(
+            f"{display_id:<{id_width}}  "
+            f"{started_at:<{started_width}}  "
+            f"{state:<{state_width}}  "
+            f"{event_count:>{events_width}}  "
+            f"{task_description}"
+        )
+    if skipped_count:
+        typer.echo(
+            f"Note: ignored {skipped_count} "
+            f"{_plural(skipped_count, 'directory', 'directories')} "
+            "without events.jsonl."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -533,26 +1086,28 @@ def _build_tail_predicate(
 
 @app.command()
 def tail(
-    run_id: str = typer.Argument(..., help="Run identifier (REQ 10.2)."),
+    run_id: str = typer.Argument(..., help="Run identifier."),
     system: Optional[list[str]] = typer.Option(
         None,
         "--system",
         "-s",
-        help="Filter by sender/receiver/system_id (repeatable, OR).",
+        help="Show events involving this system id. Repeat to match any.",
     ),
     channel: Optional[list[str]] = typer.Option(
         None,
         "--channel",
         "-c",
-        help="Filter by channel id (repeatable, OR).",
+        help="Show events on this channel. Repeat to match any.",
     ),
 ) -> None:
-    """Tail ``events.jsonl`` with optional ``--system`` / ``--channel`` filters.
+    """Follow new events for a Run.
 
-    Validates Requirements: 10.2, 11.2, 11.3, 11.4, 11.7.
+    Output stays as JSONL so it can still be piped to other tools. Use
+    filters to focus on one System or one VSM channel. Press Ctrl-C to stop.
 
-    Emits each matching event as a single-line JSON object on stdout.
-    Ctrl-C terminates the tail cleanly with exit code 0.
+    Examples:
+      vsm tail run-1234567890abcdef1234567890abcdef
+      vsm tail run-1234567890abcdef1234567890abcdef --channel S4-S5
     """
     _validate_run_id_or_exit(run_id)
     path = _require_events_path(run_id)
@@ -598,17 +1153,22 @@ def tail(
 
 @app.command()
 def replay(
-    run_id: str = typer.Argument(..., help="Run identifier (REQ 10.2)."),
+    run_id: str = typer.Argument(..., help="Run identifier."),
+    raw: bool = typer.Option(
+        False,
+        "--raw",
+        help="Print the legacy one-line event format without payload summaries.",
+    ),
 ) -> None:
-    """Replay ``events.jsonl`` in human-readable single-line format.
+    """Print a Run's events in append order.
 
-    Validates Requirements: 10.2, 11.5, 11.6, 11.7.
+    Each line starts with timestamp, system id, channel, and event type.
+    Missing fields are shown as a dash. By default, selected payload fields
+    are summarised on the following indented line. Use --raw for the legacy
+    one-line format.
 
-    Prints ``<ts> <system_id> <channel> <event_type>`` per event in
-    append order. Fields that are not present on a given event type are
-    rendered as ``-`` so every line has the same column structure.
-    Active Runs (those whose ``RUNNING`` lockfile is still present) are
-    flagged on stderr before the replay output is emitted (REQ 11.6).
+    Example:
+      vsm replay run-1234567890abcdef1234567890abcdef
     """
     _validate_run_id_or_exit(run_id)
     path = _require_events_path(run_id)
@@ -618,7 +1178,7 @@ def replay(
     # :class:`vsm.runtime.lifecycle.Platform` at Run start and removed
     # by :meth:`Platform.shutdown`; observing it post-shutdown therefore
     # is a strong indicator the Run is still in flight.
-    lockfile = Path("runs") / run_id / "RUNNING"
+    lockfile = path.parent / "RUNNING"
     if lockfile.exists():
         typer.echo(f"warning: run {run_id} is still active", err=True)
 
@@ -627,16 +1187,11 @@ def replay(
 
     events = read_all(path)
     for evt in events:
-        ts = evt.get("ts", "-")
-        payload = evt.get("payload", {}) or {}
-        # ``system_id`` is the canonical lifecycle field; fall back to
-        # ``sender`` for Channel events, which carry sender/receiver but
-        # no system_id. ``-`` renders for events without either (e.g.
-        # ``policy_decision``, ``task_submitted``).
-        sys_id = payload.get("system_id") or payload.get("sender") or "-"
-        channel = payload.get("channel") or "-"
-        event_type = evt.get("event_type", "-")
-        typer.echo(f"{ts} {sys_id} {channel} {event_type}")
+        typer.echo(_replay_line(evt))
+        if not raw:
+            summary = _event_summary(evt)
+            if summary is not None:
+                typer.echo(f"  {summary}")
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation only

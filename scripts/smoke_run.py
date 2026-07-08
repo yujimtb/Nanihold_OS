@@ -9,11 +9,11 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import Counter
-from pathlib import Path
 
 from vsm.clock import SystemClock
 from vsm.config import RunConfig
 from vsm.eventlog.reader import read_all
+from vsm.ids import generate_uuid
 from vsm.llm.fake import FakeLLMProvider
 from vsm.roles import SystemRole
 from vsm.runtime.lifecycle import start_run
@@ -21,16 +21,24 @@ from vsm.runtime.lifecycle import start_run
 
 async def main() -> None:
     fake_llm = FakeLLMProvider(response="ok", latency=0.05)
+    clock = SystemClock()
     platform = await start_run(
-        runs_dir=Path("/tmp/vsm-smoke-runs"),
         run_config=RunConfig(),
         llm_override=fake_llm,
-        clock=SystemClock(),
+        clock=clock,
     )
 
     try:
+        task_payload = {
+            "task_id": generate_uuid(),
+            "run_id": platform.run_id,
+            "description": "smoke test: representative VSM event flow",
+            "file_paths": [],
+            "submitted_at": clock.now_iso(),
+        }
+        await platform.eventlog.append("task_submitted", task_payload)
         s4 = platform.systems[SystemRole.S4_SCANNER][0]
-        await s4.trigger({"description": "smoke-test scenario"})
+        await s4.trigger(task_payload)
 
         events_path = platform.run_dir / "events.jsonl"
         deadline = SystemClock().monotonic() + 30.0

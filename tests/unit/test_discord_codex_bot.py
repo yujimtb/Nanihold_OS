@@ -2,6 +2,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("discord", reason="discord.py is not installed")
+
 from bot.discord_codex_bot import (
     RECENT_MESSAGE_CACHE_SIZE,
     CodexDiscordBot,

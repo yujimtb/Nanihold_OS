@@ -1,40 +1,8 @@
-"""Unit tests for ``vsm status``.
-
-Validates Requirements: 11.1
-
-The ``vsm status`` subcommand reads ``runs/{run_id}/events.jsonl`` via
-:func:`vsm.eventlog.replay.replay`, then emits one line per Task in the
-form ``(task_id, state)`` followed by one line per System in the form
-``(system_id, sub_agent_count)`` (REQ 11.1). These tests pin the output
-*format* (one tuple per line, comma-space separator, no surrounding
-whitespace) on a handful of carefully constructed events.jsonl fixtures
-so any future refactor that changes the rendering of either tuple type
-trips a failing test here.
-
-Adjacent error-path acceptance criteria (REQ 11.7 missing Event_Log,
-REQ 10.2 empty ``run_id``) are also covered: they share the same exit
-code (2) and the same stderr-only message contract as the format-level
-checks, so it is convenient to anchor them in this file rather than a
-second one.
-
-Implementation notes
---------------------
-* In typer 0.16+ (which the project pins via ``pyproject.toml``), Click's
-  :class:`CliRunner` separates stdout and stderr by default and the
-  legacy ``mix_stderr`` keyword argument has been removed. The
-  default-constructed runner therefore exposes ``result.stdout`` and
-  ``result.stderr`` cleanly, which is exactly what we want for the
-  REQ 11.7 stderr assertion.
-* ``monkeypatch.chdir(tmp_path)`` is used so the CLI's relative
-  ``runs/{run_id}/events.jsonl`` lookup (``vsm.cli._events_path_for``)
-  resolves under the per-test temporary directory. No fixture fights
-  the working directory.
-"""
+"""Unit tests for the human-readable ``vsm status`` output."""
 
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -61,14 +29,7 @@ def _write_events_file(path: Path, events: list[dict]) -> None:
 
 
 def test_status_empty_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Empty ``events.jsonl`` produces no tasks and no systems on stdout.
-
-    REQ 11.1 only requires the two tuple groups to be printed *if any
-    Tasks / Systems exist*. With an empty Event_Log the reconstructed
-    state has empty ``tasks`` and ``systems`` projections, so stdout is
-    empty (modulo Click's trailing newline conventions, which the
-    ``.strip()`` accommodates).
-    """
+    """Empty ``events.jsonl`` is still rendered as a readable summary."""
     monkeypatch.chdir(tmp_path)
     run_id = "run-empty"
     (tmp_path / "runs" / run_id).mkdir(parents=True)
@@ -76,19 +37,17 @@ def test_status_empty_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
     result = runner.invoke(app, ["status", run_id])
     assert result.exit_code == 0
-    # Empty output (or minimal whitespace).
-    assert result.stdout.strip() == ""
+    assert "Run: run-empty" in result.stdout
+    assert "Events: 0" in result.stdout
+    assert "Tasks:" in result.stdout
+    assert "Systems:" in result.stdout
+    assert "none" in result.stdout
 
 
 def test_status_with_one_task(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A single ``task_submitted`` event yields a ``(task_id, state)`` line.
-
-    REQ 11.1: the Task projection is emitted before the System projection
-    and one tuple per line. With only one Task and no System events the
-    fixture exercises the Task half of the contract in isolation.
-    """
+    """A single ``task_submitted`` event shows id, state, and description."""
     monkeypatch.chdir(tmp_path)
     run_id = "run-task"
     events_path = tmp_path / "runs" / run_id / "events.jsonl"
@@ -113,22 +72,15 @@ def test_status_with_one_task(
 
     result = runner.invoke(app, ["status", run_id])
     assert result.exit_code == 0
-    # Task id and the canonical SUBMITTED state both appear on the
-    # rendered tuple line.
     assert "task-abc" in result.stdout
     assert "submitted" in result.stdout
+    assert "description: hi" in result.stdout
 
 
 def test_status_with_systems(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``system_instantiated`` events yield ``(system_id, sub_agent_count)`` lines.
-
-    REQ 11.1: every System tracked by the replayed state must be emitted
-    as a tuple. The fixture seeds two distinct Systems with different
-    sub-agent counts so that *both* identifiers and *both* counts are
-    asserted on stdout.
-    """
+    """``system_instantiated`` events show role names and Sub_Agent counts."""
     monkeypatch.chdir(tmp_path)
     run_id = "run-sys"
     events_path = tmp_path / "runs" / run_id / "events.jsonl"
@@ -164,9 +116,54 @@ def test_status_with_systems(
     assert result.exit_code == 0
     assert "sys-1" in result.stdout
     assert "sys-2" in result.stdout
-    # Sub_Agent counts are rendered as bare integers (no quoting).
-    assert "3" in result.stdout
-    assert "2" in result.stdout
+    assert "S5_POLICY" in result.stdout
+    assert "S4_SCANNER" in result.stdout
+    assert "Sub_Agents: 3" in result.stdout
+    assert "Sub_Agents: 2" in result.stdout
+
+
+def test_status_derives_completed_state_from_s1_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Completed Runs no longer look stuck at the submitted state."""
+    monkeypatch.chdir(tmp_path)
+    run_id = "run-done"
+    events_path = tmp_path / "runs" / run_id / "events.jsonl"
+    _write_events_file(
+        events_path,
+        [
+            {
+                "ts": "2025-01-01T00:00:00.000Z",
+                "run_id": run_id,
+                "event_type": "task_submitted",
+                "seq": 0,
+                "payload": {
+                    "task_id": "task-1",
+                    "run_id": run_id,
+                    "description": "ship status ux",
+                    "file_paths": [],
+                    "submitted_at": "2025-01-01T00:00:00.000Z",
+                },
+            },
+            {
+                "ts": "2025-01-01T00:00:01.000Z",
+                "run_id": run_id,
+                "event_type": "s1_completion",
+                "seq": 1,
+                "payload": {
+                    "s1_id": "s1-1",
+                    "work_item_id": "work-1",
+                    "result": {"success": True},
+                },
+            },
+        ],
+    )
+
+    result = runner.invoke(app, ["status", run_id])
+
+    assert result.exit_code == 0
+    assert "state: completed" in result.stdout
+    assert "from s1_completion" in result.stdout
 
 
 def test_status_missing_run(
@@ -182,7 +179,9 @@ def test_status_missing_run(
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["status", "run-missing"])
     assert result.exit_code == 2
-    assert "Event_Log not found" in result.stderr
+    assert "No events found for run run-missing" in result.stderr
+    assert "vsm runs" in result.stderr
+    assert "Event_Log" not in result.stderr
 
 
 def test_status_invalid_run_id() -> None:
@@ -196,25 +195,14 @@ def test_status_invalid_run_id() -> None:
     """
     result = runner.invoke(app, ["status", ""])
     assert result.exit_code != 0
+    assert "Example: vsm status run-1234567890abcdef1234567890abcdef" in result.stderr
+    assert "REQ" not in result.stderr
 
 
 def test_status_output_line_format(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """REQ 11.1: every non-empty output line is a ``(id, value)`` tuple.
-
-    This is the regex-pinned format check. The pattern
-    ``^\\(.+, .+\\)$`` enforces:
-
-    * a literal opening ``(``;
-    * any non-empty identifier;
-    * a literal ``, `` separator (comma + single space);
-    * any non-empty state-or-count;
-    * a literal closing ``)``.
-
-    Any future refactor that, e.g., drops the space after the comma or
-    introduces multi-line tuple rendering will trip this test.
-    """
+    """Status output should not regress to raw tuple rows."""
     monkeypatch.chdir(tmp_path)
     run_id = "run-fmt"
     events_path = tmp_path / "runs" / run_id / "events.jsonl"
@@ -238,9 +226,6 @@ def test_status_output_line_format(
     )
     result = runner.invoke(app, ["status", run_id])
     assert result.exit_code == 0
-    # Every non-empty line should match the ``(id, value)`` shape.
-    for line in result.stdout.strip().split("\n"):
-        if line:
-            assert re.match(
-                r"^\(.+, .+\)$", line
-            ), f"unexpected line format: {line!r}"
+    assert "Run:" in result.stdout
+    assert "Tasks:" in result.stdout
+    assert "(task-1, submitted)" not in result.stdout

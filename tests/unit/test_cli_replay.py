@@ -13,8 +13,8 @@ REQ 11.6 — when invoked against a Run that is still active (the
 warning message identifying the Run as active to **stderr** before the
 event snapshot is emitted on stdout.
 
-REQ 11.7 — when the Event_Log file does not exist, the CLI writes
-``Event_Log not found for run <id>`` to stderr and terminates with exit
+REQ 11.7 — when the event file does not exist, the CLI writes
+a readable missing-events message to stderr and terminates with exit
 code 2.
 
 These tests are example-based (the formal property is covered by
@@ -181,6 +181,7 @@ def test_replay_event_with_no_sys_or_channel(tmp_path, monkeypatch) -> None:
     # Both system_id and channel default to ``-``, so the line contains
     # the substring ``- -`` for the two consecutive missing columns.
     assert " - - " in line, f"expected '- -' placeholders, got: {line!r}"
+    assert "decision: go" in result.stdout
 
 
 def test_replay_preserves_order(tmp_path, monkeypatch) -> None:
@@ -278,6 +279,109 @@ def test_replay_completed_run_no_warning(tmp_path, monkeypatch) -> None:
     )
 
 
+def test_replay_summarises_task_llm_and_error_payloads(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    run_id = "run-summary"
+    events_path = tmp_path / "runs" / run_id / "events.jsonl"
+    _write_events_file(
+        events_path,
+        [
+            {
+                "ts": "2025-01-01T00:00:00.000Z",
+                "run_id": run_id,
+                "event_type": "task_submitted",
+                "seq": 0,
+                "payload": {
+                    "task_id": "task-1",
+                    "run_id": run_id,
+                    "description": "summarise replay payloads",
+                    "file_paths": [],
+                    "submitted_at": "2025-01-01T00:00:00.000Z",
+                },
+            },
+            {
+                "ts": "2025-01-01T00:00:01.000Z",
+                "run_id": run_id,
+                "event_type": "llm_invocation",
+                "seq": 1,
+                "payload": {
+                    "system_id": "sys-1",
+                    "sub_agent_id": "sub-1",
+                    "model": "fake/model",
+                    "prompt": "prompt",
+                    "response": "hello from the model",
+                    "latency_ms": 1,
+                    "tokens_in": 1,
+                    "tokens_out": 2,
+                },
+            },
+            {
+                "ts": "2025-01-01T00:00:02.000Z",
+                "run_id": run_id,
+                "event_type": "llm_error",
+                "seq": 2,
+                "payload": {
+                    "system_id": "sys-1",
+                    "sub_agent_id": "sub-1",
+                    "provider_code": "429",
+                    "provider_message": "rate limited",
+                },
+            },
+        ],
+    )
+
+    result = runner.invoke(app, ["replay", run_id])
+
+    assert result.exit_code == 0, result.stderr
+    assert "task: summarise replay payloads" in result.stdout
+    assert "llm response: hello from the model" in result.stdout
+    assert "error: LLM provider 429: rate limited" in result.stdout
+
+
+def test_replay_raw_keeps_one_line_per_event(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    run_id = "run-raw"
+    events_path = tmp_path / "runs" / run_id / "events.jsonl"
+    _write_events_file(
+        events_path,
+        [
+            {
+                "ts": "2025-01-01T00:00:00.000Z",
+                "run_id": run_id,
+                "event_type": "task_submitted",
+                "seq": 0,
+                "payload": {
+                    "task_id": "task-1",
+                    "run_id": run_id,
+                    "description": "raw output",
+                    "file_paths": [],
+                    "submitted_at": "2025-01-01T00:00:00.000Z",
+                },
+            },
+            {
+                "ts": "2025-01-01T00:00:01.000Z",
+                "run_id": run_id,
+                "event_type": "policy_decision",
+                "seq": 1,
+                "payload": {
+                    "decision_id": "d1",
+                    "assessment_id": "a1",
+                    "directive": "go",
+                    "followup_request": "scan",
+                },
+            },
+        ],
+    )
+
+    result = runner.invoke(app, ["replay", run_id, "--raw"])
+
+    assert result.exit_code == 0, result.stderr
+    lines = result.stdout.strip().split("\n")
+    assert len(lines) == 2
+    assert "task:" not in result.stdout
+    assert "decision:" not in result.stdout
+
+
 # ---------------------------------------------------------------------------
 # REQ 11.7: missing Event_Log
 # ---------------------------------------------------------------------------
@@ -286,13 +390,14 @@ def test_replay_completed_run_no_warning(tmp_path, monkeypatch) -> None:
 def test_replay_missing_run(tmp_path, monkeypatch) -> None:
     """REQ 11.7: missing ``events.jsonl`` → exit 2 with canonical message.
 
-    The exact stderr substring ``Event_Log not found`` is pinned by
-    REQ 11.7 so log-greppers can reliably surface the failure regardless
-    of which CLI subcommand emitted it.
+    The message is intentionally user-facing and includes the next command
+    to run so callers can recover without opening raw files.
     """
     monkeypatch.chdir(tmp_path)
 
     result = runner.invoke(app, ["replay", "run-missing"])
 
     assert result.exit_code == 2
-    assert "Event_Log not found" in result.stderr
+    assert "No events found for run run-missing" in result.stderr
+    assert "vsm runs" in result.stderr
+    assert "Event_Log" not in result.stderr
