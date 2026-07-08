@@ -11,14 +11,10 @@ requires-python = ">=3.11"
 license = { text = "Proprietary" }
 authors = [{ name = "Nanihold OS contributors" }]
 dependencies = [
-    "discord.py>=2.7",
     "fastapi>=0.115",
     "litellm",
-    "hypothesis",
     "python-multipart>=0.0.20",
     "pypdf>=5",
-    "pytest",
-    "pytest-asyncio",
     "python-dotenv",
     "typer",
     "pydantic>=2",
@@ -27,6 +23,16 @@ dependencies = [
 
 [project.scripts]
 vsm = "vsm.cli:app"
+
+[project.optional-dependencies]
+dev = [
+    "hypothesis",
+    "pytest",
+    "pytest-asyncio",
+]
+bot = [
+    "discord.py>=2.7",
+]
 
 [tool.setuptools.packages.find]
 include = ["vsm*"]

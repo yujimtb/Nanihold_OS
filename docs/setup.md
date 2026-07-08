@@ -120,6 +120,14 @@ cd D:\userdata\docs\projects\Nanihold_OS
 これは LLM の推論品質を見るものではなく、現行 MVP の暫定的な固定フロー
 (S4 → S5 → S3 → S1 → S3*)に沿ったイベント伝播とランタイム構造を確認するための smoke test。
 この固定フローは検証用であり、本来のランタイムは固定経路を持たない([architecture.md](architecture.md))。
+イベントログは通常の Run と同じく `runs\<run_id>\events.jsonl` に作成される。出力された
+`run_id` はそのまま `runs` / `status` / `replay` で確認できる。
+
+```powershell
+.\vsm.ps1 runs
+.\vsm.ps1 status <smoke run_id>
+.\vsm.ps1 replay <smoke run_id>
+```
 
 ---
 

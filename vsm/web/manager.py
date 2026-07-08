@@ -591,7 +591,7 @@ class RunManager:
                 run,
                 "artifact_created",
                 {
-                    "artifact_ref": str(path.relative_to(run.run_dir)),
+                    "artifact_ref": path.relative_to(run.run_dir).as_posix(),
                     "name": name,
                     "media_type": media_type,
                     "size": path.stat().st_size,

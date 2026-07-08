@@ -90,3 +90,5 @@ def test_submit_loads_dotenv_config_before_start_run(tmp_path, monkeypatch) -> N
     llm_config = captured["llm_config"]
     assert llm_config.provider_from_env == "openrouter/test-model"
     assert llm_config.resolve_model() == "openrouter/test-model"
+    assert "S4_SCANNER" in result.stderr
+    assert "S1_WORKER" in result.stderr

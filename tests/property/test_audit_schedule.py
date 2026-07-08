@@ -10,6 +10,19 @@ from vsm.roles import SystemRole
 from vsm.runtime.lifecycle import start_run
 
 
+async def _wait_for_event_count(
+    events_path, event_type: str, minimum: int, timeout: float = 2.0
+):
+    deadline = SystemClock().monotonic() + timeout
+    while SystemClock().monotonic() < deadline:
+        events = read_all(events_path) if events_path.exists() else []
+        matches = [e for e in events if e["event_type"] == event_type]
+        if len(matches) >= minimum:
+            return events
+        await asyncio.sleep(0.05)
+    return read_all(events_path) if events_path.exists() else []
+
+
 @pytest.mark.asyncio
 async def test_completion_signal_triggers_observation(tmp_path):
     """REQ 9.1: notify_completion → triggers observation cycle."""
@@ -29,11 +42,8 @@ async def test_completion_signal_triggers_observation(tmp_path):
         # Trigger completion signal
         s3star.notify_completion()
 
-        # Wait for audit cycle to fire
-        await asyncio.sleep(0.5)
-
         events_path = platform.run_dir / "events.jsonl"
-        events = read_all(events_path)
+        events = await _wait_for_event_count(events_path, "audit_observation", 1)
         observations = [e for e in events if e["event_type"] == "audit_observation"]
         # Should have at least one observation triggered by the completion signal
         assert len(observations) >= 1, f"expected ≥1 audit_observation, got {len(observations)}"
@@ -56,10 +66,9 @@ async def test_audit_finding_after_observation(tmp_path):
     try:
         await platform.spawn_s1(specialization="frontend", initial_assignment="task1")
         s3star.notify_completion()
-        await asyncio.sleep(0.5)
 
         events_path = platform.run_dir / "events.jsonl"
-        events = read_all(events_path)
+        events = await _wait_for_event_count(events_path, "audit_finding", 1)
         findings = [e for e in events if e["event_type"] == "audit_finding"]
         report_sents = [e for e in events if e["event_type"] == "audit_report_sent"]
         assert len(findings) >= 1, f"expected ≥1 audit_finding, got {len(findings)}"

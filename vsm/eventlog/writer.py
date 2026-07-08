@@ -59,10 +59,10 @@ __all__ = ["EventLogWriter"]
 # REQ 10.6: at most 3 attempts per append (the call itself plus 2 retries).
 _MAX_APPEND_ATTEMPTS = 3
 
-# REQ 10.6: at least 100 ms between successive attempts. The exact value is
-# also referenced by ``tests/property/test_retry_semantics.py`` (Property 16)
-# to assert that the retry interval lower bound is honoured.
-_RETRY_BACKOFF_SECONDS = 0.1
+# REQ 10.6: at least 100 ms between successive attempts. The implementation
+# asks the event loop for 110 ms so the observed gap remains above 100 ms on
+# Windows timers that occasionally resume a few milliseconds early.
+_RETRY_BACKOFF_SECONDS = 0.11
 
 # Bind-mounted Docker/WSL filesystems can make per-line fsync take hundreds of
 # milliseconds, which blocks the single asyncio event loop. ``flush`` is enough

@@ -33,12 +33,12 @@ async def test_s5_dispatch_within_1s(tmp_path):
     )
     s5 = platform.systems[SystemRole.S5_POLICY][0]
     s4 = platform.systems[SystemRole.S4_SCANNER][0]
-    # Stop S5's run loop so the test owns the dispatch cycle and avoids
-    # the S5 → S4 → S5 follow-up feedback loop (REQ 5.7) that would
-    # otherwise turn this single-decision SLA assertion into an
-    # unbounded run. See tests/property/test_s5_dispatch_resilience.py
-    # for the same pattern. The other Systems' run loops remain active.
+    # Stop S5 and S4 run loops so the test owns the dispatch cycle and
+    # avoids the S5 -> S4 -> S5 follow-up feedback loop. The MessageBus
+    # subscriptions remain registered, so dispatch delivery can still be
+    # observed without background processing.
     await s5.shutdown()
+    await s4.shutdown()
 
     try:
         msg = Message(
@@ -84,10 +84,10 @@ async def test_s5_dispatches_emit_channel_messages(tmp_path):
     )
     s5 = platform.systems[SystemRole.S5_POLICY][0]
     s4 = platform.systems[SystemRole.S4_SCANNER][0]
-    # Stop S5's run loop to isolate the single dispatch cycle under
-    # observation (avoids the S5 ↔ S4 feedback loop). Same pattern as
-    # tests/property/test_s5_dispatch_resilience.py.
+    # Stop S5 and S4 run loops to isolate the single dispatch cycle under
+    # observation. The S4 subscription queue remains present for delivery.
     await s5.shutdown()
+    await s4.shutdown()
 
     try:
         msg = Message(

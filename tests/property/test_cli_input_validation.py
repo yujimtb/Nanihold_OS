@@ -50,7 +50,7 @@ runner = CliRunner()
 @given(desc_len=st.integers(min_value=8193, max_value=20000))
 @settings(max_examples=100)
 def test_description_over_8192_rejected(desc_len: int) -> None:
-    """REQ 4.2: description length > 8192 ASCII chars exits with code 2.
+    """REQ 4.2: description length > 8192 Unicode chars exits with code 2.
 
     Hypothesis explores lengths just above the boundary and well beyond it
     so that any off-by-one slip in the upper-bound check is detected.
@@ -58,10 +58,9 @@ def test_description_over_8192_rejected(desc_len: int) -> None:
     desc = "a" * desc_len
     result = runner.invoke(app, ["submit", desc])
     assert result.exit_code == 2
-    assert (
-        "out of range" in result.stderr
-        or "description length" in result.stderr
-    )
+    assert "Task description length" in result.stderr
+    assert "Example:" in result.stderr
+    assert "REQ" not in result.stderr
 
 
 def test_empty_description_rejected() -> None:
@@ -72,10 +71,9 @@ def test_empty_description_rejected() -> None:
     """
     result = runner.invoke(app, ["submit", ""])
     assert result.exit_code == 2
-    assert (
-        "out of range" in result.stderr
-        or "description length" in result.stderr
-    )
+    assert "Task description cannot be empty" in result.stderr
+    assert "Example:" in result.stderr
+    assert "REQ" not in result.stderr
 
 
 def test_japanese_description_passes_input_validation() -> None:
@@ -139,11 +137,12 @@ def test_status_with_missing_run_id() -> None:
 
     The run_id ``run-missing`` is format-valid (ASCII, 1..64 chars) but
     no ``runs/run-missing/events.jsonl`` file exists, so the CLI must
-    emit the canonical ``Event_Log not found for run <id>`` message.
+    emit a readable missing-events message.
     """
     result = runner.invoke(app, ["status", "run-missing"])
     assert result.exit_code == 2
-    assert "Event_Log not found" in result.stderr
+    assert "No events found for run run-missing" in result.stderr
+    assert "vsm runs" in result.stderr
 
 
 def test_status_with_invalid_run_id_format() -> None:
@@ -162,7 +161,8 @@ def test_replay_with_missing_run_id() -> None:
     """REQ 11.7: ``vsm replay`` with a non-existent run_id exits with code 2."""
     result = runner.invoke(app, ["replay", "run-missing"])
     assert result.exit_code == 2
-    assert "Event_Log not found" in result.stderr
+    assert "No events found for run run-missing" in result.stderr
+    assert "vsm runs" in result.stderr
 
 
 def test_replay_with_invalid_run_id_format() -> None:
@@ -181,7 +181,8 @@ def test_tail_with_missing_run_id() -> None:
     """REQ 11.7: ``vsm tail`` with a non-existent run_id exits with code 2."""
     result = runner.invoke(app, ["tail", "run-missing"])
     assert result.exit_code == 2
-    assert "Event_Log not found" in result.stderr
+    assert "No events found for run run-missing" in result.stderr
+    assert "vsm runs" in result.stderr
 
 
 def test_tail_with_invalid_run_id_format() -> None:

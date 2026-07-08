@@ -14,18 +14,22 @@ PowerShell の例。`cmd.exe` では `.\vsm.ps1` の代わりに `vsm.cmd`、Doc
 
 | コマンド | 説明 |
 |---|---|
-| `.\vsm.ps1 submit "<description>"` | タスクを投入し、新しい Run を起動する。 |
+| `.\vsm.ps1 submit "<description>"` | タスクを投入し、新しい Run を起動する。実行中の進捗は stderr に表示され、完了時の stdout は `run_id=...` / `task_id=...` の2行だけになる。 |
 | `.\vsm.ps1 submit "<description>" --file path\to\file.txt` | UTF-8 の補足ファイル付きでタスクを投入する。`--file` は複数指定できる。 |
-| `.\vsm.ps1 status <run_id>` | `events.jsonl` から Task / System の状態サマリを再構成して表示する。 |
+| `.\vsm.ps1 runs` | `runs\` 配下の Run を新しい順に一覧表示する。短縮 run_id、開始時刻、導出状態、イベント数、タスク概要を確認できる。 |
+| `.\vsm.ps1 runs --full-id` | 詳細確認に使うフル run_id 付きで Run 一覧を表示する。 |
+| `.\vsm.ps1 status <run_id>` | `events.jsonl` から Task / System の状態サマリを再構成して表示する。`s1_completion` などの既存イベントから完了状態を導出する。 |
 | `.\vsm.ps1 tail <run_id>` | Run の `events.jsonl` に追従して新着イベントを JSONL で表示する。 |
 | `.\vsm.ps1 tail <run_id> --system <system_id>` | system_id / sender / receiver の一致でイベントを絞り込む。 |
 | `.\vsm.ps1 tail <run_id> --channel S4-S5` | channel の一致でイベントを絞り込む。 |
-| `.\vsm.ps1 replay <run_id>` | 完了済み Run の全イベントを append 順で人間可読形式に表示する。 |
+| `.\vsm.ps1 replay <run_id>` | 完了済み Run の全イベントを append 順で表示し、主な payload を短く要約する。 |
+| `.\vsm.ps1 replay <run_id> --raw` | 旧来の1イベント1行形式で表示する。 |
 
 `cmd.exe` の例:
 
 ```bat
 vsm.cmd submit "Write a Python function that reverses a string"
+vsm.cmd runs
 vsm.cmd status <run_id>
 vsm.cmd replay <run_id>
 ```
@@ -36,9 +40,10 @@ vsm.cmd replay <run_id>
 .\vsm.ps1 submit "Write a Python function that reverses a string"
 ```
 
-Run が完了したら、表示された `run_id` で状態確認できる。
+Run が完了したら、表示された `run_id` で一覧・状態・イベントを確認できる。
 
 ```powershell
+.\vsm.ps1 runs
 .\vsm.ps1 status <run_id>
 .\vsm.ps1 replay <run_id>
 ```
@@ -63,7 +68,9 @@ runs\<run_id>\events.jsonl
 最近の Run を確認する例:
 
 ```powershell
-Get-ChildItem .\runs | Sort-Object LastWriteTime -Descending | Select-Object -First 5
+.\vsm.ps1 runs
+.\vsm.ps1 runs --limit 5
+.\vsm.ps1 runs --full-id
 ```
 
 Run の中身を見る例:
@@ -71,6 +78,7 @@ Run の中身を見る例:
 ```powershell
 .\vsm.ps1 status <run_id>
 .\vsm.ps1 replay <run_id>
+.\vsm.ps1 replay <run_id> --raw
 .\vsm.ps1 tail <run_id>
 .\vsm.ps1 tail <run_id> --system <system_id>
 .\vsm.ps1 tail <run_id> --channel S4-S5
@@ -102,6 +110,14 @@ cd D:\userdata\docs\projects\Nanihold_OS
 .\.venv-win\Scripts\python.exe -m pytest tests\unit
 .\.venv-win\Scripts\python.exe -m pytest tests\integration
 .\.venv-win\Scripts\python.exe -m pytest -m live_llm
+```
+
+`dev` extra にはテスト実行に必要な `pytest`、`pytest-asyncio`、`hypothesis` を含めている。
+Discord bot は CLI / Web 本体とは別用途なので `bot` extra に分けている。bot も同じ環境で
+動かす場合は次を使う。
+
+```powershell
+.\.venv-win\Scripts\python.exe -m pip install -e ".[dev,bot]"
 ```
 
 Docker Compose で実行する場合:
