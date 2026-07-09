@@ -85,6 +85,10 @@ def test_submit_loads_dotenv_config_before_start_run(tmp_path, monkeypatch) -> N
     result = runner.invoke(app, ["submit", "test"])
 
     assert result.exit_code == 0
+    assert "run_id=" in result.stdout
+    assert "task_id=" in result.stdout
+    assert "S4_SCANNER" in result.stderr
+    assert "S1_WORKER" in result.stderr
     assert isinstance(captured["llm_config"], LLMConfig)
     assert isinstance(captured["run_config"], RunConfig)
     llm_config = captured["llm_config"]

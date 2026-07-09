@@ -44,6 +44,9 @@ docker compose run --rm app python scripts/smoke_run.py
 docker compose run --rm app python -m vsm --help
 ```
 
+pytest の一時ファイルはリポジトリ直下の `.pytest-tmp/` に作成される。このディレクトリは
+テスト起動時に自動作成され、Git 管理外として扱う。
+
 実 LLM を使う場合は、WSL 側リポジトリ直下に `.env` を作成する(後述「LLM プロバイダの設定」)。
 `.env` は Git 管理しない。
 
