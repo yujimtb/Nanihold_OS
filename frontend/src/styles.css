@@ -259,3 +259,73 @@ main { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
   .chat-composer .primary-button { align-self: flex-end; }
 }
 
+/* Live organization tree */
+.run-live-layout { align-items: start; padding-top: 48px; }
+.organization-column { min-width: 0; }
+.run-live-layout .organization-panel { margin: 0; }
+.run-output-panel { margin-top: 58px; padding-top: 28px; border-top: 1px solid var(--line); }
+.topology-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: -6px 0 13px; color: var(--muted); font-size: 10px; }
+.topology-zoom-controls { display: flex; align-items: center; gap: 5px; }
+.topology-zoom-controls button { min-width: 28px; height: 27px; padding: 0 7px; border: 1px solid var(--line); border-radius: 7px; background: transparent; color: var(--ink); cursor: pointer; font-size: 11px; }
+.topology-zoom-controls button:hover { border-color: var(--accent); color: var(--accent); }
+.topology-zoom-controls strong { min-width: 40px; text-align: center; color: var(--accent); font: 10px monospace; }
+.topology-viewport { position: relative; min-height: 470px; max-height: 680px; overflow: hidden; border: 1px solid var(--line); border-radius: 15px; background: color-mix(in srgb, var(--paper) 88%, var(--accent) 12%); cursor: grab; touch-action: none; }
+.topology-viewport:active { cursor: grabbing; }
+.topology-stage { position: relative; transform-origin: top left; transition: transform .16s ease; }
+.topology-edges { position: absolute; inset: 0; z-index: 0; overflow: visible; pointer-events: none; }
+.topology-edges path { fill: none; stroke-width: 2; opacity: .62; transition: stroke .3s ease, opacity .3s ease; }
+.node-card { position: absolute; z-index: 1; max-width: none; margin: 0 !important; padding: 13px 14px 11px; overflow: hidden; user-select: none; border-left-width: 4px; }
+.node-card::before { display: none; }
+.node-card:hover, .node-card.selected { transform: translateY(-2px); }
+.node-card.is-active { animation: node-pulse 1.55s ease-in-out infinite; }
+@keyframes node-pulse {
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 15%, transparent), 0 10px 30px rgba(37,34,29,.12); }
+}
+.node-card h3 { max-width: 115px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-status { white-space: nowrap; }
+.node-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-activity { min-height: 30px; margin: 8px 0 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.authority-line { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.authority-line span { font-size: 9px; }
+.budget-line { margin-top: 10px; }
+.budget-line > div span { transition: width .35s ease; }
+.topology-hint { margin-top: 9px; color: var(--muted); font-size: 10px; text-align: right; }
+.node-detail-panel { margin-top: 18px; padding: 19px; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); border-radius: 14px; background: var(--paper); box-shadow: 0 10px 30px rgba(37,34,29,.06); }
+.node-detail-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
+.node-detail-heading h3 { margin: 3px 0 0; font-size: 18px; }
+.node-id-line { margin: 7px 0 0; overflow: hidden; color: var(--muted); font: 10px monospace; text-overflow: ellipsis; white-space: nowrap; }
+.node-detail-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 17px; }
+.node-detail-metrics div { min-width: 0; padding: 10px; border-radius: 9px; background: color-mix(in srgb, var(--ink) 4%, transparent); }
+.node-detail-metrics span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 9px; }
+.node-detail-metrics strong { display: block; overflow: hidden; font-size: 11px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.node-detail-events { margin-top: 18px; }
+.node-detail-events > .eyebrow { margin-bottom: 7px; }
+.node-event { display: flex; gap: 8px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--line); }
+.node-event > i { flex: 0 0 6px; width: 6px; height: 6px; margin-top: 5px; border-radius: 50%; }
+.node-event strong, .node-event small { display: block; }
+.node-event strong { overflow: hidden; font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.node-event small { margin-top: 3px; color: var(--muted); font-size: 9px; }
+.detail-empty { color: var(--muted); font-size: 10px; }
+.node-detail-actions { display: grid; gap: 9px; margin-top: 17px; padding-top: 15px; border-top: 1px solid var(--line); }
+.node-action-buttons { display: flex; gap: 7px; }
+.node-action-buttons button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: transparent; color: var(--ink); cursor: pointer; font-size: 10px; }
+.node-action-buttons button.danger { color: var(--orange); }
+.detail-field { display: grid; gap: 5px; color: var(--muted); font-size: 10px; }
+.detail-field span { display: inline-flex; align-items: center; gap: 5px; }
+.detail-field textarea { min-height: 58px; width: 100%; resize: vertical; border: 1px solid var(--line); border-radius: 9px; padding: 9px 10px; outline: 0; background: var(--paper); color: var(--ink); font-size: 11px; }
+.node-detail-actions > .primary-button { padding: 9px 12px; font-size: 11px; }
+.node-detail-actions .split-actions button { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: transparent; color: var(--ink); cursor: pointer; font-size: 10px; }
+
+@media (max-width: 860px) {
+  .run-live-layout { grid-template-columns: 1fr; }
+  .topology-viewport { min-height: 430px; }
+}
+
+@media (max-width: 600px) {
+  .topology-toolbar { align-items: flex-start; flex-direction: column; }
+  .topology-zoom-controls { align-self: flex-end; }
+  .topology-viewport { min-height: 410px; }
+  .node-detail-metrics { grid-template-columns: 1fr; }
+  .node-action-buttons { flex-wrap: wrap; }
+}
+

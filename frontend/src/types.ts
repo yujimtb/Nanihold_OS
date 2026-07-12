@@ -121,7 +121,17 @@ export interface TopologyNode {
   backend: string;
   model: string;
   activity: string;
-  authority: { kind: string; id?: string; summary: string };
+  last_activity_at: string | null;
+  recent_events: Array<{
+    event_id?: string;
+    seq?: number;
+    ts?: string;
+    event_type: string;
+    summary: string;
+    actor_type?: string;
+    actor_id?: string | null;
+  }>;
+  authority: { kind: string; id?: string; summary: string; source?: string };
   budget: {
     tokens_limit: number;
     tokens_consumed: number;

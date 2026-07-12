@@ -19,9 +19,18 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import { api } from "./api";
+import {
+  isRecentlyActive,
+  layoutTopology,
+  nodeStatusClass,
+  nodeStatusColor,
+  NODE_HEIGHT,
+  NODE_WIDTH,
+  STAGE_PADDING,
+} from "./topologyLayout";
 import type {
   AppConfig,
   ChatMessage,
@@ -31,7 +40,7 @@ import type {
   RunSummary,
   TimelineItem,
   Topology,
-  TopologyNode,
+  NodeStatus,
 } from "./types";
 
 const STATUS_LABELS: Record<RunStatus, string> = {
@@ -289,7 +298,6 @@ function RunView({
   onChange: (run: RunDetail) => void;
   onDelete: () => void;
 }) {
-  const [activeTab, setActiveTab] = useState<"result" | "organization">("result");
   const [instruction, setInstruction] = useState("");
   const [busy, setBusy] = useState(false);
   const active = ["queued", "running", "interrupting"].includes(run.status);
@@ -329,15 +337,6 @@ function RunView({
         <span className="progress-number">{run.progress}%</span>
         <div className="progress-track"><span style={{ width: `${run.progress}%` }} /></div>
       </section>
-
-      <div className="view-tabs" role="tablist" aria-label="Run表示切り替え">
-        <button className={activeTab === "result" ? "active" : ""} onClick={() => setActiveTab("result")}>
-          <FileText size={15} /> 実行結果
-        </button>
-        <button className={activeTab === "organization" ? "active" : ""} onClick={() => setActiveTab("organization")}>
-          <Network size={15} /> 組織図
-        </button>
-      </div>
 
       {active && (
         <section className="intervention-panel">
@@ -396,50 +395,9 @@ function RunView({
         </section>
       )}
 
-      {activeTab === "organization" ? (
-        <OrganizationView runId={run.run_id} active={active} />
-      ) : (
-      <div className="run-content">
-        <section className="result-column">
-          <div className="content-heading">
-            <p className="eyebrow">FINAL OUTPUT</p>
-            <h2>最終回答</h2>
-          </div>
-          {run.final_answer ? (
-            <article className="markdown"><ReactMarkdown>{run.final_answer}</ReactMarkdown></article>
-          ) : (
-            <div className="result-placeholder">
-              {active ? <LoaderCircle className="spin" size={22} /> : <Plus size={22} />}
-              <p>{active ? "各担当の結果を集めています。" : "最終回答はまだありません。"}</p>
-            </div>
-          )}
-          {run.artifacts.length > 0 && (
-            <div className="attachment-list">
-              <span className="eyebrow">DOWNLOADS</span>
-              {run.artifacts.map((artifact) => (
-                <a key={artifact.name} href={api.artifactUrl(run.run_id, artifact.name)}>
-                  <FileText size={16} />
-                  <span>{artifact.name}</span>
-                  <small>{Math.max(1, Math.ceil(artifact.size / 1024))} KB</small>
-                </a>
-              ))}
-            </div>
-          )}
-          {run.attachments.length > 0 && (
-            <div className="attachment-list">
-              <span className="eyebrow">ATTACHMENTS</span>
-              {run.attachments.map((attachment) => (
-                <a
-                  key={attachment.attachment_id}
-                  href={api.attachmentUrl(run.run_id, attachment.attachment_id)}
-                >
-                  <FileText size={16} />
-                  <span>{attachment.name}</span>
-                  <small>{Math.ceil(attachment.size / 1024)} KB</small>
-                </a>
-              ))}
-            </div>
-          )}
+      <div className="run-content run-live-layout">
+        <section className="organization-column">
+          <OrganizationView runId={run.run_id} active={active} />
         </section>
 
         <section className="timeline-column">
@@ -450,7 +408,48 @@ function RunView({
           <Timeline items={run.timeline} />
         </section>
       </div>
-      )}
+
+      <section className="run-output-panel">
+        <div className="content-heading">
+          <p className="eyebrow">FINAL OUTPUT</p>
+          <h2>最終回答</h2>
+        </div>
+        {run.final_answer ? (
+          <article className="markdown"><ReactMarkdown>{run.final_answer}</ReactMarkdown></article>
+        ) : (
+          <div className="result-placeholder">
+            {active ? <LoaderCircle className="spin" size={22} /> : <Plus size={22} />}
+            <p>{active ? "各担当の結果を集めています。" : "最終回答はまだありません。"}</p>
+          </div>
+        )}
+        {run.artifacts.length > 0 && (
+          <div className="attachment-list">
+            <span className="eyebrow">DOWNLOADS</span>
+            {run.artifacts.map((artifact) => (
+              <a key={artifact.name} href={api.artifactUrl(run.run_id, artifact.name)}>
+                <FileText size={16} />
+                <span>{artifact.name}</span>
+                <small>{Math.max(1, Math.ceil(artifact.size / 1024))} KB</small>
+              </a>
+            ))}
+          </div>
+        )}
+        {run.attachments.length > 0 && (
+          <div className="attachment-list">
+            <span className="eyebrow">ATTACHMENTS</span>
+            {run.attachments.map((attachment) => (
+              <a
+                key={attachment.attachment_id}
+                href={api.attachmentUrl(run.run_id, attachment.attachment_id)}
+              >
+                <FileText size={16} />
+                <span>{attachment.name}</span>
+                <small>{Math.ceil(attachment.size / 1024)} KB</small>
+              </a>
+            ))}
+          </div>
+        )}
+      </section>
 
       {!active && (
         <div className="danger-zone">
@@ -680,6 +679,17 @@ const ROLE_LABELS: Record<string, string> = {
   S1_WORKER: "実行担当",
 };
 
+const NODE_STATUS_LABELS: Record<NodeStatus, string> = {
+  CREATED: "準備中",
+  RUNNING: "実行中",
+  IDLE: "待機中",
+  SUSPENDED: "休眠",
+  WAITING: "判断待ち",
+  COMPLETED: "完了",
+  TERMINATED: "停止",
+  FAILED: "失敗",
+};
+
 function OrganizationView({ runId, active }: { runId: string; active: boolean }) {
   const [topology, setTopology] = useState<Topology | null>(null);
   const [selectedNode, setSelectedNode] = useState<string>("");
@@ -689,16 +699,23 @@ function OrganizationView({ runId, active }: { runId: string; active: boolean })
   const [reviewResponse, setReviewResponse] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const dragStart = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
 
   const refresh = useCallback(async () => {
     try {
       const next = await api.topology(runId);
       setTopology(next);
-      if (!selectedNode && next.nodes.length) setSelectedNode(next.nodes[0].node_id);
+      setSelectedNode((current) => (
+        current && next.nodes.some((node) => node.node_id === current)
+          ? current
+          : next.nodes[0]?.node_id || ""
+      ));
     } catch (err) {
       setError((err as Error).message);
     }
-  }, [runId, selectedNode]);
+  }, [runId]);
 
   useEffect(() => {
     refresh();
@@ -707,13 +724,27 @@ function OrganizationView({ runId, active }: { runId: string; active: boolean })
     return () => window.clearInterval(timer);
   }, [active, refresh]);
 
-  const perform = async (operation: () => Promise<unknown>, clear?: () => void) => {
+  const layout = useMemo(() => topology ? layoutTopology(topology.nodes) : null, [topology]);
+  const selected = topology?.nodes.find((node) => node.node_id === selectedNode) || null;
+
+  const updateTopology = (update: (current: Topology) => Topology) => {
+    setTopology((current) => current ? update(current) : current);
+  };
+
+  const perform = async (
+    operation: () => Promise<unknown>,
+    update?: (result: unknown) => void,
+    clear?: () => void,
+  ) => {
     setBusy(true);
     setError("");
     try {
-      await operation();
+      const result = await operation();
+      update?.(result);
       clear?.();
-      await refresh();
+      // The event writer is asynchronous. Keep the acknowledgement visible
+      // immediately, then let the normal live poll reconcile the projection.
+      window.setTimeout(refresh, 350);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -721,14 +752,37 @@ function OrganizationView({ runId, active }: { runId: string; active: boolean })
     }
   };
 
-  const depthOf = (node: TopologyNode) => {
-    let depth = 0;
-    let parent = node.parent_id;
-    while (parent && depth < 8) {
-      depth += 1;
-      parent = topology?.nodes.find((item) => item.node_id === parent)?.parent_id ?? null;
+  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest(".node-card")) return;
+    dragStart.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!dragStart.current) return;
+    setPan({
+      x: dragStart.current.panX + event.clientX - dragStart.current.x,
+      y: dragStart.current.panY + event.clientY - dragStart.current.y,
+    });
+  };
+  const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    dragStart.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    return depth;
+  };
+  const handleWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setZoom((current) => Math.min(1.8, Math.max(0.55, current * (event.deltaY < 0 ? 1.1 : 0.9))));
+  };
+
+  const setNodeStatus = (status: NodeStatus, activity: string) => {
+    if (!selectedNode) return;
+    updateTopology((current) => ({
+      ...current,
+      nodes: current.nodes.map((node) => node.node_id === selectedNode
+        ? { ...node, status, activity }
+        : node),
+    }));
   };
 
   return (
@@ -741,84 +795,192 @@ function OrganizationView({ runId, active }: { runId: string; active: boolean })
         <span className={`live-indicator ${active ? "on" : ""}`}><i /> {active ? "ライブ" : "最終状態"}</span>
       </div>
       {error && <p className="organization-error">{error}</p>}
-      {!topology ? (
+      {!topology || !layout ? (
         <div className="topology-loading"><LoaderCircle className="spin" /> 組織を再構成しています</div>
+      ) : topology.nodes.length === 0 ? (
+        <div className="topology-loading">組織ノードを待っています</div>
       ) : (
         <>
-          <div className="node-tree">
-            {topology.nodes.map((node) => {
-              const tokenRatio = node.budget.tokens_limit > 0
-                ? Math.min(100, node.budget.tokens_consumed / node.budget.tokens_limit * 100)
-                : 0;
-              return (
-                <article
-                  className={`node-card node-${node.status.toLowerCase()} ${selectedNode === node.node_id ? "selected" : ""}`}
-                  key={node.node_id}
-                  style={{ marginLeft: `${depthOf(node) * 34}px` }}
-                  onClick={() => setSelectedNode(node.node_id)}
-                >
-                  <div className="node-card-top">
-                    <div>
-                      <span className="node-role-code">{node.role}</span>
-                      <h3>{ROLE_LABELS[node.role] || node.role}</h3>
-                    </div>
-                    <span className="node-status"><i /> {node.status}</span>
-                  </div>
-                  <p className="node-model">{node.backend || "未接続"}{node.model ? ` / ${node.model}` : ""}</p>
-                  <p className="node-activity">{node.activity}</p>
-                  <div className="authority-line"><span>{node.authority.kind}</span>{node.authority.summary}</div>
-                  <div className="budget-line">
-                    <div><span style={{ width: `${tokenRatio}%` }} /></div>
-                    <small>{Math.round(node.budget.tokens_consumed).toLocaleString()} / {Math.round(node.budget.tokens_limit).toLocaleString()} tokens</small>
-                  </div>
-                  {active && selectedNode === node.node_id && (
-                    <div className="node-actions" onClick={(event) => event.stopPropagation()}>
-                      {node.status === "SUSPENDED" ? (
-                        <button disabled={busy} onClick={() => perform(() => api.controlNode(runId, node.node_id, "resume"))}><Play size={14} /> 再開</button>
-                      ) : (
-                        <button disabled={busy} onClick={() => perform(() => api.controlNode(runId, node.node_id, "suspend"))}><Pause size={14} /> 休眠</button>
-                      )}
-                      {node.terminable && <button disabled={busy} className="danger" onClick={() => perform(() => api.controlNode(runId, node.node_id, "terminate"))}><CircleStop size={14} /> 停止</button>}
-                    </div>
-                  )}
-                </article>
-              );
-            })}
+          <div className="topology-toolbar">
+            <span>{topology.nodes.length} nodes · {active ? "状態を自動更新" : "保存された最終状態"}</span>
+            <div className="topology-zoom-controls">
+              <button aria-label="縮小" onClick={() => setZoom((current) => Math.max(0.55, current - 0.1))}>−</button>
+              <strong>{Math.round(zoom * 100)}%</strong>
+              <button aria-label="拡大" onClick={() => setZoom((current) => Math.min(1.8, current + 0.1))}>＋</button>
+              <button aria-label="表示をリセット" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}>リセット</button>
+            </div>
           </div>
 
-          {active && (
-            <div className="organization-controls">
-              <div className="control-card">
-                <h3>Node へ追加指示</h3>
-                <select value={selectedNode} onChange={(event) => setSelectedNode(event.target.value)}>
-                  {topology.nodes.map((node) => <option key={node.node_id} value={node.node_id}>{ROLE_LABELS[node.role] || node.role}</option>)}
-                </select>
-                <textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="この Node に伝える具体的な指示" />
-                <button disabled={busy || !instruction.trim()} onClick={() => perform(() => api.instruct(runId, instruction, selectedNode), () => setInstruction(""))}><Send size={15} /> 指示を送る</button>
-              </div>
-              <div className="control-card alert-card">
-                <h3><OctagonAlert size={16} /> Algedonic</h3>
-                <textarea value={signal} onChange={(event) => setSignal(event.target.value)} placeholder="組織全体へ即時通知する痛み・懸念" />
-                <div className="split-actions">
-                  <button disabled={busy || !signal.trim() || !selectedNode} onClick={() => perform(() => api.algedonic(runId, "pain", signal, selectedNode), () => setSignal(""))}>痛覚を発信</button>
-                  <button disabled={busy || !signal.trim() || !selectedNode} onClick={() => perform(() => api.algedonic(runId, "pleasure", signal, selectedNode), () => setSignal(""))}>好機を発信</button>
-                </div>
-              </div>
+          <div
+            className="topology-viewport"
+            onWheel={handleWheel}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+          >
+            <div
+              className="topology-stage"
+              style={{
+                width: layout.width,
+                height: layout.height,
+                transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              }}
+            >
+              <svg className="topology-edges" width={layout.width} height={layout.height} viewBox={`0 0 ${layout.width} ${layout.height}`} aria-hidden="true">
+                {layout.edges.map((edge) => (
+                  <path
+                    key={`${edge.source.node.node_id}-${edge.target.node.node_id}`}
+                    d={edge.path}
+                    stroke={nodeStatusColor(edge.source.node.status)}
+                  />
+                ))}
+              </svg>
+              {layout.nodes.map((item) => {
+                const node = item.node;
+                const tokenRatio = node.budget.tokens_limit > 0
+                  ? Math.min(100, node.budget.tokens_consumed / node.budget.tokens_limit * 100)
+                  : 0;
+                const activeNode = isRecentlyActive(node);
+                return (
+                  <article
+                    className={`node-card ${nodeStatusClass(node.status)} ${selectedNode === node.node_id ? "selected" : ""} ${activeNode ? "is-active" : ""}`}
+                    key={node.node_id}
+                    style={{ left: item.x, top: item.y, width: NODE_WIDTH, height: NODE_HEIGHT, borderLeftColor: nodeStatusColor(node.status) }}
+                    role="button"
+                    tabIndex={0}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={() => setSelectedNode(node.node_id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") setSelectedNode(node.node_id);
+                    }}
+                  >
+                    <div className="node-card-top">
+                      <div>
+                        <span className="node-role-code">{node.role}</span>
+                        <h3>{ROLE_LABELS[node.role] || node.role}</h3>
+                      </div>
+                      <span className="node-status" style={{ color: nodeStatusColor(node.status) }}><i /> {NODE_STATUS_LABELS[node.status]}</span>
+                    </div>
+                    <p className="node-model">{node.backend || "未接続"}{node.model ? ` / ${node.model}` : ""}</p>
+                    <p className="node-activity">{node.activity}</p>
+                    <div className="authority-line"><span>{node.authority.kind}</span>{node.authority.summary}</div>
+                    <div className="budget-line">
+                      <div><span style={{ width: `${tokenRatio}%` }} /></div>
+                      <small>{Math.round(node.budget.tokens_consumed).toLocaleString()} / {Math.round(node.budget.tokens_limit).toLocaleString()} tokens</small>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
+          </div>
+
+          <div className="topology-hint">カードを選択して詳細を開く · 空白をドラッグして移動 · ホイールでズーム</div>
+
+          {selected && (
+            <aside className="node-detail-panel" aria-label="選択したNodeの詳細">
+              <div className="node-detail-heading">
+                <div>
+                  <span className="node-role-code">{selected.role}</span>
+                  <h3>{ROLE_LABELS[selected.role] || selected.role}</h3>
+                </div>
+                <span className="node-status" style={{ color: nodeStatusColor(selected.status) }}><i /> {NODE_STATUS_LABELS[selected.status]}</span>
+              </div>
+              <p className="node-id-line">{selected.node_id}{selected.parent_id ? ` · 親: ${selected.parent_id}` : " · ルート"}</p>
+              <div className="node-detail-metrics">
+                <div><span>Backend / Model</span><strong>{selected.backend || "未接続"}{selected.model ? ` / ${selected.model}` : ""}</strong></div>
+                <div><span>現在の活動</span><strong>{selected.activity}</strong></div>
+                <div><span>権限・指示元</span><strong>{selected.authority.summary}{selected.authority.source ? ` · ${selected.authority.source}` : ""}</strong></div>
+                <div><span>予算</span><strong>{Math.round(selected.budget.tokens_consumed).toLocaleString()} / {Math.round(selected.budget.tokens_limit).toLocaleString()} tokens · {selected.budget.wall_clock_seconds_consumed.toFixed(1)}s</strong></div>
+              </div>
+
+              <div className="node-detail-events">
+                <span className="eyebrow">RECENT EVENTS</span>
+                {selected.recent_events.length ? selected.recent_events.map((event, index) => (
+                  <div className="node-event" key={event.event_id || `${event.event_type}-${event.seq || index}`}>
+                    <i style={{ background: nodeStatusColor(selected.status) }} />
+                    <div><strong>{event.summary}</strong><small>{event.ts ? formatDate(event.ts) : "時刻不明"} · {event.actor_type || "system"}</small></div>
+                  </div>
+                )) : <p className="detail-empty">イベント履歴はありません。</p>}
+              </div>
+
+              {active && (
+                <div className="node-detail-actions">
+                  <div className="node-action-buttons">
+                    {selected.status === "SUSPENDED" ? (
+                      <button disabled={busy} onClick={() => perform(
+                        () => api.controlNode(runId, selected.node_id, "resume"),
+                        () => setNodeStatus("RUNNING", "再開のackを受信"),
+                      )}><Play size={14} /> 再開</button>
+                    ) : (
+                      <button disabled={busy || selected.status === "TERMINATED"} onClick={() => perform(
+                        () => api.controlNode(runId, selected.node_id, "suspend"),
+                        () => setNodeStatus("SUSPENDED", "休眠のackを受信"),
+                      )}><Pause size={14} /> 休眠</button>
+                    )}
+                    {selected.terminable && <button disabled={busy} className="danger" onClick={() => perform(
+                      () => api.controlNode(runId, selected.node_id, "terminate"),
+                      () => setNodeStatus("TERMINATED", "停止のackを受信"),
+                    )}><CircleStop size={14} /> 停止</button>}
+                  </div>
+                  <label className="detail-field"><span>このNodeへ追加指示</span><textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="Nodeに伝える具体的な指示" /></label>
+                  <button className="primary-button" disabled={busy || !instruction.trim()} onClick={() => {
+                    const message = instruction.trim();
+                    void perform(
+                      () => api.instruct(runId, message, selected.node_id),
+                      (result) => updateTopology((current) => ({
+                        ...current,
+                        nodes: current.nodes.map((node) => node.node_id === selected.node_id
+                          ? { ...node, activity: "指示を送信済み", authority: { kind: "instruction", id: (result as { instruction_id?: string }).instruction_id, summary: message, source: "human" } }
+                          : node),
+                      })),
+                      () => setInstruction(""),
+                    );
+                  }}><Send size={15} /> 指示を送る</button>
+                  <label className="detail-field"><span><OctagonAlert size={14} /> Algedonicを発信</span><textarea value={signal} onChange={(event) => setSignal(event.target.value)} placeholder="痛み・懸念・好機を組織へ通知" /></label>
+                  <div className="split-actions">
+                    <button disabled={busy || !signal.trim()} onClick={() => {
+                      const message = signal.trim();
+                      void perform(
+                        () => api.algedonic(runId, "pain", message, selected.node_id),
+                        () => updateTopology((current) => ({ ...current, nodes: current.nodes.map((node) => node.node_id === selected.node_id ? { ...node, activity: "痛覚のackを受信", authority: { kind: "algedonic", summary: message, source: "human" } } : node) })),
+                        () => setSignal(""),
+                      );
+                    }}>痛覚を発信</button>
+                    <button disabled={busy || !signal.trim()} onClick={() => {
+                      const message = signal.trim();
+                      void perform(
+                        () => api.algedonic(runId, "pleasure", message, selected.node_id),
+                        () => updateTopology((current) => ({ ...current, nodes: current.nodes.map((node) => node.node_id === selected.node_id ? { ...node, activity: "好機のackを受信", authority: { kind: "algedonic", summary: message, source: "human" } } : node) })),
+                        () => setSignal(""),
+                      );
+                    }}>好機を発信</button>
+                  </div>
+                </div>
+              )}
+            </aside>
           )}
 
           {topology.waiting_consortiums.map((item) => (
             <div className="human-action" key={item.consortium_id}>
               <div><strong>合議体への意見</strong><p>{item.subject || item.consortium_id}</p></div>
               <input value={statement} onChange={(event) => setStatement(event.target.value)} placeholder="人間参加者としての意見" />
-              <button disabled={busy || !statement.trim()} onClick={() => perform(() => api.consortiumStatement(item.consortium_id, statement), () => setStatement(""))}>投稿</button>
+              <button disabled={busy || !statement.trim()} onClick={() => perform(
+                () => api.consortiumStatement(item.consortium_id, statement),
+                () => updateTopology((current) => ({ ...current, waiting_consortiums: current.waiting_consortiums.filter((consortium) => consortium.consortium_id !== item.consortium_id) })),
+                () => setStatement(""),
+              )}>投稿</button>
             </div>
           ))}
           {topology.pending_human_reviews.map((review) => (
             <div className="human-action" key={review.review_key}>
               <div><strong>Human review</strong><p>{review.subject} — {review.reason}</p></div>
               <input value={reviewResponse} onChange={(event) => setReviewResponse(event.target.value)} placeholder="判断・回答" />
-              <button disabled={busy || !reviewResponse.trim()} onClick={() => perform(() => api.humanReview(runId, review.review_key, reviewResponse), () => setReviewResponse(""))}>回答</button>
+              <button disabled={busy || !reviewResponse.trim()} onClick={() => perform(
+                () => api.humanReview(runId, review.review_key, reviewResponse),
+                () => updateTopology((current) => ({ ...current, pending_human_reviews: current.pending_human_reviews.filter((pending) => pending.review_key !== review.review_key) })),
+                () => setReviewResponse(""),
+              )}>回答</button>
             </div>
           ))}
         </>
