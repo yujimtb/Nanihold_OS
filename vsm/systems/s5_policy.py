@@ -48,13 +48,17 @@ Validates Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 9.5.
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import TYPE_CHECKING
 
 from vsm.clock import Clock
 from vsm.config import RunConfig
 from vsm.eventlog.writer import EventLogWriter
 from vsm.ids import generate_uuid
+from vsm.agents import (
+    JsonResponseParseError,
+    extract_json_object,
+    invoke_with_json_retry,
+)
 from vsm.agents.runtime import AgentRuntimeProtocol
 from vsm.errors import QuotaExhaustedError
 from vsm.messaging.bus import MessageBus
@@ -244,19 +248,32 @@ class S5Policy(System):
             reason=reason,
             source_node_id=source_node_id,
         )
-        response = await self._sub_agents[0].respond(prompt)
-        try:
-            raw = json.loads(response.text)
-        except json.JSONDecodeError as exc:
-            raise ValueError("S5 algedonic response must be valid JSON") from exc
-        if not isinstance(raw, dict):
-            raise ValueError("S5 algedonic response must be a JSON object")
-        action = raw.get("action")
-        action_reason = raw.get("reason")
-        if action not in {"suspend", "consortium", "escalate"}:
-            raise ValueError("S5 algedonic action must be suspend, consortium, or escalate")
-        if not isinstance(action_reason, str) or not action_reason.strip():
-            raise ValueError("S5 algedonic response requires reason")
+        def parse_algedonic_response(text: str) -> dict[str, object]:
+            try:
+                raw = extract_json_object(text)
+            except JsonResponseParseError as exc:
+                raise JsonResponseParseError(
+                    f"S5 algedonic response must be valid JSON object: {exc}"
+                ) from exc
+            action = raw.get("action")
+            action_reason = raw.get("reason")
+            if action not in {"suspend", "consortium", "escalate"}:
+                raise JsonResponseParseError(
+                    "S5 algedonic action must be suspend, consortium, or escalate"
+                )
+            if not isinstance(action_reason, str) or not action_reason.strip():
+                raise JsonResponseParseError(
+                    "S5 algedonic response requires reason"
+                )
+            return {"action": action, "reason": action_reason}
+
+        _, raw = await invoke_with_json_retry(
+            self._sub_agents[0].respond,
+            prompt,
+            parse_algedonic_response,
+        )
+        action = raw["action"]
+        action_reason = raw["reason"]
 
         await self._eventlog.append(
             "algedonic_handled",

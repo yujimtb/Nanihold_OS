@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import json
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from vsm.agents import AgentRequest, AgentRuntimeProtocol, HumanAgent
+from vsm.agents import (
+    AgentRequest,
+    AgentRuntimeProtocol,
+    HumanAgent,
+    JsonResponseParseError,
+    extract_json_object,
+    invoke_with_json_retry,
+)
 from vsm.systems.prompts import (
     build_consortium_statement_prompt,
     build_consortium_synthesis_prompt,
@@ -20,7 +26,7 @@ from vsm.ids import generate_uuid
 from vsm.nodes import Node
 
 
-class ConsortiumProtocolError(RuntimeError):
+class ConsortiumProtocolError(JsonResponseParseError):
     """Consortium の応答が契約を満たさない場合に送出する。"""
 
 
@@ -220,13 +226,14 @@ class Consortium:
         synthesis_context = await self._build_context_view(
             convener_node_id, subject, self._recent_summary(statements)
         )
-        result = await asyncio.wait_for(
-            convener.runtime.invoke(
-                AgentRequest(prompt=synthesis_prompt, context_view=synthesis_context)
+        _, payload = await invoke_with_json_retry(
+            lambda prompt: convener.runtime.invoke(
+                AgentRequest(prompt=prompt, context_view=synthesis_context)
             ),
-            timeout=convener.runtime.timeout_seconds,
+            synthesis_prompt,
+            self._parse_decision,
+            timeout_seconds=convener.runtime.timeout_seconds,
         )
-        payload = self._parse_decision(result.text)
         decision = ConsortiumDecision(
             consortium_id=consortium_id,
             decision=payload["decision"],
@@ -317,9 +324,11 @@ class Consortium:
     @staticmethod
     def _parse_decision(text: str) -> dict[str, str]:
         try:
-            raw = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise ConsortiumProtocolError("convener response must be valid JSON") from exc
+            raw = extract_json_object(text)
+        except JsonResponseParseError as exc:
+            raise ConsortiumProtocolError(
+                f"convener response must be valid JSON object: {exc}"
+            ) from exc
         if not isinstance(raw, dict):
             raise ConsortiumProtocolError("convener response must be a JSON object")
         result: dict[str, str] = {}

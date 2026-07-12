@@ -11,12 +11,17 @@ from pathlib import Path
 
 import pytest
 
-from vsm.agents import AgentRequest
+from vsm.agents import AgentRequest, extract_json_object, invoke_with_json_retry
 from vsm.agents.backends.fake import FakeAgentRuntime
 from vsm.clock import FakeClock
 from vsm.roles import SystemRole
 from vsm.selfdev.audit import S3StarAuditRunner
-from vsm.selfdev.consortium_adapter import DurableHumanWaiter, HumanTimeoutPolicy, SelfDevConsortiumAdapter
+from vsm.selfdev.consortium_adapter import (
+    ConsortiumAdapterError,
+    DurableHumanWaiter,
+    HumanTimeoutPolicy,
+    SelfDevConsortiumAdapter,
+)
 from vsm.selfdev.controller import ImplementationResult, SelfDevController
 from vsm.selfdev.git import candidate_diff_sha256, git_output
 from vsm.selfdev.models import (
@@ -212,6 +217,72 @@ def _audit_runtime() -> FakeAgentRuntime:
         "summary": "受入条件と証拠を突合した",
     }
     return FakeAgentRuntime(response=json.dumps(response), session_ref="audit-session")
+
+
+def test_extract_json_object_accepts_prefix_and_code_fence() -> None:
+    text = '監査結果です。\n```json\n{"statement":"実施可能です"}\n```\n以上です。'
+
+    assert extract_json_object(text) == {"statement": "実施可能です"}
+
+
+@pytest.mark.asyncio
+async def test_selfdev_statement_retries_once_and_saves_raw_responses(tmp_path: Path) -> None:
+    clock = FakeClock()
+    store = SelfDevEventStore(tmp_path / "runs" / "selfdev", clock=clock)
+    await store.start()
+    calls: list[AgentRequest] = []
+
+    def malformed_then_fenced(request: AgentRequest) -> str:
+        calls.append(request)
+        if len(calls) == 1:
+            return "statement は次のとおりです: {broken"
+        return '説明を除けば次です。\n```json\n{"statement":"再質問で成功"}\n```'
+
+    runtimes = _consortium_runtimes()
+    runtimes[SystemRole.S3_ALLOCATOR] = FakeAgentRuntime(response=malformed_then_fenced)
+    adapter = SelfDevConsortiumAdapter(
+        store=store,
+        runtimes=runtimes,
+        clock=clock,
+        timeout_policy=HumanTimeoutPolicy(
+            timeout_seconds={"low": 1, "normal": 1, "protected": 1},
+            timeout_action={"low": "proceed", "normal": "abort", "protected": "abort"},
+        ),
+    )
+    proposal = _manifest(proposal_id=f"proposal-{'a' * 32}")
+    try:
+        await adapter.convene(
+            proposal=proposal,
+            consortium_id="consortium-json-retry",
+            review_kind="initial",
+            dossier={"proposal": proposal.canonical_dict()},
+            dossier_ref="artifacts/initial-dossier.json",
+            human=False,
+        )
+        assert len(calls) == 3
+        assert '期待スキーマは {"statement": "string"}' in calls[0].prompt
+        assert "コードフェンス、前置き、後置きは禁止" in calls[0].prompt
+        assert "パースエラー:" in calls[1].prompt
+        raw_dir = tmp_path / "runs" / "selfdev" / "proposals" / proposal.id / "artifacts"
+        assert (raw_dir / "raw-statement-S3_ALLOCATOR-1.txt").read_text(encoding="utf-8") == "statement は次のとおりです: {broken"
+        assert "再質問で成功" in (raw_dir / "raw-statement-S3_ALLOCATOR-1-retry.txt").read_text(encoding="utf-8")
+    finally:
+        await store.stop()
+
+
+@pytest.mark.asyncio
+async def test_json_retry_fails_after_exactly_two_invalid_responses() -> None:
+    runtime = FakeAgentRuntime(response="説明だけでJSONなし")
+
+    with pytest.raises(ConsortiumAdapterError, match="JSON object"):
+        await invoke_with_json_retry(
+            lambda prompt: runtime.invoke(AgentRequest(prompt=prompt)),
+            "JSONを返してください",
+            SelfDevConsortiumAdapter._parse_statement,
+        )
+
+    assert len(runtime.invocations) == 2
+    assert "パースエラー:" in runtime.invocations[1].prompt
 
 
 @pytest.mark.asyncio
@@ -459,12 +530,16 @@ async def test_negative_audit_is_valid_report_for_final_review(tmp_path: Path) -
         })()
         store = SelfDevEventStore(tmp_path / "runs" / "selfdev", clock=FakeClock())
         runtime = FakeAgentRuntime(
-            response=json.dumps({
-                "acceptance_results": [{"criterion_id": "AC-1", "status": "fail", "finding": "not proven"}],
-                "findings": [{"finding_id": "F-1", "severity": "error", "category": "acceptance", "summary": "criterion failed"}],
-                "verdict": "fail",
-                "summary": "negative but valid",
-            }),
+            response=(
+                "監査結果です。\n```json\n"
+                + json.dumps({
+                    "acceptance_results": [{"criterion_id": "AC-1", "status": "fail", "finding": "not proven"}],
+                    "findings": [{"finding_id": "F-1", "severity": "error", "category": "acceptance", "summary": "criterion failed"}],
+                    "verdict": "fail",
+                    "summary": "negative but valid",
+                })
+                + "\n```\n以上です。"
+            ),
             session_ref="audit-session",
         )
         audit = S3StarAuditRunner(
@@ -510,6 +585,7 @@ async def test_negative_audit_is_valid_report_for_final_review(tmp_path: Path) -
         assert report.findings[0].severity == "error"
         assert runtime.invocations[0].session_ref is None
         assert report.auditor.session_ref is None
+        assert (tmp_path / "artifacts" / "raw-audit-audit-negative.txt").exists()
     finally:
         _git(repository, "worktree", "remove", "--force", str(worktree))
 

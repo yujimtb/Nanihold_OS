@@ -63,7 +63,6 @@ Validates Requirements: 8.1, 8.2, 8.3, 8.4, 8.6, 8.7.
 from __future__ import annotations
 
 import asyncio
-import json
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -72,6 +71,11 @@ from vsm.clock import Clock
 from vsm.config import RunConfig
 from vsm.eventlog.writer import EventLogWriter
 from vsm.ids import generate_uuid
+from vsm.agents import (
+    JsonResponseParseError,
+    extract_json_object,
+    invoke_with_json_retry,
+)
 from vsm.agents.runtime import AgentRuntimeProtocol
 from vsm.messaging.bus import MessageBus
 from vsm.messaging.channels import ChannelId
@@ -415,20 +419,31 @@ class S2Coordinator(System):
             participants=participants,
             claims=claims,
         )
-        response = await self._sub_agents[0].respond(prompt)
-        try:
-            raw = json.loads(response.text)
-        except json.JSONDecodeError as exc:
-            raise ValueError("S2 coordination response must be valid JSON") from exc
-        if not isinstance(raw, dict):
-            raise ValueError("S2 coordination response must be a JSON object")
-        decision = raw.get("decision")
-        reason = raw.get("reason")
-        if not isinstance(decision, str) or not decision.strip():
-            raise ValueError("S2 coordination response requires decision")
-        if not isinstance(reason, str) or not reason.strip():
-            raise ValueError("S2 coordination response requires reason")
-        result = {"decision": decision, "reason": reason}
+        def parse_coordination_response(text: str) -> dict[str, Any]:
+            try:
+                raw = extract_json_object(text)
+            except JsonResponseParseError as exc:
+                raise JsonResponseParseError(
+                    f"S2 coordination response must be valid JSON object: {exc}"
+                ) from exc
+            decision = raw.get("decision")
+            reason = raw.get("reason")
+            if not isinstance(decision, str) or not decision.strip():
+                raise JsonResponseParseError(
+                    "S2 coordination response requires decision"
+                )
+            if not isinstance(reason, str) or not reason.strip():
+                raise JsonResponseParseError(
+                    "S2 coordination response requires reason"
+                )
+            return {"decision": decision, "reason": reason}
+
+        _, raw = await invoke_with_json_retry(
+            self._sub_agents[0].respond,
+            prompt,
+            parse_coordination_response,
+        )
+        result = {"decision": raw["decision"], "reason": raw["reason"]}
         await self._eventlog.append(
             "coordination_decided",
             {"coordination_key": coordination_key, **result},

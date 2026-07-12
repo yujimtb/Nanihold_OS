@@ -217,7 +217,8 @@ def build_consortium_synthesis_prompt(*, subject: str, statements: str) -> str:
 
     instructions = (
         "あなたは Consortium の招集者です。全発言を総合し、JSON object のみを"
-        "返してください。必須キーは decision, reason, dissent_summary です。"
+        "返してください。コードフェンス、前置き、後置きは禁止です。必須キーは"
+        "decision (string), reason (string), dissent_summary (string) です。"
         "decision は直ちに実行できる結論、reason は1〜2行、dissent_summary は"
         "反対意見の要約（なければ「なし」）にしてください。"
     )

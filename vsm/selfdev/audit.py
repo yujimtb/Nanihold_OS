@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from vsm.agents import AgentRequest, AgentRuntimeProtocol
+from vsm.agents import (
+    AgentRequest,
+    AgentRuntimeProtocol,
+    JsonResponseParseError,
+    extract_json_object,
+    invoke_with_json_retry,
+)
 from vsm.clock import Clock, SystemClock
-from vsm.selfdev.artifacts import sha256_file
+from vsm.selfdev.artifacts import sha256_file, write_raw_response
 from vsm.selfdev.git import CandidateCommit
 from vsm.selfdev.models import (
     AcceptanceResult,
@@ -27,7 +32,7 @@ from vsm.selfdev.models import (
 from vsm.selfdev.verification import ProtectedApproval, scope_sha256, verify_scope
 
 
-class AuditError(RuntimeError):
+class AuditError(JsonResponseParseError):
     """監査の入力・protocol・証拠検証に失敗した。"""
 
 
@@ -48,9 +53,11 @@ class S3StarAuditRunner:
     @staticmethod
     def _parse_response(text: str, criteria: tuple[str, ...]) -> dict[str, Any]:
         try:
-            raw = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise AuditError("audit runtime response は JSON object が必要です") from exc
+            raw = extract_json_object(text)
+        except JsonResponseParseError as exc:
+            raise AuditError(
+                f"audit runtime response は JSON object が必要です: {exc}"
+            ) from exc
         if not isinstance(raw, dict):
             raise AuditError("audit runtime response は object が必要です")
         results = raw.get("acceptance_results")
@@ -112,7 +119,10 @@ class S3StarAuditRunner:
         criteria = tuple(item.id for item in proposal.acceptance_criteria)
         prompt = (
             "S3★ independent self-development audit. S1 の申告を信頼せず、"
-            "manifest、candidate diff、gate report、raw evidence を突合し、strict JSON を返す。\n"
+            "manifest、candidate diff、gate report、raw evidence を突合し、strict JSON を返す。"
+            "出力は JSON object のみとし、コードフェンス、前置き、後置きは禁止する。"
+            '期待スキーマは {"acceptance_results":"object[]", "findings":"object[]", '
+            '"verdict":"string", "summary":"string"} とする。\n'
             + json.dumps(
                 {
                     "proposal": proposal.canonical_dict(),
@@ -125,11 +135,21 @@ class S3StarAuditRunner:
                 sort_keys=True,
             )
         )
-        result = await asyncio.wait_for(
-            self.runtime.invoke(AgentRequest(prompt=prompt, context_view=None)),
-            timeout=self.runtime.timeout_seconds,
+        def save_raw_response(_attempt: int, response: Any) -> None:
+            write_raw_response(
+                root / "artifacts" / f"raw-audit-{audit_id}.txt",
+                response.text,
+            )
+
+        _, raw = await invoke_with_json_retry(
+            lambda request_prompt: self.runtime.invoke(
+                AgentRequest(prompt=request_prompt, context_view=None)
+            ),
+            prompt,
+            lambda text: self._parse_response(text, criteria),
+            timeout_seconds=self.runtime.timeout_seconds,
+            response_observer=save_raw_response,
         )
-        raw = self._parse_response(result.text, criteria)
 
         acceptance_results = tuple(
             AcceptanceResult(

@@ -25,6 +25,23 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def write_raw_response(path: Path, text: str) -> Path:
+    """LLM の生応答を不変 artifact として保存し、衝突時は別名にする。"""
+
+    if not isinstance(text, str):
+        raise TypeError("raw response は str でなければなりません")
+    candidate = path
+    retry_number = 0
+    while candidate.exists():
+        if candidate.read_text(encoding="utf-8") == text:
+            return candidate
+        retry_number += 1
+        suffix = "-retry" if retry_number == 1 else f"-retry-{retry_number}"
+        candidate = path.with_name(f"{path.stem}{suffix}{path.suffix}")
+    _atomic_write(candidate, text.encode("utf-8"), immutable=True)
+    return candidate
+
+
 def _atomic_write(path: Path, data: bytes, *, immutable: bool) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     digest = sha256_bytes(data)
@@ -117,4 +134,5 @@ __all__ = [
     "canonical_json",
     "sha256_bytes",
     "sha256_file",
+    "write_raw_response",
 ]
