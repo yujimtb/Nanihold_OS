@@ -10,9 +10,12 @@ from typing import Any
 
 from vsm.agents.backends._common import (
     as_non_negative_int,
+    detect_quota_kind,
     is_quota_exhausted,
     parse_quota_reset_at,
+    process_group_kwargs,
     resolve_bin,
+    terminate_process_group,
     write_and_close_stdin,
 )
 from vsm.agents.runtime import AgentRequest, AgentResult, AgentRuntimeError
@@ -22,6 +25,7 @@ class CodexRuntime:
     """Codex の JSONL イベントを AgentResult に集約する。"""
 
     backend_name = "codex"
+    quota_pool = "codex-pro"
 
     def __init__(
         self,
@@ -59,6 +63,7 @@ class CodexRuntime:
         argv.extend(["-c", f"model_reasoning_effort={self.reasoning_effort}"])
 
         started = time.monotonic()
+        process = None
         try:
             process = await self._process_factory(
                 *argv,
@@ -66,6 +71,7 @@ class CodexRuntime:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **process_group_kwargs(),
             )
             await write_and_close_stdin(process, prompt)
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -73,9 +79,12 @@ class CodexRuntime:
                 timeout=request.timeout_seconds or self.timeout_seconds,
             )
         except asyncio.TimeoutError:
-            if "process" in locals():
-                process.kill()
-                await process.communicate()
+            if process is not None:
+                await terminate_process_group(process)
+            raise
+        except asyncio.CancelledError:
+            if process is not None:
+                await terminate_process_group(process)
             raise
         except OSError as exc:
             raise AgentRuntimeError(
@@ -86,6 +95,8 @@ class CodexRuntime:
         except Exception as exc:
             if isinstance(exc, AgentRuntimeError):
                 raise
+            if process is not None:
+                await terminate_process_group(process)
             raise AgentRuntimeError(
                 backend=self.backend_name,
                 code="process_io_failed",
@@ -137,6 +148,7 @@ class CodexRuntime:
             session_ref=_extract_session_ref(events),
             quota_exhausted=quota,
             quota_reset_at=parse_quota_reset_at(combined),
+            quota_kind=detect_quota_kind(combined) if quota else "unknown",
         )
 
 

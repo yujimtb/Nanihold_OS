@@ -56,6 +56,7 @@ Validates Requirements
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 from vsm.eventlog.writer import EventLogWriter
 from vsm.messaging.channels import ChannelId, is_allowed
@@ -105,6 +106,10 @@ class MessageBus:
         self._suspended_receivers: set[str] = set()
         self._pending: dict[str, list[Message]] = {}
         self._pending_ids: set[str] = set()
+        self._on_deferred: Callable[[], None] | None = None
+
+    def set_deferred_callback(self, callback: Callable[[], None] | None) -> None:
+        self._on_deferred = callback
 
     def suspend_receiver(self, receiver_id: str) -> None:
         self._suspended_receivers.add(receiver_id)
@@ -114,6 +119,8 @@ class MessageBus:
             return
         self._pending.setdefault(msg.receiver_id, []).append(msg)
         self._pending_ids.add(msg.message_id)
+        if self._on_deferred is not None:
+            self._on_deferred()
 
     def resume_receiver(self, receiver_id: str) -> int:
         self._suspended_receivers.discard(receiver_id)
@@ -127,6 +134,20 @@ class MessageBus:
             queue.put_nowait(msg)
             self._pending_ids.discard(msg.message_id)
         return len(pending)
+
+    def deferred_messages(self) -> list[Message]:
+        """返却する保留 Message のスナップショット。"""
+
+        return [message for messages in self._pending.values() for message in messages]
+
+    def restore_deferred(self, messages: list[Message]) -> None:
+        """durable quota state から保留 Message を復元する。"""
+
+        for message in messages:
+            if message.message_id in self._pending_ids:
+                continue
+            self._pending.setdefault(message.receiver_id, []).append(message)
+            self._pending_ids.add(message.message_id)
 
     # ------------------------------------------------------------------
     # Subscription

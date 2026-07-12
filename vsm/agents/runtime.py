@@ -55,6 +55,7 @@ class AgentResult:
     session_ref: str | None
     quota_exhausted: bool = False
     quota_reset_at: datetime | None = None
+    quota_kind: str = "unknown"
 
     def __post_init__(self) -> None:
         for name in ("tokens_in", "tokens_out", "tokens_cache_read", "latency_ms"):
@@ -64,6 +65,10 @@ class AgentResult:
             raise ValueError("model は空にできません")
         if not self.backend:
             raise ValueError("backend は空にできません")
+        if self.quota_kind not in {"five_hour", "weekly", "unknown"}:
+            raise ValueError(
+                "quota_kind は five_hour、weekly、unknown のいずれかでなければなりません"
+            )
 
 
 class AgentRuntimeError(Exception):

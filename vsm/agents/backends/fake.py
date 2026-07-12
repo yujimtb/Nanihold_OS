@@ -25,6 +25,7 @@ class FakeAgentRuntime:
     tokens_out: int = 1
     tokens_cache_read: int = 0
     session_ref: str | None = None
+    quota_pool: str | None = None
     provider: LLMProviderProtocol | None = None
     timeout_seconds: float = 60.0
     invocations: list[AgentRequest] = field(default_factory=list)

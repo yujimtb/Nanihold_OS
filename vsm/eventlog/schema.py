@@ -136,6 +136,10 @@ EVENT_TYPES_V1: tuple[str, ...] = (
     "budget_exceeded",
     "quota_exhausted",
     "quota_resumed",
+    "quota_pool_opened",
+    "quota_pool_closed",
+    "quota_probe_failed",
+    "quota_state_reconciled",
     "authority_granted",
     "authority_revised",
     "coordination_requested",
@@ -167,6 +171,7 @@ EVENT_TYPES_V1: tuple[str, ...] = (
     "web_run_cancelled",
     "web_partial_result_accepted",
     "web_run_completed",
+    "web_timeout_deferred_quota",
     "gate_report_generated",
 )
 

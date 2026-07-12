@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from vsm.ids import generate_uuid
+from vsm.agents.backends._common import process_group_kwargs, terminate_process_group
 from vsm.tools.model import ToolEffect, ToolInvocation
 
 if TYPE_CHECKING:
@@ -145,6 +146,7 @@ class CodexRunFacade:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **process_group_kwargs(),
             )
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -153,9 +155,12 @@ class CodexRunFacade:
                 )
                 returncode = process.returncode if process.returncode is not None else 1
             except asyncio.TimeoutError:
-                process.kill()
+                await terminate_process_group(process)
                 stdout_bytes, stderr_bytes = await process.communicate()
                 returncode = 124
+            except asyncio.CancelledError:
+                await terminate_process_group(process)
+                raise
 
             elapsed = (datetime.now(timezone.utc) - started).total_seconds()
             return CodexRunResult(

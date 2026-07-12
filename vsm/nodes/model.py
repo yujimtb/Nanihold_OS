@@ -14,7 +14,10 @@ class NodeStatus(str, Enum):
     RUNNING = "RUNNING"
     IDLE = "IDLE"
     WAITING_ESCALATION = "WAITING_ESCALATION"
-    SUSPENDED = "SUSPENDED"
+    QUOTA_WAIT = "QUOTA_WAIT"
+    # Existing callers use SUSPENDED; it denotes the same durable quota wait
+    # state and intentionally has no separate lifecycle semantics.
+    SUSPENDED = "QUOTA_WAIT"
     COMPLETED = "COMPLETED"
     TERMINATED = "TERMINATED"
     FAILED = "FAILED"
