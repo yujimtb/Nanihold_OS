@@ -44,6 +44,7 @@ Validates Requirements
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -125,6 +126,18 @@ class EventLogWriter:
         # under concurrent enqueues.
         self._seq: int = 0
         self._stream_versions: dict[str, int] = {}
+        if path.exists() and path.stat().st_size:
+            with path.open("r", encoding="utf-8") as existing:
+                for line in existing:
+                    if not line.strip():
+                        continue
+                    record = json.loads(line)
+                    self._seq = max(self._seq, int(record["seq"]) + 1)
+                    stream_id = record.get("stream_id") or record.get("node_id") or run_id
+                    self._stream_versions[stream_id] = max(
+                        self._stream_versions.get(stream_id, 0),
+                        int(record.get("stream_version", 0)),
+                    )
 
         # REQ 10.3 / 10.5: open the JSONL file in append mode with UTF-8
         # encoding and line buffering. ``buffering=1`` causes Python's text

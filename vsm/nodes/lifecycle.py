@@ -6,12 +6,14 @@ from vsm.nodes.model import Node, NodeRunState, NodeStatus
 
 
 NODE_STATUS_TRANSITIONS: dict[NodeStatus, frozenset[NodeStatus]] = {
-    NodeStatus.CREATED: frozenset({NodeStatus.RUNNING, NodeStatus.TERMINATED, NodeStatus.FAILED}),
+    NodeStatus.CREATED: frozenset(
+        {NodeStatus.RUNNING, NodeStatus.QUOTA_WAIT, NodeStatus.TERMINATED, NodeStatus.FAILED}
+    ),
     NodeStatus.RUNNING: frozenset(
         {
             NodeStatus.IDLE,
             NodeStatus.WAITING_ESCALATION,
-            NodeStatus.SUSPENDED,
+            NodeStatus.QUOTA_WAIT,
             NodeStatus.COMPLETED,
             NodeStatus.TERMINATED,
             NodeStatus.FAILED,
@@ -19,7 +21,7 @@ NODE_STATUS_TRANSITIONS: dict[NodeStatus, frozenset[NodeStatus]] = {
     ),
     NodeStatus.IDLE: frozenset({NodeStatus.RUNNING, NodeStatus.SUSPENDED, NodeStatus.TERMINATED, NodeStatus.FAILED}),
     NodeStatus.WAITING_ESCALATION: frozenset({NodeStatus.RUNNING, NodeStatus.SUSPENDED, NodeStatus.TERMINATED, NodeStatus.FAILED}),
-    NodeStatus.SUSPENDED: frozenset({NodeStatus.RUNNING, NodeStatus.TERMINATED, NodeStatus.FAILED}),
+    NodeStatus.QUOTA_WAIT: frozenset({NodeStatus.RUNNING, NodeStatus.TERMINATED, NodeStatus.FAILED}),
     NodeStatus.COMPLETED: frozenset(),
     NodeStatus.TERMINATED: frozenset(),
     NodeStatus.FAILED: frozenset(),
@@ -28,7 +30,13 @@ NODE_STATUS_TRANSITIONS: dict[NodeStatus, frozenset[NodeStatus]] = {
 
 def assert_transition_allowed(current: NodeStatus, target: NodeStatus) -> None:
     if target not in NODE_STATUS_TRANSITIONS[current]:
-        raise ValueError(f"invalid Node lifecycle transition: {current.value} -> {target.value}")
+        def display(status: NodeStatus) -> str:
+            return "SUSPENDED" if status is NodeStatus.QUOTA_WAIT else status.value
+
+        raise ValueError(
+            "invalid Node lifecycle transition: "
+            f"{display(current)} -> {display(target)}"
+        )
 
 
 def transition_node_status(

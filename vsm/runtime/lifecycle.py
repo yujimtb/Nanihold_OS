@@ -87,7 +87,7 @@ from vsm.agents.backends import (
     FakeAgentRuntime,
     LiteLLMRuntimeAdapter,
 )
-from vsm.agents.runtime import AgentResult, AgentRuntimeProtocol
+from vsm.agents.runtime import AgentRequest, AgentResult, AgentRuntimeProtocol
 from vsm.authority import ParentAuthority
 from vsm.clock import Clock, SystemClock
 from vsm.config import LLMConfig, RunConfig
@@ -272,6 +272,7 @@ class Platform:
         # owns persistent responsibility/history/authority.
         self.nodes: dict[str, Node] = {}
         self.node_run_states: dict[tuple[str, str], NodeRunState] = {}
+        self._node_pools: dict[str, str] = {}
         self.authorities: dict[str, ParentAuthority] = {}
         self.tool_invocations: dict[str, ToolInvocation] = {}
         self.run_cost_consumed: dict[str, float] = {
@@ -280,6 +281,7 @@ class Platform:
             "tokens_cache_read": 0.0,
             "tokens_total": 0.0,
             "wall_clock_ms": 0.0,
+            "node_running_ms": 0.0,
         }
         self._node_started_at: dict[str, float] = {}
         self._escalations = EscalationFacade()
@@ -291,6 +293,12 @@ class Platform:
             node_run_states=self.node_run_states,
             run_id=run_id,
             fallback_resume_minutes=run_config.quota.fallback_resume_minutes,
+            weekly_fallback_resume_minutes=run_config.quota.weekly_fallback_resume_minutes,
+            node_pools=self._node_pools,
+            state_path=run_dir / "quota-state.json",
+            probe=self._quota_probe,
+            on_node_suspended=self._pause_quota_accounting,
+            on_node_resumed=self._resume_quota_accounting,
         )
 
         from vsm.memory.builder import ContextViewBuilder
@@ -351,6 +359,41 @@ class Platform:
         if self._active_s1_writer == system.system_id:
             self._active_s1_writer = None
 
+    def _pause_quota_accounting(self, node_id: str) -> None:
+        started = self._node_started_at.pop(node_id, None)
+        if started is None:
+            return
+        elapsed_ms = max(0.0, (self.clock.monotonic() - started) * 1000)
+        state = self.node_run_states[(self.run_id, node_id)]
+        state.cost_consumed["node_running_ms"] += elapsed_ms
+        self.run_cost_consumed["node_running_ms"] += elapsed_ms
+
+    def _resume_quota_accounting(self, node_id: str) -> None:
+        self._node_started_at[node_id] = self.clock.monotonic()
+
+    async def _quota_probe(self, pool: str) -> bool:
+        """pool ごとに一つだけ軽量 probe を送る。"""
+
+        if pool.startswith("node:"):
+            return True
+        node_id = next(
+            node_id for node_id, node_pool in self._node_pools.items() if node_pool == pool
+        )
+        node = self.nodes[node_id]
+        if not isinstance(node.vsm_position, SystemRole):
+            raise RuntimeError(f"quota pool {pool} has no SystemRole node")
+        runtime = self.runtimes.get(node.vsm_position)
+        if runtime is None:
+            raise RuntimeError(f"quota pool {pool} has no AgentRuntime")
+        result = await runtime.invoke(
+            AgentRequest(
+                prompt="Nanihold quota health probe: return a short readiness response.",
+                workdir=self.workdir,
+                timeout_seconds=min(runtime.timeout_seconds, 30.0),
+            )
+        )
+        return not result.quota_exhausted
+
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
@@ -369,6 +412,7 @@ class Platform:
         clock: Clock | None = None,
         context_view_hook: ContextViewHook | None = None,
         human_statement_waiter: HumanStatementWaiter | None = None,
+        resume: bool = False,
     ) -> "Platform":
         """Construct and bootstrap a :class:`Platform` for a new Run.
 
@@ -427,6 +471,9 @@ class Platform:
             必須 System のインスタンス化に失敗した (REQ 1.7)。
         """
         rc = run_config or RunConfig()
+        run_dir = runs_dir / run_id
+        if resume and manifest is None and (run_dir / "manifest.json").exists():
+            manifest = RunManifest.load(run_dir)
 
         if rc.selfdev.enabled and manifest is None:
             raise ConfigError(
@@ -498,19 +545,19 @@ class Platform:
         # ------------------------------------------------------------------
         # 2. Run dir / events.jsonl / RUNNING lockfile 作成 (REQ 10.3, 11.6)
         # ------------------------------------------------------------------
-        run_dir = runs_dir / run_id
         events_path = run_dir / _EVENTS_FILENAME
         lockfile_path = run_dir / _RUNNING_LOCKFILE_NAME
+        resuming_existing = resume and run_dir.exists()
         try:
-            # REQ 10.3: parents=True で ``runs/`` 自体が無くても作れる。
-            # exist_ok=False で「既存 Run の上書き」を防ぐ。同名 Run を
-            # 観測する場合は CLI ``vsm replay`` / ``vsm status`` を使う。
-            run_dir.mkdir(parents=True, exist_ok=False)
-            # ``events.jsonl`` を空ファイルとして先に作っておく。
-            # ``EventLogWriter`` は ``"a"`` モードで open するので
-            # touch 不要だが、CLI ``vsm tail`` などが Run start 直後に
-            # ファイル存在確認をできるよう先に作る (REQ 11.7 の対称)。
-            events_path.touch()
+            if resuming_existing:
+                if not events_path.is_file():
+                    raise RunDirectoryError(
+                        f"cannot resume run without {events_path}"
+                    )
+            else:
+                # 新規 Run は従来どおり既存ディレクトリを上書きしない。
+                run_dir.mkdir(parents=True, exist_ok=False)
+                events_path.touch()
             # REQ 11.6: active Run の検出マーカ。``vsm replay`` が
             # 存在を見て stderr に warning を先出しする。
             lockfile_path.touch()
@@ -531,6 +578,20 @@ class Platform:
         # ``clock`` injection でテスト時の決定論を確保する。
         clk: Clock = clock if clock is not None else SystemClock()
 
+        resume_system_ids: dict[SystemRole, list[str]] = {}
+        if resuming_existing:
+            for event in read_all(events_path):
+                if event.get("event_type") != "system_instantiated":
+                    continue
+                payload = event.get("payload") or {}
+                try:
+                    role = SystemRole(str(payload["role"]))
+                    system_id = str(payload["system_id"])
+                except (KeyError, ValueError):
+                    continue
+                if system_id not in resume_system_ids.setdefault(role, []):
+                    resume_system_ids[role].append(system_id)
+
         # writer は他の依存より先に start し、後段でエラーが起きても
         # ``_cleanup_partial_run`` が確実に stop できるようにする。
         writer = EventLogWriter(run_id=run_id, path=events_path, clock=clk)
@@ -546,10 +607,14 @@ class Platform:
         try:
             if workspace_controller is not None:
                 manifest.persist(run_dir)
-                workdir = workspace_controller.start()
+                workdir = (
+                    run_dir / "workspace"
+                    if resuming_existing and (run_dir / "workspace").is_dir()
+                    else workspace_controller.start()
+                )
             else:
                 workdir = run_dir / "workspace"
-                workdir.mkdir(parents=True, exist_ok=False)
+                workdir.mkdir(parents=True, exist_ok=resuming_existing)
         except Exception:
             await _cleanup_partial_run(
                 writer=writer,
@@ -624,8 +689,9 @@ class Platform:
             for role, system_cls in role_to_class.items():
                 # 具象 System コンストラクタは本モジュール先頭の docstring
                 # に示した kwarg-only シグネチャに従う (Tasks 12〜17 の契約)。
+                existing_ids = resume_system_ids.get(role, [])
                 instance: System = system_cls(  # type: ignore[call-arg]
-                    system_id=generate_uuid(),
+                    system_id=(existing_ids[0] if existing_ids else generate_uuid()),
                     eventlog=writer,
                     bus=bus,
                     runtime=runtimes[role],
@@ -675,6 +741,9 @@ class Platform:
                     node_id=instance.system_id,
                     actor_id=instance.system_id,
                 )
+
+            if resuming_existing:
+                await platform.quota_monitor.reconcile()
         except Exception as exc:
             # REQ 1.7: 必須 System の生成失敗は致命的。事後 cleanup を best
             # effort で行ってから ``SystemInstantiationError`` に正規化して
@@ -740,6 +809,15 @@ class Platform:
             },
         )
         self.node_run_states[(self.run_id, node.id)] = run_state
+        runtime = self.runtimes.get(role)
+        explicit_pool = getattr(runtime, "quota_pool", None) if runtime is not None else None
+        backend_name = getattr(runtime, "backend_name", None) if runtime is not None else None
+        if isinstance(explicit_pool, str) and explicit_pool:
+            self._node_pools[node.id] = explicit_pool
+        elif backend_name == "claude-code":
+            self._node_pools[node.id] = "claude-subscription"
+        elif backend_name == "codex":
+            self._node_pools[node.id] = "codex-pro"
         system.bind_runtime_control(self)
         system.bind_instruction_queue(
             self.bus.subscribe(system.system_id, ChannelId.INSTRUCTION)
@@ -1134,10 +1212,18 @@ class Platform:
                 raise QuotaExhaustedError(f"node {node_id} is suspended by quota")
             raise RuntimeError(f"node {node_id} is suspended")
 
+        self._accrue_running_time(node_id)
+
         node_tokens = state.cost_consumed["tokens_total"]
-        node_wall_ms = state.cost_consumed["wall_clock_ms"]
+        node_wall_ms = max(
+            state.cost_consumed["wall_clock_ms"],
+            state.cost_consumed["node_running_ms"],
+        )
         run_tokens = self.run_cost_consumed["tokens_total"]
-        run_wall_ms = self.run_cost_consumed["wall_clock_ms"]
+        run_wall_ms = max(
+            self.run_cost_consumed["wall_clock_ms"],
+            self.run_cost_consumed["node_running_ms"],
+        )
         reasons: list[str] = []
         if node_tokens >= state.budget["tokens"]:
             reasons.append("node_tokens")
@@ -1194,6 +1280,7 @@ class Platform:
         """AgentResult の利用量を累算し、quota 枯渇を休眠へ変換する。"""
 
         state = self.node_run_states[(self.run_id, node_id)]
+        self._accrue_running_time(node_id)
         amounts = {
             "tokens_in": float(result.tokens_in),
             "tokens_out": float(result.tokens_out),
@@ -1206,14 +1293,7 @@ class Platform:
         for key, amount in amounts.items():
             state.cost_consumed[key] += amount
             self.run_cost_consumed[key] += amount
-        running_ms = max(
-            0,
-            int(
-                (self.clock.monotonic() - self._node_started_at.get(node_id, self.clock.monotonic()))
-                * 1000
-            ),
-        )
-        state.cost_consumed["node_running_ms"] = float(running_ms)
+        running_ms = int(state.cost_consumed["node_running_ms"])
         await self.eventlog.append(
             "budget_consumed",
             {
@@ -1232,11 +1312,23 @@ class Platform:
         if result.quota_exhausted and self.run_config.quota.suspend_on_exhausted:
             message = pending_message if isinstance(pending_message, Message) else None
             reset_at = await self.quota_monitor.suspend(
-                node_id, result.quota_reset_at, message
+                node_id, result.quota_reset_at, message, result.quota_kind
             )
             raise QuotaExhaustedError(
                 f"quota exhausted for node {node_id}; reset_at={reset_at.isoformat()}"
             )
+
+    def _accrue_running_time(self, node_id: str) -> None:
+        started = self._node_started_at.get(node_id)
+        if started is None:
+            return
+        elapsed_ms = max(0.0, (self.clock.monotonic() - started) * 1000)
+        if elapsed_ms <= 0:
+            return
+        state = self.node_run_states[(self.run_id, node_id)]
+        state.cost_consumed["node_running_ms"] += elapsed_ms
+        self.run_cost_consumed["node_running_ms"] += elapsed_ms
+        self._node_started_at[node_id] = self.clock.monotonic()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -1739,6 +1831,7 @@ async def start_run(
     clock: Clock | None = None,
     context_view_hook: ContextViewHook | None = None,
     human_statement_waiter: HumanStatementWaiter | None = None,
+    resume: bool = False,
 ) -> Platform:
     """Top-level coroutine to start a new Run.
 
@@ -1794,6 +1887,7 @@ async def start_run(
         clock=clock,
         context_view_hook=context_view_hook,
         human_statement_waiter=human_statement_waiter,
+        resume=resume,
     )
     await platform.start()
     return platform

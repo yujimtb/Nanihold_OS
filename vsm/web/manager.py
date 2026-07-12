@@ -33,6 +33,24 @@ def utc_now() -> str:
     )
 
 
+def _quota_wait_is_open(events: list[dict[str, Any]]) -> bool:
+    """runtime Event_Log の pool breaker 状態を順序どおり投影する。"""
+
+    open_pools: set[str] = set()
+    for event in events:
+        event_type = event.get("event_type")
+        payload = event.get("payload") or {}
+        if event_type == "quota_pool_opened":
+            pool = payload.get("pool")
+            if isinstance(pool, str):
+                open_pools.add(pool)
+        elif event_type == "quota_pool_closed":
+            pool = payload.get("pool")
+            if isinstance(pool, str):
+                open_pools.discard(pool)
+    return bool(open_pools)
+
+
 class RunManager:
     def __init__(self, runs_root: Path) -> None:
         self.store = RunStore(runs_root)
@@ -458,7 +476,7 @@ class RunManager:
             )
 
             events_path = platform.run_dir / "events.jsonl"
-            events = await self._wait_for_completion(run, events_path)
+            events = await self._wait_for_completion(run, events_path, platform=platform)
             run.current_stage = "最終回答を統合"
             run.progress = 96
             run.updated_at = utc_now()
@@ -518,16 +536,51 @@ class RunManager:
                 await platform.shutdown()
             self._platforms.pop(run.run_id, None)
 
-    async def _wait_for_completion(self, run: WebRun, events_path: Path) -> list[dict[str, Any]]:
+    async def _wait_for_completion(
+        self,
+        run: WebRun,
+        events_path: Path,
+        *,
+        platform: Platform | None = None,
+    ) -> list[dict[str, Any]]:
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + COMPLETION_TIMEOUT_SECONDS
+        calendar_deadline = loop.time() + COMPLETION_TIMEOUT_SECONDS
+        active_deadline = calendar_deadline
+        quota_wait_started: float | None = None
+        timeout_deferred_recorded = False
         completion_seen_at: float | None = None
         latest_events: list[dict[str, Any]] = []
-        while loop.time() < deadline:
+        while loop.time() < active_deadline or quota_wait_started is not None:
             await asyncio.sleep(0.25)
             if not events_path.exists():
                 continue
             latest_events = read_all(events_path)
+            quota_waiting = _quota_wait_is_open(latest_events)
+            now = loop.time()
+            if quota_waiting and quota_wait_started is None:
+                quota_wait_started = now
+                run.current_stage = "クォータ待機中"
+                run.updated_at = utc_now()
+                self.store.record_state(run, "quota_wait")
+            elif not quota_waiting and quota_wait_started is not None:
+                active_deadline += now - quota_wait_started
+                quota_wait_started = None
+            if (
+                quota_waiting
+                and now >= calendar_deadline
+                and not timeout_deferred_recorded
+            ):
+                timeout_deferred_recorded = True
+                payload = {
+                    "generation": run.generation,
+                    "calendar_deadline": utc_now(),
+                    "message": "30分のカレンダー期限を超過しましたが、クォータ待機中のため実行を継続します。",
+                }
+                if platform is not None:
+                    await platform.eventlog.append(
+                        "web_timeout_deferred_quota", payload
+                    )
+                self.store.append_event(run, "web_timeout_deferred_quota", payload)
             count = sum(event.get("event_type") == "s1_completion" for event in latest_events)
             stage, progress = self._stage_from_events(latest_events)
             if stage != run.current_stage or progress != run.progress:
@@ -536,10 +589,10 @@ class RunManager:
                 run.updated_at = utc_now()
                 self.store.record_state(run, f"runtime_stage:{stage}")
             if count and completion_seen_at is None:
-                completion_seen_at = loop.time()
+                completion_seen_at = now
             if (
                 completion_seen_at is not None
-                and loop.time() - completion_seen_at >= SETTLE_SECONDS
+                and now - completion_seen_at >= SETTLE_SECONDS
             ):
                 return latest_events
         raise TimeoutError("実行が30分以内に完了しませんでした")

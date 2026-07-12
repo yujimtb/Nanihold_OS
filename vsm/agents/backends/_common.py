@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import re
+import asyncio
+import os
+import signal
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from typing import Any
 
@@ -16,6 +20,24 @@ _QUOTA_MARKERS = (
     "too many requests",
     "limit reached",
     "you have no weighted tokens left",
+)
+
+_WEEKLY_MARKERS = (
+    "weekly",
+    "week",
+    "7-day",
+    "7 day",
+    "seven-day",
+    "seven day",
+)
+
+_FIVE_HOUR_MARKERS = (
+    "5-hour",
+    "5 hour",
+    "five-hour",
+    "five hour",
+    "5h limit",
+    "five-hour limit",
 )
 
 
@@ -32,11 +54,98 @@ def resolve_bin(bin_name: str) -> str:
     return shutil.which(bin_name) or bin_name
 
 
+def process_group_kwargs() -> dict[str, int | bool]:
+    """CLI を独立した process group/session で起動するための引数。"""
+
+    if os.name == "nt":
+        return {
+            "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        }
+    return {"start_new_session": True}
+
+
+async def terminate_process_group(process: Any) -> None:
+    """子孫を含む CLI process group を終了し、親の終了を確認する。
+
+    ``asyncio.subprocess.Process.kill`` は POSIX では親だけを終了させるため、
+    timeout/cancel 経路では必ずこの関数を通す。テスト用 process が PID を
+    持たない場合だけ、その process 自身の ``kill`` を使う。
+    """
+
+    pid = getattr(process, "pid", None)
+    if pid is None:
+        kill = getattr(process, "kill", None)
+        if kill is None:
+            raise RuntimeError("終了対象 process に pid/kill がありません")
+        kill()
+        communicate = getattr(process, "communicate", None)
+        if communicate is not None:
+            await communicate()
+        return
+
+    if os.name == "nt":
+        killer = await asyncio.create_subprocess_exec(
+            "taskkill",
+            "/PID",
+            str(pid),
+            "/T",
+            "/F",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await killer.communicate()
+    else:
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+    await process.communicate()
+    if getattr(process, "returncode", None) is not None:
+        return
+
+    if os.name == "nt":
+        killer = await asyncio.create_subprocess_exec(
+            "taskkill",
+            "/PID",
+            str(pid),
+            "/T",
+            "/F",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await killer.communicate()
+    else:
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    await process.communicate()
+
+
 def is_quota_exhausted(text: str, returncode: int | None = None) -> bool:
     """CLI の診断文字列が利用上限を表すかを判定する。"""
 
     lowered = text.lower()
-    return returncode in {29, 75, 429} or any(marker in lowered for marker in _QUOTA_MARKERS)
+    return returncode in {29, 75, 429} or any(marker in lowered for marker in _QUOTA_MARKERS) or (
+        any(marker in lowered for marker in _WEEKLY_MARKERS + _FIVE_HOUR_MARKERS)
+        and ("limit" in lowered or "quota" in lowered)
+    )
+
+
+def detect_quota_kind(text: str) -> str:
+    """CLI 診断文言から quota の期間種別を判別する。
+
+    期間が明示されていない診断は、誤って長い weekly 待機へ送らないため
+    ``unknown`` とする。判定は quota の診断文言を受けた呼び出し側で行う。
+    """
+
+    lowered = text.lower()
+    if any(marker in lowered for marker in _WEEKLY_MARKERS):
+        return "weekly"
+    if any(marker in lowered for marker in _FIVE_HOUR_MARKERS):
+        return "five_hour"
+    return "unknown"
 
 
 def parse_quota_reset_at(text: str) -> datetime | None:
