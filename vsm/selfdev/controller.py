@@ -91,7 +91,9 @@ class _RuntimeImplementationRunner:
                     "Do not run git stage/commit/push/merge."
                 ),
                 workdir=worktree,
-                session_ref=(None if not resume else getattr(self.runtime, "session_ref", None)),
+                # selfdev の implementation Run も毎回新規セッションで開始する。
+                # 実 runtime は lifetime session 属性を持たず、resume 用の参照を保持しない。
+                session_ref=None,
             )
         )
         if result.quota_exhausted:

@@ -677,7 +677,7 @@ error     # tool実行不能
     "backend": "codex",
     "model": "gpt-5.6-sol",
     "reasoning_effort": "ultra",
-    "session_ref": "...",
+    "session_ref": null,
     "independent": true
   },
   "candidate": {
@@ -725,6 +725,9 @@ error     # tool実行不能
   "summary": "..."
 }
 ```
+
+S3★監査の invoke は常に `session_ref` なしで新規セッションとして行う。
+AgentRuntime が返すセッション参照は S1 との共有を避けるため、監査 artifact へ保存しない。
 
 制約:
 

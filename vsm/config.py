@@ -1205,7 +1205,10 @@ def _extract_selfdev_section(raw: Mapping[str, Any], path: Path) -> SelfDevConfi
             repository = path.parent / repository
     else:
         raise ConfigError(missing_roles=[], detail="[selfdev] repository must be a non-empty string")
-    raw_forbidden = section.get("forbidden_paths", defaults.forbidden_paths)
+    raw_forbidden = section.get("forbidden_paths")
+    if raw_forbidden is None:
+        # 省略時は既定の protected paths(tuple)をそのまま使う。
+        raw_forbidden = list(defaults.forbidden_paths)
     if not isinstance(raw_forbidden, list) or any(
         not isinstance(value, str) or not value.strip() for value in raw_forbidden
     ):

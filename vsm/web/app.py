@@ -31,7 +31,7 @@ async def _lifespan(application: FastAPI):
     service = getattr(application.state, "selfdev_service", None)
     if service is None:
         service = selfdev_service
-    if service is None:
+    if service is None and getattr(application.state, "selfdev_autobuild", True):
         from vsm.web.selfdev_runtime import build_selfdev_service
 
         try:
@@ -51,6 +51,7 @@ async def _lifespan(application: FastAPI):
 app = FastAPI(title="Nanihold OS", version="0.1.0", lifespan=_lifespan)
 app.state.selfdev_service = None
 app.state.selfdev_startup_error = None
+app.state.selfdev_autobuild = True
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -67,12 +68,14 @@ app.include_router(selfdev_router)
 def create_app(service=None) -> FastAPI:
     """TestClient/運用配備用に selfdev service を明示注入した app を返す。
 
-    service を省略した app は selfdev mutation を 503 で拒否する。FakeRuntime
+    ``service`` に ``None`` を明示した app は selfdev mutation を 503 で拒否する。
+    モジュール本体の app は設定から自動配備する。FakeRuntime
     を含む決定論テストは、ここへ ``SelfDevService`` を渡して lifespan の
     start/stop と controller lock を実際に通過させる。
     """
 
     app.state.selfdev_service = service
+    app.state.selfdev_autobuild = False
     return app
 
 

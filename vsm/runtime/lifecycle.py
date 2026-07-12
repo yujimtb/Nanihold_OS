@@ -79,7 +79,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from vsm.agents.backends import (
     ClaudeCodeRuntime,
@@ -1688,6 +1688,7 @@ def _resolve_role_runtimes(
     llm_config: LLMConfig,
     llm_override: LLMProviderProtocol | None,
     runtime_overrides: Mapping[SystemRole, AgentRuntimeProtocol | None] | None,
+    process_factory: Callable[..., Any] | None = None,
 ) -> dict[SystemRole, AgentRuntimeProtocol | None]:
     """設定からロールごとに独立した runtime インスタンスを構築する。"""
 
@@ -1738,10 +1739,15 @@ def _resolve_role_runtimes(
             if backend.bin is None:
                 configuration_errors.append((role.value, "claude-code bin is required"))
                 continue
+            kwargs: dict[str, Any] = {
+                "claude_bin": backend.bin,
+                "model": backend.model,
+                "timeout_seconds": backend.timeout_seconds,
+            }
+            if process_factory is not None:
+                kwargs["process_factory"] = process_factory
             result[role] = ClaudeCodeRuntime(
-                claude_bin=backend.bin,
-                model=backend.model,
-                timeout_seconds=backend.timeout_seconds,
+                **kwargs,
             )
         elif backend_name == "codex":
             if backend.bin is None or backend.reasoning_effort is None:
@@ -1749,11 +1755,16 @@ def _resolve_role_runtimes(
                     (role.value, "codex bin and reasoning_effort are required")
                 )
                 continue
+            kwargs = {
+                "codex_bin": backend.bin,
+                "model": backend.model,
+                "reasoning_effort": backend.reasoning_effort,
+                "timeout_seconds": backend.timeout_seconds,
+            }
+            if process_factory is not None:
+                kwargs["process_factory"] = process_factory
             result[role] = CodexRuntime(
-                codex_bin=backend.bin,
-                model=backend.model,
-                reasoning_effort=backend.reasoning_effort,
-                timeout_seconds=backend.timeout_seconds,
+                **kwargs,
             )
         elif backend_name == "litellm":
             from vsm.llm.provider import LLMProvider

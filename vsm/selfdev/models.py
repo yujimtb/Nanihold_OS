@@ -305,7 +305,8 @@ class Auditor(StrictModel):
     backend: str = Field(min_length=1)
     model: str = Field(min_length=1)
     reasoning_effort: str = Field(min_length=1)
-    session_ref: str = Field(min_length=1)
+    # 監査は毎回 session_ref なしで開始し、runtime が返す参照も永続化しない。
+    session_ref: str | None = None
     independent: Literal[True]
 
 

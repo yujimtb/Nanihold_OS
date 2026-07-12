@@ -32,14 +32,16 @@ class AuditError(RuntimeError):
 
 
 class S3StarAuditRunner:
-    """S1 と session を共有しない S3★監査実行器。"""
+    """S1 と session を共有しない S3★監査実行器。
+
+    監査は runtime インスタンスを共有していても、呼び出しごとに新規
+    セッションで実行する。AgentRuntime の lifetime に session state 属性が
+    あることは要求しない。
+    """
 
     def __init__(self, *, runtime: AgentRuntimeProtocol, clock: Clock | None = None) -> None:
         if runtime is None:
             raise ValueError("S3★ auditor runtime は必須です")
-        session_ref = getattr(runtime, "session_ref", None)
-        if not isinstance(session_ref, str) or not session_ref.strip():
-            raise ValueError("S3★ auditor runtime には独立 session_ref が必要です")
         self.runtime = runtime
         self.clock = clock or SystemClock()
 
@@ -170,7 +172,7 @@ class S3StarAuditRunner:
                 backend=str(getattr(self.runtime, "backend_name")),
                 model=str(getattr(self.runtime, "model")),
                 reasoning_effort="ultra",
-                session_ref=str(getattr(self.runtime, "session_ref")),
+                session_ref=None,
                 independent=True,
             ),
             candidate=AuditCandidate(

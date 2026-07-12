@@ -458,16 +458,17 @@ async def test_negative_audit_is_valid_report_for_final_review(tmp_path: Path) -
             },
         })()
         store = SelfDevEventStore(tmp_path / "runs" / "selfdev", clock=FakeClock())
+        runtime = FakeAgentRuntime(
+            response=json.dumps({
+                "acceptance_results": [{"criterion_id": "AC-1", "status": "fail", "finding": "not proven"}],
+                "findings": [{"finding_id": "F-1", "severity": "error", "category": "acceptance", "summary": "criterion failed"}],
+                "verdict": "fail",
+                "summary": "negative but valid",
+            }),
+            session_ref="audit-session",
+        )
         audit = S3StarAuditRunner(
-            runtime=FakeAgentRuntime(
-                response=json.dumps({
-                    "acceptance_results": [{"criterion_id": "AC-1", "status": "fail", "finding": "not proven"}],
-                    "findings": [{"finding_id": "F-1", "severity": "error", "category": "acceptance", "summary": "criterion failed"}],
-                    "verdict": "fail",
-                    "summary": "negative but valid",
-                }),
-                session_ref="audit-session",
-            ),
+            runtime=runtime,
             clock=FakeClock(),
         )
         proposal_path = tmp_path / "proposal.json"
@@ -507,6 +508,8 @@ async def test_negative_audit_is_valid_report_for_final_review(tmp_path: Path) -
         )
         assert report.verdict == "fail"
         assert report.findings[0].severity == "error"
+        assert runtime.invocations[0].session_ref is None
+        assert report.auditor.session_ref is None
     finally:
         _git(repository, "worktree", "remove", "--force", str(worktree))
 

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from vsm.config import load_config
+from vsm.config import LLMConfig, RunConfig, load_config
 from vsm.errors import ConfigError
 from vsm.gates.runner import run_v2
 from vsm.runtime.lifecycle import _resolve_role_runtimes
@@ -54,10 +54,14 @@ def _runtime_binding(role: SystemRole, runtime: Any, run_config: Any) -> RunRunt
     return RunRuntime(role=role.value, backend=backend_name, model=model, reasoning_effort=effort)
 
 
-def build_selfdev_service() -> SelfDevService | None:
+def build_selfdev_service(
+    *,
+    config: tuple[LLMConfig, RunConfig] | None = None,
+    process_factory: Callable[..., Any] | None = None,
+) -> SelfDevService | None:
     """``[selfdev].enabled`` が明示された場合だけ本番 service を作る。"""
 
-    _llm_config, run_config = load_config(None)
+    _llm_config, run_config = config if config is not None else load_config(None)
     if not run_config.selfdev.enabled:
         return None
     runtimes = _resolve_role_runtimes(
@@ -65,6 +69,7 @@ def build_selfdev_service() -> SelfDevService | None:
         llm_config=_llm_config,
         llm_override=None,
         runtime_overrides=None,
+        process_factory=process_factory,
     )
     required = (SystemRole.S1_WORKER, SystemRole.S3_ALLOCATOR, SystemRole.S4_SCANNER, SystemRole.S5_POLICY, SystemRole.S3STAR_AUDITOR)
     missing = [role.value for role in required if runtimes.get(role) is None]
