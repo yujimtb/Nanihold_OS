@@ -78,6 +78,7 @@ from vsm.messaging.channels import ChannelId
 from vsm.messaging.message import Message
 from vsm.roles import SystemRole
 from vsm.systems.base import System
+from vsm.systems.prompts import build_s2_coordination_prompt
 
 if TYPE_CHECKING:
     # 循環 import 回避のための遅延型参照。Platform は本モジュールを
@@ -409,10 +410,10 @@ class S2Coordinator(System):
         if existing is not None:
             return dict(existing)
 
-        prompt = (
-            "あなたは VSM System 2 の調停者です。係争内容と当事者の主張を判断し、"
-            "JSON object のみを返してください。必須キーは decision と reason です。\n"
-            f"係争: {issue}\n参加者: {participants}\n主張: {claims}"
+        prompt = build_s2_coordination_prompt(
+            issue=issue,
+            participants=participants,
+            claims=claims,
         )
         response = await self._sub_agents[0].respond(prompt)
         try:

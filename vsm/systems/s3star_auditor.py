@@ -19,11 +19,10 @@ Audit cycle
    各 S1 の状態は ``specialization`` / ``current_assignments`` から
    defensively 取得する (S1_Worker の Task 17.1 実装に依存しないよう
    :func:`getattr` を使用)。
-3. **Finding 生成 (REQ 9.3 / 9.4)** — 本 PoC では各観測が finding を
-   発生させる単純なポリシを採用する (design.md §S3Star_Auditor の
-   暫定形)。``audit_finding`` event を 1 秒以内に append。``content``
-   は schema 上 ``min_length=1`` の string なので、観測内容を
-   人間可読な非空文字列にシリアライズする。
+3. **Finding 生成 (REQ 9.3 / 9.4)** — 各観測を S3★ SubAgent に渡し、
+   観測事実・判定・次のアクションを含む監査所見を生成する。
+   ``audit_finding`` event を 1 秒以内に append。``content`` は
+   SubAgent が返した非空の所見本文とする。
 4. **S5 への配送 (REQ 9.5)** — :data:`ChannelId.S3STAR_S5_AUDIT` で
    :class:`MessageBus.send` を呼ぶ。Bus は同一 event-loop tick 内に
    ``put_nowait`` + ``channel_message`` append まで完了するため、
@@ -69,6 +68,7 @@ from vsm.messaging.channels import ChannelId
 from vsm.messaging.message import Message
 from vsm.roles import SystemRole
 from vsm.systems.base import System
+from vsm.systems.prompts import build_s3star_audit_prompt
 
 if TYPE_CHECKING:
     # 循環参照回避: ``Platform`` は :mod:`vsm.runtime.lifecycle` で本クラスを
@@ -99,9 +99,8 @@ class S3StarAuditor(System):
         受信側 (S3STAR_TO_S1 / S3STAR_S5_AUDIT) は本クラスからは
         sender 専用なので subscribe しない。
     runtime : AgentRuntimeProtocol | None
-        Sub_Agent が利用する AgentRuntime。本 MVP
-        では LLM ベースの finding 解析は行わないが、後続 task で
-        Sub_Agent を介した解析を導入できるよう保持する。
+        Sub_Agent が利用する AgentRuntime。監査所見は S3★の出力契約を
+        付けたプロンプトでこの runtime に生成させる。
     clock : Clock
         Message envelope の ``timestamp_ms`` 計算と SLA 計測に使う。
     platform : Platform
@@ -313,10 +312,8 @@ class S3StarAuditor(System):
                 },
             )
 
-            # REQ 9.3: 観測 → finding 生成は 60 秒以内。本 PoC では
-            # 同期的に finding を作るため、SLA は構造的に達成。後続 task
-            # で LLM Sub_Agent を介した解析に置き換える場合は
-            # ``asyncio.wait_for(..., 60.0)`` で保護すべき。
+            # REQ 9.3: 観測 → finding 生成は 60 秒以内。SubAgent 側の
+            # AgentRuntime timeout で呼び出しを保護する。
             await self._produce_finding(
                 s1_id=s1.system_id,
                 observed_state=observed_state,
@@ -360,17 +357,18 @@ class S3StarAuditor(System):
         """
         finding_id = generate_uuid()
 
-        # REQ 9.4: ``audit_finding.content`` は非空文字列。observed_state
-        # を repr 経由で簡易シリアライズ — 完全な JSON 化ではなく、
-        # 人間可読な要約として扱う (S5 側で再パースする必要がある場合
-        # は payload を別フィールドで渡す設計に拡張する)。
-        content = (
-            f"audit observation of S1 {s1_id}: "
-            f"specialization={observed_state.get('specialization')!r}, "
-            f"current_assignments="
-            f"{observed_state.get('current_assignments')!r}, "
-            f"completed_count={observed_state.get('completed_count')!r}"
+        # REQ 9.4: 観測状態を S3★ の出力契約に従う監査所見へ変換する。
+        # 所見本文そのものを S5 へ渡し、確認質問やメタ応答が次工程へ
+        # 流れないよう、プロンプト側で出力形式を固定する。
+        response = await self._sub_agents[0].respond(
+            build_s3star_audit_prompt(
+                s1_id=s1_id,
+                observed_state=observed_state,
+            )
         )
+        content = (response.text or "").strip()
+        if not content:
+            raise ValueError("S3★監査所見は空にできません")
 
         # REQ 9.4: ``audit_finding`` を 1 秒以内に append。
         await self._eventlog.append(
