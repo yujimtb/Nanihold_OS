@@ -62,6 +62,10 @@ from vsm.messaging.channels import ChannelId
 from vsm.messaging.message import Message, SendResult
 from vsm.roles import SystemRole
 from vsm.systems.base import System
+from vsm.systems.prompts import (
+    build_s5_algedonic_prompt,
+    build_s5_policy_prompt,
+)
 
 if TYPE_CHECKING:
     # 循環参照を避けるため Platform は型注釈のみで参照する。
@@ -235,11 +239,10 @@ class S5Policy(System):
         if not isinstance(source_node_id, str) or not source_node_id.strip():
             raise ValueError("algedonic source_node_id is required")
 
-        prompt = (
-            "あなたは VSM System 5 です。Algedonic signal への対応を選び、JSON object "
-            "のみを返してください。必須キーは action と reason、action は suspend, "
-            "consortium, escalate のいずれかです。\n"
-            f"severity={severity}\nreason={reason}\nsource_node_id={source_node_id}"
+        prompt = build_s5_algedonic_prompt(
+            severity=severity,
+            reason=reason,
+            source_node_id=source_node_id,
         )
         response = await self._sub_agents[0].respond(prompt)
         try:
@@ -345,13 +348,7 @@ class S5Policy(System):
         assessment_id = assessment_payload.get("assessment_id") or "unknown"
 
         sub_agent = self._sub_agents[0]
-        prompt = (
-            "You are VSM System 5 (Policy). Given the following "
-            "EnvironmentAssessment, produce (a) a directive for "
-            "S3_Allocator and (b) a follow-up investigation request "
-            "for S4_Scanner.\n"
-            f"Assessment: {assessment_payload}"
-        )
+        prompt = build_s5_policy_prompt(assessment=assessment_payload)
         try:
             response = await sub_agent.respond(
                 prompt, context={"pending_message": msg}

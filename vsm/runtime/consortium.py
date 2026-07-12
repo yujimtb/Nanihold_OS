@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from vsm.agents import AgentRequest, AgentRuntimeProtocol, HumanAgent
+from vsm.systems.prompts import (
+    build_consortium_statement_prompt,
+    build_consortium_synthesis_prompt,
+)
 from vsm.config import ConsortiumConfig
 from vsm.eventlog.writer import EventLogWriter
 from vsm.ids import generate_uuid
@@ -130,10 +134,11 @@ class Consortium:
                 context_view = await self._build_context_view(
                     participant.node.id, subject, recent_summary
                 )
-                prompt = (
-                    "あなたは Consortium の参加者です。件名について、判断案・根拠・"
-                    "懸念を簡潔に述べてください。\n"
-                    f"件名: {subject}\nラウンド: {round_number}/{round_count}"
+                prompt = build_consortium_statement_prompt(
+                    participant_role=participant.node.vsm_position,
+                    subject=subject,
+                    round_number=round_number,
+                    round_count=round_count,
                 )
                 if participant.runtime is None:
                     statement_text = (
@@ -208,10 +213,9 @@ class Consortium:
         convener = participant_by_id[convener_node_id]
         if convener.runtime is None:
             raise ConsortiumProtocolError("convener requires an AgentRuntime")
-        synthesis_prompt = (
-            "あなたは Consortium の招集者です。以下の発言を総合し、JSON object のみを"
-            "返してください。必須キーは decision, reason, dissent_summary です。\n"
-            f"件名: {subject}\n発言:\n{self._recent_summary(statements)}"
+        synthesis_prompt = build_consortium_synthesis_prompt(
+            subject=subject,
+            statements=self._recent_summary(statements),
         )
         synthesis_context = await self._build_context_view(
             convener_node_id, subject, self._recent_summary(statements)

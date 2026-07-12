@@ -60,6 +60,7 @@ from vsm.messaging.channels import ChannelId
 from vsm.messaging.message import Message
 from vsm.roles import SystemRole
 from vsm.systems.base import System, SubAgent
+from vsm.systems.prompts import build_s4_scanner_prompt
 
 if TYPE_CHECKING:
     # 循環参照回避: ``Platform`` は :mod:`vsm.runtime.lifecycle` で本クラスを
@@ -332,10 +333,9 @@ class S4Scanner(System):
             # ``asyncio.wait_for`` が先に発火するため通常は
             # ``asyncio.TimeoutError`` を捕捉することになる。
             started = self._clock.monotonic()
-            prompt = (
-                f"You are the {sub_agent.label} Sub_Agent of S4_Scanner. "
-                f"Examine the following input and produce a single concise "
-                f"sentence describing one observation:\n{task_context!r}"
+            prompt = build_s4_scanner_prompt(
+                sub_agent_label=sub_agent.label,
+                task_context=task_context,
             )
             try:
                 response = await asyncio.wait_for(

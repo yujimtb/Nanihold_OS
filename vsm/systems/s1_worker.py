@@ -74,6 +74,7 @@ from vsm.messaging.channels import ChannelId
 from vsm.messaging.message import Message
 from vsm.roles import SystemRole
 from vsm.systems.base import System
+from vsm.systems.prompts import build_s1_worker_prompt
 from vsm.tools.search import IndexedTaskSummary
 
 if TYPE_CHECKING:
@@ -259,7 +260,10 @@ class S1Worker(System):
         sub_agent = self._sub_agents[0]
         try:
             response = await sub_agent.respond(
-                prompt=f"役割: S1 ({self.specialization})\n今回の指示: {payload.get('assignment', {})}",
+                prompt=build_s1_worker_prompt(
+                    specialization=self.specialization,
+                    assignment=payload.get("assignment", {}),
+                ),
                 context={"pending_message": msg},
             )
             result_text = response.text or "completed"
