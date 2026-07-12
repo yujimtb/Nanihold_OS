@@ -68,4 +68,71 @@ __all__ = [
     "WorkspaceController",
     "WorkspaceDescriptor",
     "WorkspaceStatus",
+    "AuditError",
+    "AuditRunner",
+    "S3StarAuditRunner",
+    "ConsortiumAdapterError",
+    "DurableHumanWaiter",
+    "HumanTimeout",
+    "HumanTimeoutPolicy",
+    "SelfDevConsortiumAdapter",
+    "ControllerError",
+    "ControllerPaused",
+    "ImplementationResult",
+    "QuotaWait",
+    "SelfDevController",
+    "ReadyQueueScheduler",
+    "SchedulerDecision",
+    "SelfDevScheduler",
+    "SelfDevService",
 ]
+
+
+def __getattr__(name: str):
+    """Wave 3 modules are loaded lazily to keep Event schema bootstrap acyclic."""
+
+    if name in {"AuditError", "AuditRunner", "S3StarAuditRunner"}:
+        from vsm.selfdev.audit import AuditError, AuditRunner, S3StarAuditRunner
+
+        return {"AuditError": AuditError, "AuditRunner": AuditRunner, "S3StarAuditRunner": S3StarAuditRunner}[name]
+    if name in {
+        "ConsortiumAdapterError",
+        "DurableHumanWaiter",
+        "HumanTimeout",
+        "HumanTimeoutPolicy",
+        "SelfDevConsortiumAdapter",
+    }:
+        from vsm.selfdev.consortium_adapter import (
+            ConsortiumAdapterError,
+            DurableHumanWaiter,
+            HumanTimeout,
+            HumanTimeoutPolicy,
+            SelfDevConsortiumAdapter,
+        )
+
+        return {
+            "ConsortiumAdapterError": ConsortiumAdapterError,
+            "DurableHumanWaiter": DurableHumanWaiter,
+            "HumanTimeout": HumanTimeout,
+            "HumanTimeoutPolicy": HumanTimeoutPolicy,
+            "SelfDevConsortiumAdapter": SelfDevConsortiumAdapter,
+        }[name]
+    if name in {"ControllerError", "ControllerPaused", "ImplementationResult", "QuotaWait", "SelfDevController"}:
+        from vsm.selfdev.controller import ControllerError, ControllerPaused, ImplementationResult, QuotaWait, SelfDevController
+
+        return {
+            "ControllerError": ControllerError,
+            "ControllerPaused": ControllerPaused,
+            "ImplementationResult": ImplementationResult,
+            "QuotaWait": QuotaWait,
+            "SelfDevController": SelfDevController,
+        }[name]
+    if name in {"ReadyQueueScheduler", "SchedulerDecision", "SelfDevScheduler"}:
+        from vsm.selfdev.scheduler import ReadyQueueScheduler, SchedulerDecision, SelfDevScheduler
+
+        return {"ReadyQueueScheduler": ReadyQueueScheduler, "SchedulerDecision": SchedulerDecision, "SelfDevScheduler": SelfDevScheduler}[name]
+    if name == "SelfDevService":
+        from vsm.selfdev.service import SelfDevService
+
+        return SelfDevService
+    raise AttributeError(name)

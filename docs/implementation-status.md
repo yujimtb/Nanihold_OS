@@ -76,6 +76,10 @@ OpenTelemetry exporter 連携
 
 Proposal の Domain / State / Event / Store 基盤に加え、Proposal 所有 workspace の create/adopt/snapshot/finalize、scope-aware GateRunner v2、protected approval hash の突合、controller-only candidate commit を実装済み。controller 駆動、Consortium、audit、API、CLI、WebUI は未実装で、[Wave 2 実装結果](../openspec/changes/selfdev-loop/wave2-result.md)に範囲と検証状況を記録している。
 
+### 自己開発ループ Wave 3 (2026-07-13)
+
+headless controller、S3/S4/S5 Consortium adapter、durable Human waiter、risk 別 timeout、protected approval、implementation/repair Run、Gate attempt 1/2、candidate commit、S3★ audit、final Consortium、PR description、MERGE_READY、terminal cleanup、ready-queue scheduler、daily report の生成器を実装済み。Wave 4 の REST API、CLI、WebUI、FastAPI lifespan 配線は未実装で、詳細は [Wave 3 実装結果](../openspec/changes/selfdev-loop/wave3-result.md)に記録している。
+
 Nanihold OS は MVP 境界を越え、VSM ランタイムとしての実装範囲を拡張中である。S1_Worker は
 LLM 応答を `s1_completion` の `result` に記録し、S1〜S5 + S3* の各 System、Event_Log、
 Node / ParentAuthority、Tool facade、Projection、Role / Agent / Execution の基礎モデルを

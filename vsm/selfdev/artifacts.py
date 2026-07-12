@@ -98,7 +98,10 @@ class SelfDevArtifactLayout:
 
     def write_proposal_manifest(self, manifest: Any) -> tuple[Path, str]:
         path = self.proposal_manifest_path(manifest.id)
-        digest = self.write_json(path, manifest.canonical_dict(), immutable=True)
+        # ProposalManifest.sha256() is defined over canonical JSON without a
+        # transport newline.  Keep that immutable hash identical to the
+        # on-disk bytes so recovery and audit can compare one contract.
+        digest = self.write_text(path, manifest.canonical_json(), immutable=True)
         if digest != manifest.sha256():
             raise ValueError("ProposalManifest の canonical hash と保存結果が一致しません")
         return path, digest

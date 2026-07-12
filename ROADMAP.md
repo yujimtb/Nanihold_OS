@@ -24,9 +24,9 @@
 
 ## 次の一歩(短期)
 
-### 自己開発ループ Wave 2 (2026-07-13)
+### 自己開発ループ Wave 3 (2026-07-13)
 
-Proposal の状態・strict Event schema・durable Store・artifact/hash・ready-queue に加え、Proposal 所有 workspace、GateRunner v2、candidate commit を接続した。詳細は [Wave 2 実装結果](openspec/changes/selfdev-loop/wave2-result.md) を参照する。次は Wave 3 の headless controller / Consortium / audit である。
+Proposal の Domain / State / Event / Store 基盤と Wave 2 の workspace / GateRunner v2 / candidate commit に加え、headless controller、Consortium、durable Human waiter、S3★ audit、repair 1回制限、scheduler を接続済み。詳細は [Wave 3 実装結果](openspec/changes/selfdev-loop/wave3-result.md) を参照する。次は Wave 4 の API / CLI / WebUI / FastAPI lifespan 配線である。
 
 1. **CLI Run と Web Run の統合** — 現状 CLI(`runs/<id>/`)と Web(`runs/web/<id>/runtime/<runtime_id>/`)は別ディレクトリ・別 run_id 体系。Event_Log projection を共有できる単一 Run identity へ寄せる
 2. **ランタイムのシャットダウン品質** — キャンセル時の孤児タスクとシャットダウン競合時の Message 消失を、実運用負荷テストを含めて継続検証する

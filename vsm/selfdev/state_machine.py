@@ -44,7 +44,7 @@ TERMINAL_PHASES = frozenset(
 )
 
 _TRANSITIONS: dict[ProposalPhase, frozenset[ProposalPhase]] = {
-    ProposalPhase.PROPOSED: frozenset({ProposalPhase.CONSORTIUM_REVIEW}),
+    ProposalPhase.PROPOSED: frozenset({ProposalPhase.CONSORTIUM_REVIEW, ProposalPhase.ABORTED}),
     ProposalPhase.CONSORTIUM_REVIEW: frozenset(
         {ProposalPhase.APPROVED, ProposalPhase.REJECTED, ProposalPhase.NEEDS_HUMAN, ProposalPhase.ABORTED}
     ),

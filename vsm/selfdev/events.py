@@ -57,9 +57,9 @@ class ProposalPauseChangedPayload(SelfDevPayload):
     reason: str = Field(min_length=1)
 
     def model_post_init(self, __context: Any) -> None:
-        if self.cause == "QUOTA_WAIT" and (not self.pool_id or not self.reset_at):
+        if self.action == "added" and self.cause == "QUOTA_WAIT" and (not self.pool_id or not self.reset_at):
             raise ValueError("QUOTA_WAIT pause event には pool_id/reset_at が必要です")
-        if self.cause == "SUSPEND" and (self.pool_id is not None or self.reset_at is not None):
+        if self.action == "added" and self.cause == "SUSPEND" and (self.pool_id is not None or self.reset_at is not None):
             raise ValueError("SUSPEND pause event に pool_id/reset_at は指定できません")
         if self.action == "removed" and self.source_event_id is None:
             raise ValueError("pause remove event には source_event_id が必要です")
@@ -139,6 +139,64 @@ class GateReportGeneratedV2Payload(SelfDevPayload):
         return _relative_ref(value)
 
 
+class ToolInvokedV2Payload(SelfDevPayload):
+    """Controller effect journal の開始記録。"""
+
+    proposal_id: str = Field(pattern=r"^proposal-[0-9a-f]{32}$")
+    effect_id: str = Field(min_length=1)
+    effect_kind: Literal["workspace", "run", "gate", "commit", "cleanup", "audit", "report"]
+    input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ToolCompletedV2Payload(SelfDevPayload):
+    """Controller effect journal の完了記録。"""
+
+    proposal_id: str = Field(pattern=r"^proposal-[0-9a-f]{32}$")
+    effect_id: str = Field(min_length=1)
+    effect_kind: Literal["workspace", "run", "gate", "commit", "cleanup", "audit", "report"]
+    result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    artifact_refs: tuple[str, ...] = ()
+    recovered: bool = False
+
+    @field_validator("artifact_refs")
+    @classmethod
+    def _refs(cls, refs: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(_relative_ref(ref) for ref in refs)
+
+
+class ToolFailedV2Payload(SelfDevPayload):
+    """Controller effect journal の失敗記録。"""
+
+    proposal_id: str = Field(pattern=r"^proposal-[0-9a-f]{32}$")
+    effect_id: str = Field(min_length=1)
+    effect_kind: Literal["workspace", "run", "gate", "commit", "cleanup", "audit", "report"]
+    error_type: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
+class HumanReviewRequestedV2Payload(SelfDevPayload):
+    """再起動しても deadline と review ID を失わない waiter request。"""
+
+    proposal_id: str = Field(pattern=r"^proposal-[0-9a-f]{32}$")
+    consortium_id: str = Field(min_length=1)
+    review_id: str = Field(min_length=1)
+    review_kind: Literal["initial"]
+    risk_class: Literal["low", "normal", "protected"]
+    deadline: str = Field(min_length=1)
+    approval_required: bool
+
+
+class HumanReviewRespondedV2Payload(SelfDevPayload):
+    """Human の statement/approval を Event Log に固定する。"""
+
+    proposal_id: str = Field(pattern=r"^proposal-[0-9a-f]{32}$")
+    consortium_id: str = Field(min_length=1)
+    review_id: str = Field(min_length=1)
+    decision: Literal["statement", "approve", "reject"]
+    response: str = Field(min_length=1)
+    response_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 SELFDEV_EVENT_TYPES: tuple[str, ...] = (
     "proposal_state_changed",
     "proposal_pause_changed",
@@ -153,6 +211,11 @@ SELFDEV_PAYLOAD_MODELS: dict[tuple[str, int], type[BaseModel]] = {
     ("audit_report_sent", 2): AuditReportSentV1Payload,
     ("consortium_decided", 2): ConsortiumDecidedV2Payload,
     ("gate_report_generated", 2): GateReportGeneratedV2Payload,
+    ("tool_invoked", 2): ToolInvokedV2Payload,
+    ("tool_completed", 2): ToolCompletedV2Payload,
+    ("tool_failed", 2): ToolFailedV2Payload,
+    ("human_review_requested", 2): HumanReviewRequestedV2Payload,
+    ("human_review_responded", 2): HumanReviewRespondedV2Payload,
 }
 
 __all__ = [
@@ -160,9 +223,14 @@ __all__ = [
     "AuditReportSentV1Payload",
     "ConsortiumDecidedV2Payload",
     "GateReportGeneratedV2Payload",
+    "HumanReviewRequestedV2Payload",
+    "HumanReviewRespondedV2Payload",
     "ProposalPauseChangedPayload",
     "ProposalRunLinkedPayload",
     "ProposalStateChangedPayload",
+    "ToolCompletedV2Payload",
+    "ToolFailedV2Payload",
+    "ToolInvokedV2Payload",
     "SELFDEV_EVENT_TYPES",
     "SELFDEV_PAYLOAD_MODELS",
 ]
