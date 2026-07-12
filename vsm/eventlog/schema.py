@@ -415,6 +415,9 @@ class LLMInvocationPayload(_StrictModel):
     latency_ms: int = Field(ge=0)
     tokens_in: int = Field(ge=0)
     tokens_out: int = Field(ge=0)
+    tokens_cache_read: int = Field(default=0, ge=0)
+    backend: str | None = None
+    session_ref: str | None = None
 
 
 class LLMTimeoutPayload(_StrictModel):
@@ -426,6 +429,9 @@ class LLMTimeoutPayload(_StrictModel):
     system_id: str = Field(min_length=1)
     sub_agent_id: str = Field(min_length=1)
     elapsed_ms: int = Field(ge=0)
+    backend: str | None = None
+    session_ref: str | None = None
+    tokens_cache_read: int = Field(default=0, ge=0)
 
 
 class LLMErrorPayload(_StrictModel):
@@ -440,6 +446,9 @@ class LLMErrorPayload(_StrictModel):
     sub_agent_id: str = Field(min_length=1)
     provider_code: str = Field(min_length=1)
     provider_message: str
+    backend: str | None = None
+    session_ref: str | None = None
+    tokens_cache_read: int = Field(default=0, ge=0)
 
 
 class S4AssessmentProducedPayload(_StrictModel):

@@ -54,7 +54,7 @@ from vsm.config import RunConfig
 from vsm.errors import LLMError, LLMProviderError, LLMTimeoutError
 from vsm.eventlog.writer import EventLogWriter
 from vsm.ids import generate_uuid
-from vsm.llm.types import LLMProviderProtocol
+from vsm.agents.runtime import AgentRuntimeProtocol
 from vsm.messaging.bus import MessageBus
 from vsm.messaging.channels import ChannelId
 from vsm.messaging.message import Message
@@ -96,8 +96,8 @@ class S4Scanner(System):
         Run 全体で共有される Event_Log writer。
     bus : MessageBus
         Channel 経由の送受信を仲介する :class:`MessageBus`。
-    llm : LLMProviderProtocol
-        Sub_Agent が利用する LLM プロバイダー (REQ 3.1, 3.7)。
+    runtime : AgentRuntimeProtocol | None
+        Sub_Agent が利用するロール別 AgentRuntime。
     clock : Clock
         SLA 計測用クロック。``FakeClock`` 注入でテスト時に決定論化する。
     platform : Platform
@@ -117,7 +117,7 @@ class S4Scanner(System):
         system_id: str,
         eventlog: EventLogWriter,
         bus: MessageBus,
-        llm: LLMProviderProtocol,
+        runtime: AgentRuntimeProtocol | None,
         clock: Clock,
         platform: "Platform",
         run_config: RunConfig,
@@ -126,7 +126,7 @@ class S4Scanner(System):
             system_id=system_id,
             role=SystemRole.S4_SCANNER,
             eventlog=eventlog,
-            llm=llm,
+            runtime=runtime,
             clock=clock,
         )
         self._bus: MessageBus = bus

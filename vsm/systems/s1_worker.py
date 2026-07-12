@@ -77,7 +77,7 @@ if TYPE_CHECKING:
     from vsm.clock import Clock
     from vsm.config import RunConfig
     from vsm.eventlog.writer import EventLogWriter
-    from vsm.llm.types import LLMProviderProtocol
+    from vsm.agents.runtime import AgentRuntimeProtocol
     from vsm.messaging.bus import MessageBus
     from vsm.runtime.lifecycle import Platform
 
@@ -111,7 +111,7 @@ class S1Worker(System):
         system_id: str,
         eventlog: "EventLogWriter",
         bus: "MessageBus",
-        llm: "LLMProviderProtocol",
+        runtime: "AgentRuntimeProtocol | None",
         clock: "Clock",
         platform: "Platform",
         run_config: "RunConfig",
@@ -121,7 +121,7 @@ class S1Worker(System):
             system_id=system_id,
             role=SystemRole.S1_WORKER,
             eventlog=eventlog,
-            llm=llm,
+            runtime=runtime,
             clock=clock,
         )
         self._bus = bus

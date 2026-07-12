@@ -41,6 +41,7 @@ from pathlib import Path
 import pytest
 
 from vsm.clock import SystemClock
+from vsm.agents.backends.fake import FakeAgentRuntime
 from vsm.errors import LLMProviderError, LLMTimeoutError
 from vsm.eventlog.writer import EventLogWriter
 from vsm.llm.fake import FakeLLMProvider
@@ -87,7 +88,7 @@ async def _build_system(
         system_id="sys-1",
         role=SystemRole.S1_WORKER,
         eventlog=writer,
-        llm=llm,
+        runtime=FakeAgentRuntime(provider=llm),
         clock=SystemClock(),
     )
     system.register_sub_agent(label="default")
@@ -197,9 +198,9 @@ async def test_respond_timeout(
     guaranteed to fire. The behaviour under test (timeout → event +
     typed raise) is identical regardless of the absolute deadline.
     """
-    monkeypatch.setattr("vsm.systems.base._LLM_TIMEOUT_SECONDS", 0.1)
     llm = FakeLLMProvider(response="never", latency=2.0)
     system, writer, events_path = await _build_system(tmp_path, llm)
+    system._runtime.timeout_seconds = 0.1
     try:
         # REQ 3.5: caller receives a typed LLMTimeoutError, not asyncio's
         # raw TimeoutError. ``raise ... from None`` in the implementation

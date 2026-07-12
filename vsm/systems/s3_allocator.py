@@ -8,7 +8,7 @@ specialization の S1_Worker を再利用 / 新規生成し、work item を S1_S
 Lifecycle role
 --------------
 本クラスは :class:`vsm.runtime.lifecycle.Platform` がコンストラクタ契約
-(キーワード専用 ``system_id``, ``eventlog``, ``bus``, ``llm``, ``clock``,
+(キーワード専用 ``system_id``, ``eventlog``, ``bus``, ``runtime``, ``clock``,
 ``platform``, ``run_config``) を満たす形で生成し、``run()`` 内で 2 つの
 受信チャネル (S3_S5, S1_S3) を subscribe して並行に多重化する。実際の
 S1 動的生成は :meth:`Platform.spawn_s1` に委譲し、Platform 側が
@@ -74,7 +74,7 @@ if TYPE_CHECKING:
     from vsm.clock import Clock
     from vsm.config import RunConfig
     from vsm.eventlog.writer import EventLogWriter
-    from vsm.llm.types import LLMProviderProtocol
+    from vsm.agents.runtime import AgentRuntimeProtocol
     from vsm.messaging.bus import MessageBus
     from vsm.runtime.lifecycle import Platform
 
@@ -159,7 +159,7 @@ class S3Allocator(System):
         system_id: str,
         eventlog: "EventLogWriter",
         bus: "MessageBus",
-        llm: "LLMProviderProtocol",
+        runtime: "AgentRuntimeProtocol | None",
         clock: "Clock",
         platform: "Platform",
         run_config: "RunConfig",
@@ -168,7 +168,7 @@ class S3Allocator(System):
             system_id=system_id,
             role=SystemRole.S3_ALLOCATOR,
             eventlog=eventlog,
-            llm=llm,
+            runtime=runtime,
             clock=clock,
         )
         self._bus = bus

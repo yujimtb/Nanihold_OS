@@ -18,9 +18,8 @@ Run start sequence
    :class:`RunDirectoryError` を raise (REQ 10.4)。CLI 層が exit code 4
    に翻訳する。``RUNNING`` lockfile は ``vsm replay`` が active Run を
    検出するために使う (REQ 11.6)。
-3. **EventLogWriter / LLMProvider / MessageBus 構築** — Run スコープの
-   依存をすべて 1 か所で組み立てる。``llm_override`` を渡せばテストで
-   :class:`FakeLLMProvider` に差し替え可能 (REQ 3.7)。
+3. **EventLogWriter / AgentRuntime / MessageBus 構築** — Run スコープの
+   依存をすべて 1 か所で組み立て、ロール別 runtime を解決する。
 4. **必須 System の生成 + ``system_instantiated`` event 発行 (REQ 1.5)**
    — 各役割について **1 つの System インスタンス** を作り、Run 開始
    から 5 秒以内に ``system_instantiated`` event を append する。
@@ -55,7 +54,7 @@ Tasks 12〜17 で実装される ``S1Worker``, ``S2Coordinator``, ``S3Allocator`
             system_id: str,
             eventlog: EventLogWriter,
             bus: MessageBus,
-            llm: LLMProviderProtocol,
+            runtime: AgentRuntimeProtocol | None,
             clock: Clock,
             platform: "Platform",
             run_config: RunConfig,
@@ -77,17 +76,24 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from vsm.agents.backends import (
+    ClaudeCodeRuntime,
+    CodexRuntime,
+    FakeAgentRuntime,
+    LiteLLMRuntimeAdapter,
+)
+from vsm.agents.runtime import AgentRuntimeProtocol
 from vsm.authority import ParentAuthority
 from vsm.clock import Clock, SystemClock
 from vsm.config import LLMConfig, RunConfig
 from vsm.errors import ConfigError, RunDirectoryError, SystemInstantiationError
 from vsm.eventlog.writer import EventLogWriter
 from vsm.ids import generate_run_id, generate_uuid
-from vsm.llm.provider import LLMProvider
 from vsm.llm.types import LLMProviderProtocol
 from vsm.messaging.bus import MessageBus
 from vsm.messaging.channels import ChannelId
@@ -168,7 +174,7 @@ class Platform:
     """Single-Run orchestrator (design.md §Architecture).
 
     1 つの Run を所有し、その間に存在する :class:`EventLogWriter`、
-    :class:`MessageBus`、LLM プロバイダー、および全 System インスタンスの
+    :class:`MessageBus`、ロール別 AgentRuntime、および全 System インスタンスの
     ライフサイクルを管理する。``asyncio.run`` で起動した呼び出し側が
     所有する asyncio event loop の上で動作する (Platform 自身は loop を
     起動しない)。
@@ -185,9 +191,8 @@ class Platform:
         Run 単位の単一 writer。:meth:`shutdown` で停止する。
     bus : MessageBus
         Run 内の全 System をつなぐメッセージバス。
-    llm : LLMProviderProtocol
-        Sub_Agent が呼び出す LLM プロバイダー。テストでは
-        :class:`FakeLLMProvider` を差し込める (REQ 3.7)。
+    runtimes : Mapping[SystemRole, AgentRuntimeProtocol | None]
+        Sub_Agent が呼び出すロール別 AgentRuntime。
     clock : Clock
         SLA 計測用クロック。本番は :class:`SystemClock`、テストでは
         :class:`FakeClock` を差し込める。
@@ -207,7 +212,7 @@ class Platform:
         run_dir: Path,
         eventlog: EventLogWriter,
         bus: MessageBus,
-        llm: LLMProviderProtocol,
+        runtimes: Mapping[SystemRole, AgentRuntimeProtocol | None],
         clock: Clock,
         run_config: RunConfig,
     ) -> None:
@@ -215,7 +220,7 @@ class Platform:
         self.run_dir: Path = run_dir
         self.eventlog: EventLogWriter = eventlog
         self.bus: MessageBus = bus
-        self.llm: LLMProviderProtocol = llm
+        self.runtimes = dict(runtimes)
         self.clock: Clock = clock
         self.run_config: RunConfig = run_config
 
@@ -252,6 +257,7 @@ class Platform:
         run_config: RunConfig | None = None,
         llm_config: LLMConfig | None = None,
         llm_override: LLMProviderProtocol | None = None,
+        runtime_overrides: Mapping[SystemRole, AgentRuntimeProtocol | None] | None = None,
         clock: Clock | None = None,
     ) -> "Platform":
         """Construct and bootstrap a :class:`Platform` for a new Run.
@@ -266,7 +272,7 @@ class Platform:
            10.4, 11.6): ``runs/{run_id}/`` を ``mkdir(exist_ok=False)``
            で作る。同名ディレクトリがすでに存在する / I/O エラー /
            権限不足時は :class:`RunDirectoryError` を raise する。
-        3. **EventLogWriter / LLMProvider / MessageBus の構築と起動**.
+        3. **EventLogWriter / AgentRuntime / MessageBus の構築と起動**.
         4. **必須 System の生成 + ``system_instantiated`` event 発行**
            (REQ 1.5): 役割ごとに 1 つの System を作り、概念 System の
            ``__init__`` が登録した Sub_Agent 数を ``sub_agent_count``
@@ -341,6 +347,18 @@ class Platform:
                 ),
             )
 
+        if llm_override is not None and runtime_overrides is not None:
+            raise ConfigError(
+                missing_roles=[],
+                detail="llm_override と runtime_overrides は同時に指定できません",
+            )
+        runtimes = _resolve_role_runtimes(
+            run_config=rc,
+            llm_config=llm_config or LLMConfig(),
+            llm_override=llm_override,
+            runtime_overrides=runtime_overrides,
+        )
+
         # ------------------------------------------------------------------
         # 2. Run dir / events.jsonl / RUNNING lockfile 作成 (REQ 10.3, 11.6)
         # ------------------------------------------------------------------
@@ -372,7 +390,7 @@ class Platform:
             ) from exc
 
         # ------------------------------------------------------------------
-        # 3. EventLogWriter / LLMProvider / MessageBus 構築
+        # 3. EventLogWriter / AgentRuntime / MessageBus 構築
         # ------------------------------------------------------------------
         # ``clock`` injection でテスト時の決定論を確保する。
         clk: Clock = clock if clock is not None else SystemClock()
@@ -381,16 +399,6 @@ class Platform:
         # ``_cleanup_partial_run`` が確実に stop できるようにする。
         writer = EventLogWriter(run_id=run_id, path=events_path, clock=clk)
         await writer.start()
-
-        # LLM プロバイダー: テストの ``llm_override`` を最優先、無ければ
-        # ``llm_config`` から本番 :class:`LLMProvider` を構築する (REQ 3.7)。
-        # ``LLMProvider.__init__`` 内で ``LLMConfig.resolve_model`` が
-        # 呼ばれるので、env / file いずれにも provider が無い場合は
-        # この時点で :class:`ConfigError` が伝播する。
-        if llm_override is not None:
-            llm: LLMProviderProtocol = llm_override
-        else:
-            llm = LLMProvider(llm_config or LLMConfig())
 
         # MessageBus は writer に依存する (channel_message / channel_rejected
         # を append するため)。
@@ -410,7 +418,7 @@ class Platform:
             run_dir=run_dir,
             eventlog=writer,
             bus=bus,
-            llm=llm,
+            runtimes=runtimes,
             clock=clk,
             run_config=rc,
         )
@@ -452,7 +460,7 @@ class Platform:
                     system_id=generate_uuid(),
                     eventlog=writer,
                     bus=bus,
-                    llm=llm,
+                    runtime=runtimes[role],
                     clock=clk,
                     platform=platform,
                     run_config=rc,
@@ -836,7 +844,7 @@ class Platform:
             system_id=generate_uuid(),
             eventlog=self.eventlog,
             bus=self.bus,
-            llm=self.llm,
+            runtime=self.runtimes[SystemRole.S1_WORKER],
             clock=self.clock,
             platform=self,
             run_config=self.run_config,
@@ -949,6 +957,95 @@ class Platform:
 # ----------------------------------------------------------------------
 
 
+def _resolve_role_runtimes(
+    *,
+    run_config: RunConfig,
+    llm_config: LLMConfig,
+    llm_override: LLMProviderProtocol | None,
+    runtime_overrides: Mapping[SystemRole, AgentRuntimeProtocol | None] | None,
+) -> dict[SystemRole, AgentRuntimeProtocol | None]:
+    """設定からロールごとに独立した runtime インスタンスを構築する。"""
+
+    configured_roles = tuple(SystemRole)
+    if runtime_overrides is not None:
+        missing = [role.value for role in configured_roles if role not in runtime_overrides]
+        if missing:
+            raise ConfigError(
+                missing_roles=missing,
+                detail="runtime_overrides は全 SystemRole を明示する必要があります",
+            )
+        invalid = [
+            role.value
+            for role in configured_roles
+            if (run_config.agents.backend_for(role) is None)
+            != (runtime_overrides[role] is None)
+        ]
+        if invalid:
+            raise ConfigError(
+                missing_roles=invalid,
+                detail="runtime_overrides が [agents.roles] の割り当てと一致しません",
+            )
+        return {role: runtime_overrides[role] for role in configured_roles}
+
+    if llm_override is not None:
+        from vsm.llm.fake import FakeLLMProvider
+
+        result: dict[SystemRole, AgentRuntimeProtocol | None] = {}
+        for role in configured_roles:
+            if run_config.agents.backend_for(role) is None:
+                result[role] = None
+            elif isinstance(llm_override, FakeLLMProvider):
+                result[role] = FakeAgentRuntime(provider=llm_override)
+            else:
+                result[role] = LiteLLMRuntimeAdapter(provider=llm_override)
+        return result
+
+    result = {}
+    for role in configured_roles:
+        backend_name = run_config.agents.backend_for(role)
+        if backend_name is None:
+            result[role] = None
+            continue
+        backend = run_config.agents.backends[backend_name]
+        if backend_name == "claude-code":
+            if backend.bin is None:
+                raise ConfigError(missing_roles=[role.value], detail="claude-code bin is required")
+            result[role] = ClaudeCodeRuntime(
+                claude_bin=backend.bin,
+                model=backend.model,
+                timeout_seconds=backend.timeout_seconds,
+            )
+        elif backend_name == "codex":
+            if backend.bin is None or backend.reasoning_effort is None:
+                raise ConfigError(
+                    missing_roles=[role.value],
+                    detail="codex bin and reasoning_effort are required",
+                )
+            result[role] = CodexRuntime(
+                codex_bin=backend.bin,
+                model=backend.model,
+                reasoning_effort=backend.reasoning_effort,
+                timeout_seconds=backend.timeout_seconds,
+            )
+        elif backend_name == "litellm":
+            from vsm.llm.provider import LLMProvider
+
+            result[role] = LiteLLMRuntimeAdapter(
+                provider=LLMProvider(llm_config),
+                timeout_seconds=backend.timeout_seconds,
+            )
+        elif backend_name == "fake":
+            result[role] = FakeAgentRuntime(
+                model=backend.model,
+                timeout_seconds=backend.timeout_seconds,
+            )
+        else:
+            raise ConfigError(
+                missing_roles=[role.value], detail=f"unsupported agent backend: {backend_name}"
+            )
+    return result
+
+
 async def start_run(
     *,
     run_id: str | None = None,
@@ -956,6 +1053,7 @@ async def start_run(
     run_config: RunConfig | None = None,
     llm_config: LLMConfig | None = None,
     llm_override: LLMProviderProtocol | None = None,
+    runtime_overrides: Mapping[SystemRole, AgentRuntimeProtocol | None] | None = None,
     clock: Clock | None = None,
 ) -> Platform:
     """Top-level coroutine to start a new Run.
@@ -1007,6 +1105,7 @@ async def start_run(
         run_config=run_config,
         llm_config=llm_config,
         llm_override=llm_override,
+        runtime_overrides=runtime_overrides,
         clock=clock,
     )
     await platform.start()

@@ -46,6 +46,9 @@ from vsm.roles import MANDATORY_ROLES, SystemRole
 
 __all__ = [
     "LLMConfig",
+    "AgentBackendConfig",
+    "AgentsConfig",
+    "SessionConfig",
     "RunConfig",
     "load_config",
     "LITELLM_PROVIDER_ENV",
@@ -56,12 +59,16 @@ __all__ = [
     "SUB_AGENT_HARD_MAX",
     "MANDATORY_SUB_AGENT_MIN",
     "MANDATORY_SUB_AGENT_MAX",
+    "CLAUDE_BIN_ENV",
+    "CODEX_BIN_ENV",
 ]
 
 
 # Name of the environment variable that, when set, overrides the LLM
 # provider selection from any configuration file (REQ 3.7).
 LITELLM_PROVIDER_ENV = "LITELLM_PROVIDER"
+CLAUDE_BIN_ENV = "CLAUDE_BIN"
+CODEX_BIN_ENV = "CODEX_BIN"
 
 # Default location of the configuration file relative to the current
 # working directory. ``vsm.toml`` is the project-local convention used by
@@ -186,6 +193,137 @@ class LLMConfig:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class AgentBackendConfig:
+    """単一 AgentRuntime バックエンドの設定。"""
+
+    bin: str | None
+    model: str
+    timeout_seconds: float
+    reasoning_effort: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.bin is not None and (not isinstance(self.bin, str) or not self.bin.strip()):
+            raise ConfigError(missing_roles=[], detail="agent backend bin must not be empty")
+        if not isinstance(self.model, str):
+            raise ConfigError(missing_roles=[], detail="agent backend model must be a string")
+        if (
+            not isinstance(self.timeout_seconds, (int, float))
+            or isinstance(self.timeout_seconds, bool)
+            or self.timeout_seconds <= 0
+        ):
+            raise ConfigError(
+                missing_roles=[],
+                detail="agent backend timeout_seconds must be positive",
+            )
+        if self.reasoning_effort is not None and (
+            not isinstance(self.reasoning_effort, str) or not self.reasoning_effort.strip()
+        ):
+            raise ConfigError(
+                missing_roles=[], detail="agent backend reasoning_effort must not be empty"
+            )
+
+
+def _default_agent_backends() -> dict[str, AgentBackendConfig]:
+    return {
+        "claude-code": AgentBackendConfig(
+            bin="claude", model="", timeout_seconds=1800.0
+        ),
+        "codex": AgentBackendConfig(
+            bin="codex",
+            model="gpt-5.6-sol",
+            reasoning_effort="high",
+            timeout_seconds=1800.0,
+        ),
+        "litellm": AgentBackendConfig(bin=None, model="", timeout_seconds=60.0),
+        "fake": AgentBackendConfig(
+            bin=None, model="fake/test-model", timeout_seconds=60.0
+        ),
+    }
+
+
+def _default_agent_roles() -> dict[SystemRole, str]:
+    return {
+        SystemRole.S5_POLICY: "claude-code",
+        SystemRole.S4_SCANNER: "claude-code",
+        SystemRole.S3_ALLOCATOR: "",
+        SystemRole.S2_COORDINATOR: "claude-code",
+        SystemRole.S3STAR_AUDITOR: "claude-code",
+        SystemRole.S1_WORKER: "codex",
+    }
+
+
+@dataclass(frozen=True)
+class AgentsConfig:
+    """ロール別 AgentRuntime 解決設定。"""
+
+    default_backend: str = "claude-code"
+    backends: Mapping[str, AgentBackendConfig] = field(
+        default_factory=_default_agent_backends
+    )
+    roles: Mapping[SystemRole, str] = field(default_factory=_default_agent_roles)
+
+    def __post_init__(self) -> None:
+        backends = dict(self.backends)
+        roles = dict(self.roles)
+        if not isinstance(self.default_backend, str) or not self.default_backend:
+            raise ConfigError(
+                missing_roles=[], detail="agents.default_backend must not be empty"
+            )
+        expected_backends = {"claude-code", "codex", "litellm", "fake"}
+        if set(backends) != expected_backends:
+            raise ConfigError(
+                missing_roles=[],
+                detail=(
+                    "agents.backends must define exactly "
+                    f"{sorted(expected_backends)}, got {sorted(backends)}"
+                ),
+            )
+        if backends["claude-code"].bin is None:
+            raise ConfigError(missing_roles=[], detail="claude-code bin is required")
+        codex = backends["codex"]
+        if codex.bin is None or not codex.model or codex.reasoning_effort is None:
+            raise ConfigError(
+                missing_roles=[],
+                detail="codex bin, model, and reasoning_effort are required",
+            )
+        if self.default_backend not in backends:
+            raise ConfigError(
+                missing_roles=[],
+                detail=f"unknown agents.default_backend: {self.default_backend!r}",
+            )
+        for role, backend in roles.items():
+            if not isinstance(role, SystemRole):
+                raise ConfigError(
+                    missing_roles=[], detail=f"invalid agents.roles key: {role!r}"
+                )
+            if not isinstance(backend, str):
+                raise ConfigError(
+                    missing_roles=[role.value],
+                    detail=f"backend for role {role.value} must be a string",
+                )
+            if backend and backend not in backends:
+                raise ConfigError(
+                    missing_roles=[role.value],
+                    detail=f"unknown backend {backend!r} for role {role.value}",
+                )
+        object.__setattr__(self, "backends", backends)
+        object.__setattr__(self, "roles", roles)
+
+    def backend_for(self, role: SystemRole) -> str | None:
+        """ロールに割り当てたバックエンド名を返す。空文字は未割当。"""
+
+        value = self.roles.get(role, self.default_backend)
+        return value or None
+
+
+@dataclass(frozen=True)
+class SessionConfig:
+    """CLI セッションの利用範囲設定。"""
+
+    resume_within_run: bool = True
+
+
 def _validate_sub_agent_count(role: SystemRole, count: int) -> None:
     """Validate a Sub_Agent count for a single role.
 
@@ -279,8 +417,18 @@ class RunConfig:
     )
     s1_max: int = S1_HARD_MAX
     s1_dynamic_max: int = S1_DYNAMIC_MAX
+    agents: AgentsConfig = field(default_factory=AgentsConfig)
+    session: SessionConfig = field(default_factory=SessionConfig)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.agents, AgentsConfig):
+            raise ConfigError(
+                missing_roles=[], detail="RunConfig.agents must be an AgentsConfig"
+            )
+        if not isinstance(self.session, SessionConfig):
+            raise ConfigError(
+                missing_roles=[], detail="RunConfig.session must be a SessionConfig"
+            )
         # Materialise the mapping into a plain dict so that callers can
         # not mutate the configuration after construction. The frozen
         # dataclass would still allow mutation through the original
@@ -471,7 +619,13 @@ def _extract_llm_section(raw: Mapping[str, Any], path: Path) -> tuple[str | None
     return provider, overrides
 
 
-def _extract_run_section(raw: Mapping[str, Any], path: Path) -> RunConfig:
+def _extract_run_section(
+    raw: Mapping[str, Any],
+    path: Path,
+    *,
+    agents: AgentsConfig,
+    session: SessionConfig,
+) -> RunConfig:
     """Build a :class:`RunConfig` from the optional ``[run]`` TOML section.
 
     Recognised entries (all optional):
@@ -483,7 +637,7 @@ def _extract_run_section(raw: Mapping[str, Any], path: Path) -> RunConfig:
     """
     section = raw.get("run")
     if section is None:
-        return RunConfig()
+        return RunConfig(agents=agents, session=session)
     if not isinstance(section, Mapping):
         raise ConfigError(
             missing_roles=[],
@@ -532,7 +686,158 @@ def _extract_run_section(raw: Mapping[str, Any], path: Path) -> RunConfig:
         sub_agents_per_role=counts,
         s1_max=s1_max,
         s1_dynamic_max=s1_dynamic_max,
+        agents=agents,
+        session=session,
     )
+
+
+def _require_string(value: Any, *, field_name: str, path: Path) -> str:
+    if not isinstance(value, str):
+        raise ConfigError(
+            missing_roles=[],
+            detail=f"{field_name} in {path} must be a string",
+        )
+    return value.strip()
+
+
+def _extract_agents_section(raw: Mapping[str, Any], path: Path) -> AgentsConfig:
+    """``[agents]`` と CLI bin の環境変数上書きを読み込む。"""
+
+    defaults = AgentsConfig()
+    section = raw.get("agents")
+    if section is None:
+        section = {}
+    if not isinstance(section, Mapping):
+        raise ConfigError(missing_roles=[], detail=f"[agents] section in {path} must be a table")
+
+    default_backend = _require_string(
+        section.get("default_backend", defaults.default_backend),
+        field_name="[agents] default_backend",
+        path=path,
+    )
+    if not default_backend:
+        raise ConfigError(missing_roles=[], detail="[agents] default_backend must not be empty")
+
+    backends = dict(defaults.backends)
+    raw_backends = section.get("backends", {})
+    if not isinstance(raw_backends, Mapping):
+        raise ConfigError(missing_roles=[], detail=f"[agents.backends] in {path} must be a table")
+    unknown_backends = set(raw_backends) - set(backends)
+    if unknown_backends:
+        raise ConfigError(
+            missing_roles=[],
+            detail=f"unknown [agents.backends] entries: {sorted(unknown_backends)}",
+        )
+    for name, raw_backend in raw_backends.items():
+        if not isinstance(raw_backend, Mapping):
+            raise ConfigError(
+                missing_roles=[], detail=f"[agents.backends.{name}] in {path} must be a table"
+            )
+        base = backends[name]
+        allowed = {"bin", "model", "timeout_seconds", "reasoning_effort"}
+        unknown_fields = set(raw_backend) - allowed
+        if unknown_fields:
+            raise ConfigError(
+                missing_roles=[],
+                detail=f"unknown fields in [agents.backends.{name}]: {sorted(unknown_fields)}",
+            )
+        bin_value = base.bin
+        if "bin" in raw_backend:
+            bin_value = _require_string(
+                raw_backend["bin"], field_name=f"[agents.backends.{name}] bin", path=path
+            )
+            if not bin_value:
+                raise ConfigError(
+                    missing_roles=[], detail=f"[agents.backends.{name}] bin must not be empty"
+                )
+        model = _require_string(
+            raw_backend.get("model", base.model),
+            field_name=f"[agents.backends.{name}] model",
+            path=path,
+        )
+        timeout_seconds = raw_backend.get("timeout_seconds", base.timeout_seconds)
+        if (
+            not isinstance(timeout_seconds, (int, float))
+            or isinstance(timeout_seconds, bool)
+            or timeout_seconds <= 0
+        ):
+            raise ConfigError(
+                missing_roles=[],
+                detail=f"[agents.backends.{name}] timeout_seconds must be positive",
+            )
+        effort = base.reasoning_effort
+        if "reasoning_effort" in raw_backend:
+            effort = _require_string(
+                raw_backend["reasoning_effort"],
+                field_name=f"[agents.backends.{name}] reasoning_effort",
+                path=path,
+            )
+            if not effort:
+                raise ConfigError(
+                    missing_roles=[],
+                    detail=f"[agents.backends.{name}] reasoning_effort must not be empty",
+                )
+        backends[name] = AgentBackendConfig(
+            bin=bin_value,
+            model=model,
+            timeout_seconds=float(timeout_seconds),
+            reasoning_effort=effort,
+        )
+
+    raw_roles = section.get("roles", {})
+    if not isinstance(raw_roles, Mapping):
+        raise ConfigError(missing_roles=[], detail=f"[agents.roles] in {path} must be a table")
+    roles = dict(defaults.roles)
+    roles_by_name = {role.value: role for role in SystemRole}
+    for role_name, backend in raw_roles.items():
+        role = roles_by_name.get(role_name)
+        if role is None:
+            raise ConfigError(
+                missing_roles=[], detail=f"unknown [agents.roles] role: {role_name!r}"
+            )
+        roles[role] = _require_string(
+            backend, field_name=f"[agents.roles] {role_name}", path=path
+        )
+
+    for env_name, backend_name in (
+        (CLAUDE_BIN_ENV, "claude-code"),
+        (CODEX_BIN_ENV, "codex"),
+    ):
+        env_value = os.environ.get(env_name)
+        if env_value is None:
+            continue
+        resolved = env_value.strip()
+        if not resolved:
+            raise ConfigError(missing_roles=[], detail=f"{env_name} must not be empty")
+        base = backends[backend_name]
+        backends[backend_name] = AgentBackendConfig(
+            bin=resolved,
+            model=base.model,
+            timeout_seconds=base.timeout_seconds,
+            reasoning_effort=base.reasoning_effort,
+        )
+    return AgentsConfig(
+        default_backend=default_backend,
+        backends=backends,
+        roles=roles,
+    )
+
+
+def _extract_session_section(raw: Mapping[str, Any], path: Path) -> SessionConfig:
+    section = raw.get("session")
+    if section is None:
+        return SessionConfig()
+    if not isinstance(section, Mapping):
+        raise ConfigError(missing_roles=[], detail=f"[session] section in {path} must be a table")
+    unknown = set(section) - {"resume_within_run"}
+    if unknown:
+        raise ConfigError(missing_roles=[], detail=f"unknown [session] fields: {sorted(unknown)}")
+    value = section.get("resume_within_run", True)
+    if not isinstance(value, bool):
+        raise ConfigError(
+            missing_roles=[], detail="[session] resume_within_run must be a boolean"
+        )
+    return SessionConfig(resume_within_run=value)
 
 
 def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
@@ -578,9 +883,10 @@ def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
     if path is None:
         candidate = DEFAULT_CONFIG_PATH
         if not candidate.exists():
+            agents = _extract_agents_section({}, candidate)
             return (
                 LLMConfig(provider_from_env=env_provider),
-                RunConfig(),
+                RunConfig(agents=agents),
             )
         toml_path = candidate
     else:
@@ -594,7 +900,9 @@ def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
     raw = _parse_toml(toml_path)
 
     file_provider, overrides = _extract_llm_section(raw, toml_path)
-    run_config = _extract_run_section(raw, toml_path)
+    agents = _extract_agents_section(raw, toml_path)
+    session = _extract_session_section(raw, toml_path)
+    run_config = _extract_run_section(raw, toml_path, agents=agents, session=session)
     llm_config = LLMConfig(
         provider_from_env=env_provider,
         provider_from_file=file_provider,

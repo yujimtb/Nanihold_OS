@@ -1,44 +1,8 @@
-"""``System`` and ``SubAgent`` base classes (Task 10.1).
+"""VSM の ``System`` と AgentRuntime 駆動 ``SubAgent`` の基底クラス。
 
-design.md `## Components and Interfaces` §1 (System / Sub_Agent 基底クラス)
-に対応する基底層。本モジュールは VSM の各 System (S1〜S5, S3*) が共有する
-ライフサイクル / Sub_Agent 登録 / LLM 呼び出しの SLA 制御をまとめる。
-
-Layered design
---------------
-- :class:`SubAgent` は LLM プロンプトを実行する内側のユニットで、
-  ``respond`` メソッドが LLM_Provider_Abstraction を 60 秒タイムアウトで
-  保護し、成功 / タイムアウト / プロバイダーエラーの 3 経路すべてを
-  Event_Log に必ず 1 イベントとして残す (REQ 3.3 / 3.5 / 3.6)。
-- :class:`System` は VSM 上の役割をラップする外殻で、
-  ``register_sub_agent`` で 1〜64 個の Sub_Agent を保持する (REQ 1.4)、
-  ``run()`` を抽象メソッドとして各サブクラスに任せ、``start()`` /
-  ``shutdown()`` で asyncio Task のライフサイクルを管理する。
-
-Defense-in-depth timeout
-------------------------
-LLM 呼び出しは 2 段でタイムアウトされる:
-
-1. SDK レイヤ (``LLMProvider`` 内の ``litellm.acompletion(timeout=60)``)
-2. asyncio レイヤ (本モジュールの ``asyncio.wait_for(..., 60)``)
-
-これにより SDK 内のスレッドプールが詰まった場合でも 60 秒以内に必ず
-``asyncio.TimeoutError`` が起き、REQ 3.4 / 3.5 の SLA を二重防衛で保証する。
-
-Validates Requirements
-----------------------
-- REQ 1.1: 各 System は :class:`SystemRole` で識別される一意の役割を持つ。
-- REQ 1.4: 各 System は 1〜64 個の Sub_Agent を持つ (上限を
-  ``register_sub_agent`` で強制、下限は Run 開始時のライフサイクル層で
-  確認 — Task 11.1)。
-- REQ 3.2: System が Channel メッセージを受け取り Sub_Agent に dispatch
-  する場合、本基底の ``SubAgent.respond`` が LLM_Provider_Abstraction を
-  経由する。
-- REQ 3.3: LLM 応答受領時、``llm_invocation`` を 1 秒以内に append。
-- REQ 3.4: ``asyncio.wait_for(..., 60.0)`` で 60 秒タイムアウトを強制。
-- REQ 3.5: タイムアウト時は ``llm_timeout`` を append し
-  :class:`LLMTimeoutError` を raise (構造的に 1 秒以内)。
-- REQ 3.6: プロバイダーエラー時は ``llm_error`` を append し再 raise。
+``SubAgent.respond`` はロール別に注入された AgentRuntime を呼び出し、
+バックエンド既定またはリクエスト指定のタイムアウトを強制する。成功、
+タイムアウト、実行エラーは既存の Event_Log イベント名で記録する。
 """
 
 from __future__ import annotations
@@ -46,21 +10,22 @@ from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 
+from vsm.agents.runtime import (
+    AgentRequest,
+    AgentResult,
+    AgentRuntimeError,
+    AgentRuntimeProtocol,
+)
 from vsm.clock import Clock
 from vsm.errors import ConfigError, LLMProviderError, LLMTimeoutError
 from vsm.eventlog.writer import EventLogWriter
 from vsm.ids import generate_uuid
-from vsm.llm.types import LLMProviderProtocol, LLMResponse
 from vsm.roles import SystemRole
 
 __all__ = ["SubAgent", "System"]
 
-
-# REQ 3.4: per-invocation timeout for LLM calls. Float so ``asyncio.wait_for``
-# accepts it directly. The SDK layer (``LLMProvider``) imposes the same
-# 60-second deadline as defence-in-depth — see module docstring.
-_LLM_TIMEOUT_SECONDS: float = 60.0
 
 # REQ 1.4: each System hosts between 1 and 64 Sub_Agent instances. The lower
 # bound is verified at Run start by the lifecycle layer (Task 11.1); the
@@ -90,9 +55,8 @@ class SubAgent:
     system_id : str
         親 System の ``system_id``。``llm_invocation`` 等の payload に
         ``system_id`` として転写される (REQ 3.3)。
-    _llm : LLMProviderProtocol
-        LLM プロバイダー (本番は :class:`vsm.llm.provider.LLMProvider`、
-        テストは :class:`vsm.llm.fake.FakeLLMProvider`, REQ 3.1 / 3.7)。
+    _runtime : AgentRuntimeProtocol | None
+        ロール別 AgentRuntime。決定論ロールでは ``None`` を許容する。
     _eventlog : EventLogWriter
         Event_Log writer。``llm_invocation`` / ``llm_timeout`` /
         ``llm_error`` の 3 経路すべてで本 writer 経由で append する。
@@ -106,7 +70,7 @@ class SubAgent:
     sub_agent_id: str
     label: str
     system_id: str
-    _llm: LLMProviderProtocol
+    _runtime: AgentRuntimeProtocol | None
     _eventlog: EventLogWriter
     _clock: Clock
 
@@ -114,22 +78,22 @@ class SubAgent:
         self,
         prompt: str,
         context: dict | None = None,
-    ) -> LLMResponse:
+    ) -> AgentResult:
         """LLM_Provider_Abstraction を介して 1 回の応答を返す。
 
         本メソッドは 3 つの経路を漏れなく Event_Log に記録する:
 
         1. **正常応答 (REQ 3.3)** — ``asyncio.wait_for`` 内で
-           ``self._llm.invoke(...)`` が成功した場合、``llm_invocation``
-           イベントを append し :class:`LLMResponse` を呼び出し元に返す。
-        2. **タイムアウト (REQ 3.4 / 3.5)** — 60 秒以内に応答が返らない
+           ``self._runtime.invoke(...)`` が成功した場合、``llm_invocation``
+           イベントを append し :class:`AgentResult` を呼び出し元に返す。
+        2. **タイムアウト (REQ 3.4 / 3.5)** — バックエンドの期限内に応答が返らない
            場合、``asyncio.wait_for`` が ``asyncio.TimeoutError`` を上げる。
            本メソッドはそれを捕捉して ``llm_timeout`` イベントを append
            した後、:class:`LLMTimeoutError` を raise する。Event_Log
            append とエラー伝達は同一イベントループ内で連続的に行われる
            ため、構造的に「キャンセル後 1 秒以内」(REQ 3.5) を満たす。
-        3. **プロバイダーエラー (REQ 3.6)** — ``self._llm.invoke`` が
-           :class:`LLMProviderError` を raise した場合、``llm_error``
+        3. **実行エラー (REQ 3.6)** — ``self._runtime.invoke`` が
+           AgentRuntime の正規化例外を raise した場合、``llm_error``
            イベントを append し、同じ例外を再 raise する。
 
         Parameters
@@ -144,14 +108,14 @@ class SubAgent:
 
         Returns
         -------
-        LLMResponse
+        AgentResult
             ``text`` / ``model`` / ``latency_ms`` / ``tokens_in`` /
             ``tokens_out`` を含む値オブジェクト。
 
         Raises
         ------
         LLMTimeoutError
-            60 秒以内に応答が返らなかった (REQ 3.5)。
+            バックエンド別の期限内に応答が返らなかった (REQ 3.5)。
         LLMProviderError
             プロバイダー側エラーが返った (REQ 3.6)。再 raise であり、
             ``llm_error`` イベントの append 自体は本メソッド内で完了
@@ -162,6 +126,22 @@ class SubAgent:
         # 採用される (REQ 3.7)。テストでは context に ``"model"`` を
         # 明示することで FakeLLMProvider のラベルを切り替えられる。
         model = ctx.get("model")
+        runtime = self._runtime
+        if runtime is None:
+            raise AgentRuntimeError(
+                backend="unassigned",
+                code="runtime_not_configured",
+                message=f"{self.system_id} のロールには AgentRuntime が割り当てられていません",
+            )
+        timeout = ctx.get("timeout_seconds", runtime.timeout_seconds)
+        request = AgentRequest(
+            prompt=prompt,
+            context_view=ctx.get("context_view"),
+            session_ref=ctx.get("session_ref"),
+            workdir=(Path(ctx["workdir"]) if ctx.get("workdir") is not None else None),
+            model=model,
+            timeout_seconds=timeout,
+        )
 
         # REQ 3.5 の elapsed_ms 計測は壁時計ではなく monotonic clock を
         # 使う。``FakeClock.monotonic`` は ``advance()`` でのみ進むため、
@@ -185,11 +165,11 @@ class SubAgent:
 
         try:
             response = await asyncio.wait_for(
-                self._llm.invoke(prompt, model=model),
-                timeout=_LLM_TIMEOUT_SECONDS,
+                runtime.invoke(request),
+                timeout=timeout,
             )
         except asyncio.TimeoutError:
-            # REQ 3.4 / 3.5: 60 秒タイムアウト。``asyncio.wait_for`` が
+            # REQ 3.4 / 3.5: バックエンド別タイムアウト。``asyncio.wait_for`` が
             # 既に裏側のタスクを cancel しているので、追加の cancel 操作
             # は不要。``elapsed_ms`` は schema の ge=0 制約を満たすため
             # 念のため負値を 0 にクランプする。
@@ -201,10 +181,14 @@ class SubAgent:
                     "system_id": self.system_id,
                     "sub_agent_id": self.sub_agent_id,
                     "elapsed_ms": elapsed_ms,
+                    "backend": runtime.backend_name,
+                    "session_ref": request.session_ref,
+                    "tokens_cache_read": 0,
                 },
                 node_id=self.system_id,
                 actor_type="agent",
                 actor_id=self.sub_agent_id,
+                schema_version=2,
             )
             await self._eventlog.append(
                 "tool_failed",
@@ -222,30 +206,37 @@ class SubAgent:
             # VSM の typed error だけが見えるようにする (design.md
             # §エラー伝播の原則 §典型化)。
             raise LLMTimeoutError(self.sub_agent_id, elapsed) from None
-        except LLMProviderError as exc:
+        except (AgentRuntimeError, LLMProviderError) as exc:
             # REQ 3.6: プロバイダーエラー。``provider_code`` schema は
             # min_length=1 の文字列を要求するため、``int | str`` の
             # ``exc.code`` を ``str()`` で正規化する。``provider_message``
             # は schema 上 min_length 制約が無いため空文字も通る。
+            code = exc.code
+            message = exc.message
+            backend = exc.backend if isinstance(exc, AgentRuntimeError) else runtime.backend_name
             await self._eventlog.append(
                 "llm_error",
                 {
                     "system_id": self.system_id,
                     "sub_agent_id": self.sub_agent_id,
-                    "provider_code": str(exc.code),
-                    "provider_message": exc.message,
+                    "provider_code": str(code),
+                    "provider_message": message,
+                    "backend": backend,
+                    "session_ref": request.session_ref,
+                    "tokens_cache_read": 0,
                 },
                 node_id=self.system_id,
                 actor_type="agent",
                 actor_id=self.sub_agent_id,
+                schema_version=2,
             )
             await self._eventlog.append(
                 "tool_failed",
                 {
                     "tool_invocation_id": tool_invocation_id,
                     "tool_name": "llm_call",
-                    "reason": str(exc.code),
-                    "message": exc.message,
+                    "reason": str(code),
+                    "message": message,
                 },
                 node_id=self.system_id,
                 actor_type="agent",
@@ -253,7 +244,7 @@ class SubAgent:
             )
             raise
 
-        # REQ 3.3: 成功経路。``llm_invocation`` payload は LLMResponse の
+        # REQ 3.3: 成功経路。``llm_invocation`` payload は AgentResult の
         # フィールドを忠実に転写する (design.md §Event_Log §payload 表)。
         # caller が SLA を観測しやすいよう、append は ``await`` で同期
         # 完了を待ち、戻り値返却前に Event_Log に確実に記録する。
@@ -268,10 +259,14 @@ class SubAgent:
                 "latency_ms": response.latency_ms,
                 "tokens_in": response.tokens_in,
                 "tokens_out": response.tokens_out,
+                "tokens_cache_read": response.tokens_cache_read,
+                "backend": response.backend,
+                "session_ref": response.session_ref,
             },
             node_id=self.system_id,
             actor_type="agent",
             actor_id=self.sub_agent_id,
+            schema_version=2,
         )
         await self._eventlog.append(
             "tool_completed",
@@ -283,6 +278,9 @@ class SubAgent:
                     "latency_ms": response.latency_ms,
                     "tokens_in": response.tokens_in,
                     "tokens_out": response.tokens_out,
+                    "tokens_cache_read": response.tokens_cache_read,
+                    "backend": response.backend,
+                    "session_ref": response.session_ref,
                 },
             },
             node_id=self.system_id,
@@ -317,8 +315,8 @@ class System(ABC):
         VSM 上の役割 (S1_WORKER / S2_COORDINATOR / ... ; REQ 1.1)。
     eventlog : EventLogWriter
         Run 単位で共有される Event_Log writer。
-    llm : LLMProviderProtocol
-        Sub_Agent が利用する LLM プロバイダー (REQ 3.1 / 3.7)。
+    runtime : AgentRuntimeProtocol | None
+        Sub_Agent が利用するロール別 AgentRuntime。
     clock : Clock
         Sub_Agent / 内部 SLA 計測で利用するクロック。
     """
@@ -329,13 +327,13 @@ class System(ABC):
         system_id: str,
         role: SystemRole,
         eventlog: EventLogWriter,
-        llm: LLMProviderProtocol,
+        runtime: AgentRuntimeProtocol | None,
         clock: Clock,
     ) -> None:
         self.system_id: str = system_id
         self.role: SystemRole = role
         self._eventlog: EventLogWriter = eventlog
-        self._llm: LLMProviderProtocol = llm
+        self._runtime = runtime
         self._clock: Clock = clock
         # ``list`` を内部状態として保持し、``sub_agents`` プロパティ経由で
         # コピーを返すことで外部からの破壊的変更を防ぐ。
@@ -407,7 +405,7 @@ class System(ABC):
             sub_agent_id=generate_uuid(),
             label=label,
             system_id=self.system_id,
-            _llm=self._llm,
+            _runtime=self._runtime,
             _eventlog=self._eventlog,
             _clock=self._clock,
         )

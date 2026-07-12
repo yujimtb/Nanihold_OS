@@ -54,7 +54,7 @@ from vsm.clock import Clock
 from vsm.config import RunConfig
 from vsm.eventlog.writer import EventLogWriter
 from vsm.ids import generate_uuid
-from vsm.llm.types import LLMProviderProtocol
+from vsm.agents.runtime import AgentRuntimeProtocol
 from vsm.messaging.bus import MessageBus
 from vsm.messaging.channels import ChannelId
 from vsm.messaging.message import Message, SendResult
@@ -96,8 +96,8 @@ class S5Policy(System):
     bus : MessageBus
         Run スコープの単一 :class:`MessageBus`。本 System は
         ``subscribe`` と ``send`` 双方を呼ぶ。
-    llm : LLMProviderProtocol
-        Sub_Agent が呼び出す LLM プロバイダー (REQ 3.1 / 3.7)。
+    runtime : AgentRuntimeProtocol | None
+        Sub_Agent が呼び出すロール別 AgentRuntime。
     clock : Clock
         SLA 計測 / メッセージ ``timestamp_ms`` の生成に使うクロック。
     platform : Platform
@@ -116,7 +116,7 @@ class S5Policy(System):
         system_id: str,
         eventlog: EventLogWriter,
         bus: MessageBus,
-        llm: LLMProviderProtocol,
+        runtime: AgentRuntimeProtocol | None,
         clock: Clock,
         platform: "Platform",
         run_config: RunConfig,
@@ -125,7 +125,7 @@ class S5Policy(System):
             system_id=system_id,
             role=SystemRole.S5_POLICY,
             eventlog=eventlog,
-            llm=llm,
+            runtime=runtime,
             clock=clock,
         )
         self._bus = bus

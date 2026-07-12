@@ -10,10 +10,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from vsm.agents.backends.fake import FakeAgentRuntime
 from vsm.config import load_config
 from vsm.eventlog.reader import read_all
 from vsm.ids import generate_run_id, generate_uuid
-from vsm.llm.fake import FakeLLMProvider
 from vsm.roles import SystemRole
 from vsm.runtime.lifecycle import Platform, start_run
 from vsm.web.models import RunGeneration, WebRun, WebRunStatus
@@ -304,12 +304,19 @@ class RunManager:
             llm_config, run_config = load_config(None)
             use_fake = os.environ.get("NANIHOLD_USE_FAKE_LLM", "").lower() in {"1", "true", "yes"}
             if use_fake or not (llm_config.provider_from_env or llm_config.provider_from_file):
-                llm_override = FakeLLMProvider(
-                    response=lambda prompt, _model: self._fake_response(prompt),
-                    latency=0.08,
-                )
+                runtime_overrides = {
+                    role: (
+                        None
+                        if run_config.agents.backend_for(role) is None
+                        else FakeAgentRuntime(
+                            response=lambda request: self._fake_response(request.prompt),
+                            latency=0.08,
+                        )
+                    )
+                    for role in SystemRole
+                }
             else:
-                llm_override = None
+                runtime_overrides = None
 
             runtime_root = run.run_dir / "runtime"
             platform = await start_run(
@@ -317,7 +324,7 @@ class RunManager:
                 runs_dir=runtime_root,
                 run_config=run_config,
                 llm_config=llm_config,
-                llm_override=llm_override,
+                runtime_overrides=runtime_overrides,
             )
             self._platforms[run.run_id] = platform
 

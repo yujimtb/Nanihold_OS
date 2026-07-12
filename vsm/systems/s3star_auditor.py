@@ -63,7 +63,7 @@ from vsm.clock import Clock
 from vsm.config import RunConfig
 from vsm.eventlog.writer import EventLogWriter
 from vsm.ids import generate_uuid
-from vsm.llm.types import LLMProviderProtocol
+from vsm.agents.runtime import AgentRuntimeProtocol
 from vsm.messaging.bus import MessageBus
 from vsm.messaging.channels import ChannelId
 from vsm.messaging.message import Message
@@ -98,8 +98,8 @@ class S3StarAuditor(System):
         Channel 経由の送信を仲介する :class:`MessageBus`。
         受信側 (S3STAR_TO_S1 / S3STAR_S5_AUDIT) は本クラスからは
         sender 専用なので subscribe しない。
-    llm : LLMProviderProtocol
-        Sub_Agent が利用する LLM プロバイダー (REQ 3.1, 3.7)。本 MVP
+    runtime : AgentRuntimeProtocol | None
+        Sub_Agent が利用する AgentRuntime。本 MVP
         では LLM ベースの finding 解析は行わないが、後続 task で
         Sub_Agent を介した解析を導入できるよう保持する。
     clock : Clock
@@ -120,7 +120,7 @@ class S3StarAuditor(System):
         system_id: str,
         eventlog: EventLogWriter,
         bus: MessageBus,
-        llm: LLMProviderProtocol,
+        runtime: AgentRuntimeProtocol | None,
         clock: Clock,
         platform: "Platform",
         run_config: RunConfig,
@@ -129,7 +129,7 @@ class S3StarAuditor(System):
             system_id=system_id,
             role=SystemRole.S3STAR_AUDITOR,
             eventlog=eventlog,
-            llm=llm,
+            runtime=runtime,
             clock=clock,
         )
         self._bus: MessageBus = bus
