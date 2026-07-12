@@ -210,20 +210,19 @@ class S4Scanner(System):
             self.system_id, ChannelId.S4_S5
         )
 
+        getter_tasks: set[asyncio.Task[Any]] = set()
         try:
             while True:
                 # 各 iteration で getter Task を生成し、wait の結果次第で
                 # cancel/再生成する。Queue は ``put`` 側が消費するまで
                 # item を保持するので、get Task を cancel しても enqueue
                 # された item が失われることはない。
-                task_getter = asyncio.create_task(
-                    self._task_queue.get(), name="s4_task_get"
-                )
-                channel_getter = asyncio.create_task(
-                    s4_s5_queue.get(), name="s4_s5_get"
-                )
+                getter_tasks = {
+                    asyncio.create_task(self._task_queue.get(), name="s4_task_get"),
+                    asyncio.create_task(s4_s5_queue.get(), name="s4_s5_get"),
+                }
                 done, pending = await asyncio.wait(
-                    {task_getter, channel_getter},
+                    getter_tasks,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
 
@@ -232,15 +231,11 @@ class S4Scanner(System):
                 # 待機中の future が cancel されるだけで item は残る。
                 for fut in pending:
                     fut.cancel()
-                    # CancelledError をここで握りつぶしておかないと
-                    # 「未捕捉例外」警告が出る場合がある。
-                    try:
-                        await fut
-                    except (asyncio.CancelledError, BaseException):
-                        # ``BaseException`` まで拾う必要は通常ないが、
-                        # ``Queue.get`` は CancelledError 以外を出さない
-                        # ため安全。
-                        pass
+                # 外側の System task がこの await 中にキャンセルされても、
+                # 下の ``except CancelledError`` が getter_tasks 全体を回収
+                # できるよう、完了後にのみ集合を空にする。
+                await asyncio.gather(*pending, return_exceptions=True)
+                getter_tasks = set()
 
                 for fut in done:
                     item = fut.result()
@@ -280,6 +275,13 @@ class S4Scanner(System):
                     # それ以外の型は構造上来ない (Queue の型注釈で
                     # 保証されている)。
         except asyncio.CancelledError:
+            # ``asyncio.wait`` 中のキャンセルでは ``pending`` が束縛される
+            # 前に例外が飛ぶため、明示的に全 getter を回収する。これを
+            # 欠くと Queue.get の子 task が残り、``asyncio.run`` の終了時
+            # に無期限待機する。
+            for getter in getter_tasks:
+                getter.cancel()
+            await asyncio.gather(*getter_tasks, return_exceptions=True)
             # Lifecycle からの shutdown 経路。基底 System.shutdown が
             # 受け止めるので、ここでは握り潰さず再 raise する。
             raise

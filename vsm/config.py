@@ -43,6 +43,7 @@ from dotenv import load_dotenv
 
 from vsm.errors import ConfigError
 from vsm.roles import MANDATORY_ROLES, SystemRole
+from vsm.runtime.manifest import DEFAULT_SELFDEV_FORBIDDEN_PATHS
 
 __all__ = [
     "LLMConfig",
@@ -54,6 +55,7 @@ __all__ = [
     "ConsortiumConfig",
     "BudgetConfig",
     "QuotaConfig",
+    "SelfDevConfig",
     "RunConfig",
     "load_config",
     "LITELLM_PROVIDER_ENV",
@@ -455,6 +457,29 @@ class QuotaConfig:
                 raise ConfigError(missing_roles=[], detail=f"quota.{name} must be positive")
 
 
+@dataclass(frozen=True)
+class SelfDevConfig:
+    """self-hosting Run の有効化と repository 保護設定。"""
+
+    enabled: bool = False
+    repository: Path = field(default_factory=lambda: Path.cwd())
+    forbidden_paths: tuple[str, ...] = DEFAULT_SELFDEV_FORBIDDEN_PATHS
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ConfigError(missing_roles=[], detail="selfdev.enabled must be a boolean")
+        if not isinstance(self.repository, Path):
+            raise ConfigError(
+                missing_roles=[], detail="selfdev.repository must be a path string"
+            )
+        if any(not isinstance(value, str) or not value.strip() for value in self.forbidden_paths):
+            raise ConfigError(
+                missing_roles=[], detail="selfdev.forbidden_paths must contain non-empty strings"
+            )
+        object.__setattr__(self, "repository", self.repository.resolve(strict=False))
+        object.__setattr__(self, "forbidden_paths", tuple(self.forbidden_paths))
+
+
 def _validate_sub_agent_count(role: SystemRole, count: int) -> None:
     """Validate a Sub_Agent count for a single role.
 
@@ -555,6 +580,7 @@ class RunConfig:
     consortium: ConsortiumConfig = field(default_factory=ConsortiumConfig)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     quota: QuotaConfig = field(default_factory=QuotaConfig)
+    selfdev: SelfDevConfig = field(default_factory=SelfDevConfig)
 
     def __post_init__(self) -> None:
         if not isinstance(self.agents, AgentsConfig):
@@ -581,6 +607,8 @@ class RunConfig:
             raise ConfigError(missing_roles=[], detail="RunConfig.budget must be a BudgetConfig")
         if not isinstance(self.quota, QuotaConfig):
             raise ConfigError(missing_roles=[], detail="RunConfig.quota must be a QuotaConfig")
+        if not isinstance(self.selfdev, SelfDevConfig):
+            raise ConfigError(missing_roles=[], detail="RunConfig.selfdev must be a SelfDevConfig")
         # Materialise the mapping into a plain dict so that callers can
         # not mutate the configuration after construction. The frozen
         # dataclass would still allow mutation through the original
@@ -782,6 +810,7 @@ def _extract_run_section(
     consortium: ConsortiumConfig,
     budget: BudgetConfig,
     quota: QuotaConfig,
+    selfdev: SelfDevConfig,
 ) -> RunConfig:
     """Build a :class:`RunConfig` from the optional ``[run]`` TOML section.
 
@@ -802,6 +831,7 @@ def _extract_run_section(
             consortium=consortium,
             budget=budget,
             quota=quota,
+            selfdev=selfdev,
         )
     if not isinstance(section, Mapping):
         raise ConfigError(
@@ -858,6 +888,7 @@ def _extract_run_section(
         consortium=consortium,
         budget=budget,
         quota=quota,
+        selfdev=selfdev,
     )
 
 
@@ -1123,6 +1154,45 @@ def _extract_quota_section(raw: Mapping[str, Any], path: Path) -> QuotaConfig:
     return QuotaConfig(**{name: section.get(name, getattr(defaults, name)) for name in allowed})
 
 
+def _extract_selfdev_section(raw: Mapping[str, Any], path: Path) -> SelfDevConfig:
+    """``[selfdev]`` の self-hosting 境界設定を読み込む。"""
+
+    section = raw.get("selfdev")
+    defaults = SelfDevConfig()
+    if section is None:
+        return defaults
+    if not isinstance(section, Mapping):
+        raise ConfigError(missing_roles=[], detail=f"[selfdev] section in {path} must be a table")
+    allowed = {"enabled", "repository", "forbidden_paths"}
+    unknown = set(section) - allowed
+    if unknown:
+        raise ConfigError(missing_roles=[], detail=f"unknown [selfdev] fields: {sorted(unknown)}")
+    enabled = section.get("enabled", defaults.enabled)
+    if not isinstance(enabled, bool):
+        raise ConfigError(missing_roles=[], detail="[selfdev] enabled must be a boolean")
+    repository_raw = section.get("repository")
+    if repository_raw is None:
+        repository = defaults.repository
+    elif isinstance(repository_raw, str) and repository_raw.strip():
+        repository = Path(repository_raw.strip())
+        if not repository.is_absolute():
+            repository = path.parent / repository
+    else:
+        raise ConfigError(missing_roles=[], detail="[selfdev] repository must be a non-empty string")
+    raw_forbidden = section.get("forbidden_paths", defaults.forbidden_paths)
+    if not isinstance(raw_forbidden, list) or any(
+        not isinstance(value, str) or not value.strip() for value in raw_forbidden
+    ):
+        raise ConfigError(
+            missing_roles=[], detail="[selfdev] forbidden_paths must be an array of non-empty strings"
+        )
+    return SelfDevConfig(
+        enabled=enabled,
+        repository=repository,
+        forbidden_paths=tuple(raw_forbidden),
+    )
+
+
 def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
     """Load :class:`LLMConfig` and :class:`RunConfig` from disk + environment.
 
@@ -1206,6 +1276,7 @@ def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
     consortium = _extract_consortium_section(raw, toml_path)
     budget = _extract_budget_section(raw, toml_path)
     quota = _extract_quota_section(raw, toml_path)
+    selfdev = _extract_selfdev_section(raw, toml_path)
     run_config = _extract_run_section(
         raw,
         toml_path,
@@ -1216,6 +1287,7 @@ def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
         consortium=consortium,
         budget=budget,
         quota=quota,
+        selfdev=selfdev,
     )
     llm_config = LLMConfig(
         provider_from_env=env_provider,

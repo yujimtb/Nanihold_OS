@@ -97,6 +97,7 @@ from vsm.errors import (
     QuotaExhaustedError,
     RunDirectoryError,
     SystemInstantiationError,
+    WorkspaceError,
 )
 from vsm.eventlog.writer import EventLogWriter
 from vsm.eventlog.reader import read_all
@@ -122,6 +123,7 @@ from vsm.runtime.consortium import (
     NodeParticipant,
 )
 from vsm.runtime.quota import QuotaMonitor
+from vsm.runtime.manifest import RunManifest, WorkspaceController
 from vsm.tools import (
     AlgedonicFacade,
     AlgedonicRequest,
@@ -242,6 +244,9 @@ class Platform:
         runtimes: Mapping[SystemRole, AgentRuntimeProtocol | None],
         clock: Clock,
         run_config: RunConfig,
+        manifest: RunManifest | None = None,
+        workspace_controller: WorkspaceController | None = None,
+        workdir: Path | None = None,
         context_view_hook: ContextViewHook | None = None,
         human_statement_waiter: HumanStatementWaiter | None = None,
     ) -> None:
@@ -252,6 +257,12 @@ class Platform:
         self.runtimes = dict(runtimes)
         self.clock: Clock = clock
         self.run_config: RunConfig = run_config
+        self.manifest = manifest
+        self.workspace_controller = workspace_controller
+        if workdir is None:
+            raise ValueError("Platform の workdir は明示的に指定しなければなりません")
+        self.workdir: Path = workdir.resolve(strict=False)
+        self._active_s1_writer: str | None = None
 
         # 役割別 System インスタンス。``MANDATORY_ROLES`` 各役割に対して
         # 1 つずつ、S1_WORKER については :meth:`spawn_s1` が動的に追加。
@@ -316,6 +327,30 @@ class Platform:
         # する設計にすること)。
         self._s1_count: int = 0
 
+    def reserve_s1_writer(self, system: "System") -> None:
+        """同一 self-hosting worktree の S1 writer を 1 つに制限する。"""
+
+        if self.workspace_controller is None:
+            return
+        runtime = getattr(system, "_runtime", None)
+        backend = getattr(runtime, "backend_name", None)
+        if not backend or backend == "litellm":
+            return
+        owner = self._active_s1_writer
+        if owner is not None and owner != system.system_id:
+            raise WorkspaceError(
+                "1 Run 1 writer 違反: "
+                f"worktree={self.workdir} は S1 {owner} が使用中で、"
+                f"S1 {system.system_id} を同時割り当てできません"
+            )
+        self._active_s1_writer = system.system_id
+
+    def release_s1_writer(self, system: "System") -> None:
+        """S1 の通常完了後に writer 使用権を解放する。"""
+
+        if self._active_s1_writer == system.system_id:
+            self._active_s1_writer = None
+
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
@@ -327,6 +362,7 @@ class Platform:
         run_id: str,
         runs_dir: Path = _DEFAULT_RUNS_DIR,
         run_config: RunConfig | None = None,
+        manifest: RunManifest | None = None,
         llm_config: LLMConfig | None = None,
         llm_override: LLMProviderProtocol | None = None,
         runtime_overrides: Mapping[SystemRole, AgentRuntimeProtocol | None] | None = None,
@@ -391,6 +427,32 @@ class Platform:
             必須 System のインスタンス化に失敗した (REQ 1.7)。
         """
         rc = run_config or RunConfig()
+
+        if rc.selfdev.enabled and manifest is None:
+            raise ConfigError(
+                missing_roles=[],
+                detail="selfdev.enabled の Run には RunManifest が必要です",
+            )
+        if manifest is not None and manifest.run_id != run_id:
+            raise ConfigError(
+                missing_roles=[],
+                detail=(
+                    f"RunManifest.run_id={manifest.run_id!r} は "
+                    f"Run の run_id={run_id!r} と一致しません"
+                ),
+            )
+        if (
+            rc.selfdev.enabled
+            and manifest is not None
+            and manifest.repository != rc.selfdev.repository
+        ):
+            raise ConfigError(
+                missing_roles=[],
+                detail=(
+                    "RunManifest.repository が [selfdev] repository と一致しません: "
+                    f"manifest={manifest.repository}, configured={rc.selfdev.repository}"
+                ),
+            )
 
         # ------------------------------------------------------------------
         # 1. 構造検証 (REQ 13.1〜13.3)
@@ -478,6 +540,25 @@ class Platform:
         # を append するため)。
         bus = MessageBus(eventlog=writer)
 
+        workspace_controller: WorkspaceController | None = None
+        if manifest is not None:
+            workspace_controller = WorkspaceController(manifest=manifest, run_dir=run_dir)
+        try:
+            if workspace_controller is not None:
+                manifest.persist(run_dir)
+                workdir = workspace_controller.start()
+            else:
+                workdir = run_dir / "workspace"
+                workdir.mkdir(parents=True, exist_ok=False)
+        except Exception:
+            await _cleanup_partial_run(
+                writer=writer,
+                run_dir=run_dir,
+                lockfile_path=lockfile_path,
+                workspace_controller=workspace_controller,
+            )
+            raise
+
         # ------------------------------------------------------------------
         # 4. 必須 System の生成 + ``system_instantiated`` event (REQ 1.5)
         # ------------------------------------------------------------------
@@ -495,6 +576,9 @@ class Platform:
             runtimes=runtimes,
             clock=clk,
             run_config=rc,
+            manifest=manifest,
+            workspace_controller=workspace_controller,
+            workdir=workdir,
             context_view_hook=context_view_hook,
             human_statement_waiter=human_statement_waiter,
         )
@@ -558,6 +642,8 @@ class Platform:
                 if instance.sub_agent_count == 0:
                     instance.register_sub_agent(label="default")
 
+                instance.bind_workdir(workdir)
+
                 platform.systems.setdefault(role, []).append(instance)
                 await platform._attach_system_node(instance, role)
 
@@ -599,6 +685,7 @@ class Platform:
                 writer=writer,
                 run_dir=run_dir,
                 lockfile_path=lockfile_path,
+                workspace_controller=workspace_controller,
             )
             # ``ConfigError`` / ``RunDirectoryError`` などのドメイン例外は
             # そのまま伝播させ、それ以外を ``SystemInstantiationError`` で
@@ -1234,6 +1321,13 @@ class Platform:
         for run_state in self.node_run_states.values():
             run_state.session_refs.clear()
 
+        workspace_error: Exception | None = None
+        if self.workspace_controller is not None:
+            try:
+                self.workspace_controller.finalize()
+            except Exception as exc:
+                workspace_error = exc
+
         # 2. EventLogWriter の停止。これより後の ``append`` 呼び出しは
         # 失敗するが、System が全て停止しているので呼ばれることは無い。
         await self.eventlog.stop()
@@ -1247,6 +1341,9 @@ class Platform:
         except OSError:
             # best-effort: 削除失敗は Run の状態に影響しない。
             pass
+
+        if workspace_error is not None:
+            raise workspace_error
 
     # ------------------------------------------------------------------
     # Dynamic S1 spawn
@@ -1380,6 +1477,7 @@ class Platform:
         # 自身で ``run_config.count(SystemRole.S1_WORKER)`` 個を登録すべき。
         if s1.sub_agent_count == 0:
             s1.register_sub_agent(label="default")
+        s1.bind_workdir(self.workdir)
 
         # 状態カウンタを更新してから event を append する (event 中の
         # 集計と一致させるため)。
@@ -1576,6 +1674,7 @@ async def start_run(
     run_id: str | None = None,
     runs_dir: Path = _DEFAULT_RUNS_DIR,
     run_config: RunConfig | None = None,
+    manifest: RunManifest | None = None,
     llm_config: LLMConfig | None = None,
     llm_override: LLMProviderProtocol | None = None,
     runtime_overrides: Mapping[SystemRole, AgentRuntimeProtocol | None] | None = None,
@@ -1630,6 +1729,7 @@ async def start_run(
         run_id=rid,
         runs_dir=runs_dir,
         run_config=run_config,
+        manifest=manifest,
         llm_config=llm_config,
         llm_override=llm_override,
         runtime_overrides=runtime_overrides,
@@ -1646,6 +1746,7 @@ async def _cleanup_partial_run(
     writer: EventLogWriter,
     run_dir: Path,
     lockfile_path: Path,
+    workspace_controller: WorkspaceController | None = None,
 ) -> None:
     """Best-effort cleanup when :meth:`Platform.create` fails partway.
 
@@ -1669,6 +1770,12 @@ async def _cleanup_partial_run(
         # 停止すらできない場合でも、後段の dir 削除は試みる。
         pass
 
+    if workspace_controller is not None:
+        try:
+            workspace_controller.discard()
+        except Exception:
+            pass
+
     # 2. lockfile 削除。
     try:
         if lockfile_path.exists():
@@ -1683,6 +1790,15 @@ async def _cleanup_partial_run(
             events_path.unlink()
     except OSError:
         pass
+
+    for partial_path in (run_dir / "manifest.json", run_dir / "workspace"):
+        try:
+            if partial_path.is_file():
+                partial_path.unlink()
+            elif partial_path.is_dir():
+                partial_path.rmdir()
+        except OSError:
+            pass
 
     # 4. Run dir 自体を削除 (空のはず)。``rmdir`` は中身があると失敗する
     # が、Sub_Agent や Systems がディスクを触る経路は無いので空のはず。

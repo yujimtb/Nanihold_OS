@@ -82,6 +82,14 @@ class RunDirectoryError(VSMError):
     """
 
 
+class WorkspaceError(VSMError):
+    """self-hosting の manifest / git worktree 操作に失敗した。"""
+
+
+class WorkspacePolicyError(WorkspaceError):
+    """manifest が許可していないパスに変更があった。"""
+
+
 # ---------------------------------------------------------------------------
 # Messaging
 # ---------------------------------------------------------------------------
@@ -227,6 +235,8 @@ __all__ = [
     "ConfigError",
     "CLIError",
     "RunDirectoryError",
+    "WorkspaceError",
+    "WorkspacePolicyError",
     "MessagingError",
     "ChannelRejected",
     "LLMError",

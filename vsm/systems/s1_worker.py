@@ -279,6 +279,10 @@ class S1Worker(System):
             result_text = f"failed: {exc}"
             success = False
 
+        release_writer = getattr(self._platform, "release_s1_writer", None)
+        if release_writer is not None:
+            release_writer(self)
+
         # current_assignments から削除して idle 状態に戻す (REQ 7.2
         # idle 定義の前提条件)。
         if work_item_id in self.current_assignments:
