@@ -14,6 +14,7 @@ class LiteLLMRuntimeAdapter:
 
     provider: LLMProviderProtocol
     timeout_seconds: float = 60.0
+    model: str = ""
     backend_name: str = "litellm"
 
     async def invoke(self, request: AgentRequest) -> AgentResult:

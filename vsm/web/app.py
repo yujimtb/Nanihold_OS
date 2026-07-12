@@ -123,11 +123,35 @@ async def send_chat_message(chat_id: str, body: ChatMessageBody) -> dict:
 
 @app.get("/api/config")
 def config() -> dict:
-    llm_config, _ = load_config(None)
+    llm_config, run_config = load_config(None)
     configured_model = llm_config.provider_from_env or llm_config.provider_from_file
+    configured_models = {
+        backend.model
+        for role in run_config.agents.roles
+        if (backend_name := run_config.agents.backend_for(role)) is not None
+        for backend in (run_config.agents.backends[backend_name],)
+        if backend.model
+    }
+    if configured_model:
+        model_label = configured_model
+    elif configured_models:
+        model_label = " / ".join(sorted(configured_models))
+    else:
+        model_label = " / ".join(
+            sorted(
+                {
+                    run_config.agents.backend_for(role)
+                    for role in run_config.agents.roles
+                    if run_config.agents.backend_for(role) is not None
+                }
+            )
+        )
     return {
-        "model": configured_model or "fake/test-model",
-        "demo_mode": not bool(configured_model),
+        "model": model_label,
+        "demo_mode": any(
+            run_config.agents.backend_for(role) == "fake"
+            for role in run_config.agents.roles
+        ),
         "single_run": True,
     }
 

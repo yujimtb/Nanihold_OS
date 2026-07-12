@@ -5,7 +5,15 @@ from __future__ import annotations
 import pytest
 
 from vsm.agents.backends.fake import FakeAgentRuntime
-from vsm.config import AgentsConfig, LLMConfig, RunConfig, load_config
+from vsm.agents.backends.claude_code import ClaudeCodeRuntime
+from vsm.agents.backends.codex import CodexRuntime
+from vsm.config import (
+    AgentsConfig,
+    LLMConfig,
+    NANIHOLD_USE_FAKE_LLM_ENV,
+    RunConfig,
+    load_config,
+)
 from vsm.roles import SystemRole
 from vsm.runtime.lifecycle import Platform, _resolve_role_runtimes
 
@@ -61,6 +69,43 @@ def test_role_runtime_resolution_uses_distinct_instances() -> None:
     assigned = [runtime for runtime in runtimes.values() if runtime is not None]
     assert all(isinstance(runtime, FakeAgentRuntime) for runtime in assigned)
     assert len({id(runtime) for runtime in assigned}) == len(assigned)
+
+
+def test_agents_roles_select_cli_backends_without_litellm_provider() -> None:
+    roles = {role: "claude-code" for role in SystemRole}
+    roles[SystemRole.S3_ALLOCATOR] = ""
+    roles[SystemRole.S1_WORKER] = "codex"
+    config = RunConfig(agents=AgentsConfig(default_backend="claude-code", roles=roles))
+
+    runtimes = _resolve_role_runtimes(
+        run_config=config,
+        llm_config=LLMConfig(),
+        llm_override=None,
+        runtime_overrides=None,
+    )
+
+    assert isinstance(runtimes[SystemRole.S5_POLICY], ClaudeCodeRuntime)
+    assert isinstance(runtimes[SystemRole.S1_WORKER], CodexRuntime)
+    assert runtimes[SystemRole.S3_ALLOCATOR] is None
+
+
+def test_fake_environment_is_an_explicit_runtime_selection(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(NANIHOLD_USE_FAKE_LLM_ENV, "1")
+
+    _, config = load_config(None)
+
+    assert config.agents.backend_for(SystemRole.S5_POLICY) == "fake"
+    assert config.agents.backend_for(SystemRole.S1_WORKER) == "fake"
+    assert config.agents.backend_for(SystemRole.S3_ALLOCATOR) is None
+
+    runtimes = _resolve_role_runtimes(
+        run_config=config,
+        llm_config=LLMConfig(),
+        llm_override=None,
+        runtime_overrides=None,
+    )
+    assert isinstance(runtimes[SystemRole.S5_POLICY], FakeAgentRuntime)
 
 
 @pytest.mark.asyncio

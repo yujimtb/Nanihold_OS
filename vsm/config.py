@@ -35,7 +35,7 @@ from __future__ import annotations
 import os
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +66,7 @@ __all__ = [
     "MANDATORY_SUB_AGENT_MAX",
     "CLAUDE_BIN_ENV",
     "CODEX_BIN_ENV",
+    "NANIHOLD_USE_FAKE_LLM_ENV",
 ]
 
 
@@ -74,6 +75,7 @@ __all__ = [
 LITELLM_PROVIDER_ENV = "LITELLM_PROVIDER"
 CLAUDE_BIN_ENV = "CLAUDE_BIN"
 CODEX_BIN_ENV = "CODEX_BIN"
+NANIHOLD_USE_FAKE_LLM_ENV = "NANIHOLD_USE_FAKE_LLM"
 
 # Default location of the configuration file relative to the current
 # working directory. ``vsm.toml`` is the project-local convention used by
@@ -1123,6 +1125,30 @@ def _extract_quota_section(raw: Mapping[str, Any], path: Path) -> QuotaConfig:
     return QuotaConfig(**{name: section.get(name, getattr(defaults, name)) for name in allowed})
 
 
+def _apply_explicit_fake_backend(run_config: RunConfig) -> RunConfig:
+    """明示された fake 用環境変数を ``[agents]`` の解決結果へ反映する。
+
+    fake はデモ用の暗黙フォールバックではない。環境変数が明示的に
+    有効化された場合だけ、もともと AgentRuntime を持つロールを fake に
+    置き換える。空のロールは決定論処理のまま維持する。
+    """
+
+    value = os.environ.get(NANIHOLD_USE_FAKE_LLM_ENV)
+    if value is None or value.lower() not in {"1", "true", "yes"}:
+        return run_config
+
+    roles = {
+        role: "fake" if run_config.agents.backend_for(role) is not None else ""
+        for role in SystemRole
+    }
+    agents = AgentsConfig(
+        default_backend="fake",
+        backends=run_config.agents.backends,
+        roles=roles,
+    )
+    return replace(run_config, agents=agents)
+
+
 def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
     """Load :class:`LLMConfig` and :class:`RunConfig` from disk + environment.
 
@@ -1167,9 +1193,10 @@ def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
         candidate = DEFAULT_CONFIG_PATH
         if not candidate.exists():
             agents = _extract_agents_section({}, candidate)
+            run_config = _apply_explicit_fake_backend(RunConfig(agents=agents))
             return (
                 LLMConfig(provider_from_env=env_provider),
-                RunConfig(agents=agents),
+                run_config,
             )
         toml_path = candidate
     else:
@@ -1222,4 +1249,4 @@ def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
         provider_from_file=file_provider,
         model_overrides=overrides,
     )
-    return llm_config, run_config
+    return llm_config, _apply_explicit_fake_backend(run_config)

@@ -10,11 +10,12 @@ import pytest
 from typer.testing import CliRunner
 
 from vsm.cli import app as cli_app
-from vsm.config import AgentsConfig, RunConfig
+from vsm.config import AgentsConfig, LLMConfig, RunConfig
 from vsm.eventlog.reader import read_all
 from vsm.roles import SystemRole
 from vsm.runtime.lifecycle import Platform
 from vsm.web import app as web_app_module
+from vsm.web.manager import RunManager
 from vsm.web.topology import project_budget, project_topology
 
 
@@ -86,6 +87,29 @@ def test_wave5_rest_endpoints(monkeypatch):
     ).json()["accepted"] is True
     assert client.get(f"/api/runs/{run_id}/topology").status_code == 200
     assert client.get(f"/api/runs/{run_id}/budget").json()["limit"]["tokens"] == 100
+
+
+def test_web_run_api_returns_configuration_failure(monkeypatch, tmp_path):
+    roles = {role: "fake" for role in SystemRole}
+    roles[SystemRole.S5_POLICY] = "litellm"
+    roles[SystemRole.S3_ALLOCATOR] = ""
+    run_config = RunConfig(agents=AgentsConfig(default_backend="fake", roles=roles))
+    monkeypatch.setattr(
+        "vsm.web.manager.load_config",
+        lambda _path=None: (LLMConfig(), run_config),
+    )
+    monkeypatch.setattr(web_app_module, "manager", RunManager(tmp_path))
+
+    response = TestClient(web_app_module.app).post(
+        "/api/runs", json={"goal": "未設定のバックエンドを検出する"}
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["generation"] == 0
+    assert "S5_POLICY" in body["error"]
+    assert "LITELLM_PROVIDER" in body["error"]
 
 
 def test_topology_and_budget_are_rebuilt_from_events():

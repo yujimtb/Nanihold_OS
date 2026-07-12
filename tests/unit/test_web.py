@@ -3,6 +3,10 @@ from __future__ import annotations
 import json
 import re
 
+import pytest
+
+from vsm.config import AgentsConfig, LLMConfig, RunConfig
+from vsm.roles import SystemRole
 from vsm.web.manager import RunManager, utc_now
 from vsm.web.models import RunGeneration, WebRun, WebRunStatus
 from vsm.web.projection import project_event
@@ -175,3 +179,34 @@ def test_web_timestamp_matches_event_schema() -> None:
         r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z",
         utc_now(),
     )
+
+
+@pytest.mark.asyncio
+async def test_manager_fails_before_generation_when_litellm_provider_is_missing(
+    tmp_path, monkeypatch
+) -> None:
+    roles = {role: "fake" for role in SystemRole}
+    roles[SystemRole.S5_POLICY] = "litellm"
+    roles[SystemRole.S3_ALLOCATOR] = ""
+    run_config = RunConfig(agents=AgentsConfig(default_backend="fake", roles=roles))
+    monkeypatch.setattr(
+        "vsm.web.manager.load_config",
+        lambda _path=None: (LLMConfig(), run_config),
+    )
+
+    manager = RunManager(tmp_path)
+    run = await manager.create_run(
+        description="設定エラーを検出する",
+        title=None,
+        attachments=[],
+    )
+
+    assert run.status is WebRunStatus.FAILED
+    assert run.generation == 0
+    assert run.current_stage == "設定エラー"
+    assert "S5_POLICY" in run.error
+    assert "LITELLM_PROVIDER" in run.error
+    assert not (run.run_dir / "runtime").exists()
+    detail = manager.detail(run.run_id)
+    assert detail["status"] == "failed"
+    assert detail["error"] == run.error

@@ -172,7 +172,8 @@ def test_smoke_run_creates_run_visible_to_cli(tmp_path) -> None:
         check=False,
         capture_output=True,
         text=True,
-        timeout=90,
+        # 並列ゲート・高負荷時のフレーク回避余裕(単体では10秒未満で完走)
+        timeout=240,
     )
 
     assert completed.returncode == 0, completed.stderr + completed.stdout

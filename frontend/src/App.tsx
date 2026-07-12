@@ -216,7 +216,7 @@ function Home({
           {config?.demo_mode && (
             <div className="demo-note">
               <Sparkles size={16} />
-              デモモデルで起動中です。実モデルは <code>.env</code> で設定できます。
+              明示された fake backend で起動中です。実 backend は <code>vsm.toml</code> の <code>[agents]</code> で設定できます。
             </div>
           )}
           <textarea
@@ -315,6 +315,9 @@ function RunView({
         <div className="run-meta">
           <span>{formatDate(run.created_at)}</span>
           <span>Generation {run.generation}</span>
+          {run.runtimes.length > 0 && (
+            <span>{run.runtimes.map((runtime) => `${runtime.backend}${runtime.model ? ` / ${runtime.model}` : ""}`).join(" · ")}</span>
+          )}
         </div>
       </section>
 

@@ -16,6 +16,11 @@ export interface RunSummary {
   current_stage: string;
   progress: number;
   generation: number;
+  runtimes: Array<{
+    role: string;
+    backend: string;
+    model: string;
+  }>;
 }
 
 export interface TimelineItem {

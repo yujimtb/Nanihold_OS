@@ -1526,6 +1526,8 @@ def _resolve_role_runtimes(
         return result
 
     result = {}
+    configuration_errors: list[tuple[str, str]] = []
+    litellm_configuration_error: str | None = None
     for role in configured_roles:
         backend_name = run_config.agents.backend_for(role)
         if backend_name is None:
@@ -1534,7 +1536,8 @@ def _resolve_role_runtimes(
         backend = run_config.agents.backends[backend_name]
         if backend_name == "claude-code":
             if backend.bin is None:
-                raise ConfigError(missing_roles=[role.value], detail="claude-code bin is required")
+                configuration_errors.append((role.value, "claude-code bin is required"))
+                continue
             result[role] = ClaudeCodeRuntime(
                 claude_bin=backend.bin,
                 model=backend.model,
@@ -1542,10 +1545,10 @@ def _resolve_role_runtimes(
             )
         elif backend_name == "codex":
             if backend.bin is None or backend.reasoning_effort is None:
-                raise ConfigError(
-                    missing_roles=[role.value],
-                    detail="codex bin and reasoning_effort are required",
+                configuration_errors.append(
+                    (role.value, "codex bin and reasoning_effort are required")
                 )
+                continue
             result[role] = CodexRuntime(
                 codex_bin=backend.bin,
                 model=backend.model,
@@ -1555,9 +1558,21 @@ def _resolve_role_runtimes(
         elif backend_name == "litellm":
             from vsm.llm.provider import LLMProvider
 
+            if litellm_configuration_error is not None:
+                configuration_errors.append(
+                    (role.value, litellm_configuration_error)
+                )
+                continue
+            try:
+                provider = LLMProvider(llm_config)
+            except ConfigError as exc:
+                litellm_configuration_error = exc.detail
+                configuration_errors.append((role.value, exc.detail))
+                continue
             result[role] = LiteLLMRuntimeAdapter(
-                provider=LLMProvider(llm_config),
+                provider=provider,
                 timeout_seconds=backend.timeout_seconds,
+                model=provider.default_model,
             )
         elif backend_name == "fake":
             result[role] = FakeAgentRuntime(
@@ -1565,10 +1580,53 @@ def _resolve_role_runtimes(
                 timeout_seconds=backend.timeout_seconds,
             )
         else:
-            raise ConfigError(
-                missing_roles=[role.value], detail=f"unsupported agent backend: {backend_name}"
+            configuration_errors.append(
+                (role.value, f"unsupported agent backend: {backend_name}")
             )
+    if configuration_errors:
+        raise ConfigError(
+            missing_roles=[role for role, _detail in configuration_errors],
+            detail=configuration_errors[0][1],
+        )
     return result
+
+
+def describe_role_runtimes(
+    *,
+    run_config: RunConfig,
+    llm_config: LLMConfig,
+    runtime_overrides: Mapping[SystemRole, AgentRuntimeProtocol | None] | None = None,
+) -> list[dict[str, str]]:
+    """Run で選択されるロール別 backend/model を構築して返す。
+
+    Web 層が独自のフォールバックを持たず、``start_run`` と同じ
+    ``_resolve_role_runtimes`` を事前検証にも利用するための公開投影である。
+    runtime の構築に失敗した場合は、そのまま ``ConfigError`` を返す。
+    """
+
+    runtimes = _resolve_role_runtimes(
+        run_config=run_config,
+        llm_config=llm_config,
+        llm_override=None,
+        runtime_overrides=runtime_overrides,
+    )
+    return [
+        {
+            "role": role.value,
+            "backend": (
+                runtime.backend_name
+                if runtime is not None
+                else "deterministic"
+            ),
+            "model": (
+                str(getattr(runtime, "model", ""))
+                if runtime is not None
+                else ""
+            ),
+        }
+        for role in SystemRole
+        for runtime in (runtimes[role],)
+    ]
 
 
 async def start_run(

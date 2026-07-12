@@ -59,6 +59,7 @@ class WebRun:
     run_dir: Path
     constraints: dict[str, Any] = field(default_factory=dict)
     budget_override: dict[str, float] = field(default_factory=dict)
+    runtimes: list[dict[str, str]] = field(default_factory=list)
     attachments: list[Attachment] = field(default_factory=list)
     generations: list[RunGeneration] = field(default_factory=list)
     final_answer: str | None = None

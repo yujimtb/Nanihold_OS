@@ -4,19 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from dataclasses import replace
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from vsm.agents.backends.fake import FakeAgentRuntime
 from vsm.config import BudgetConfig, load_config
+from vsm.errors import ConfigError
 from vsm.eventlog.reader import read_all
 from vsm.ids import generate_run_id, generate_uuid
 from vsm.roles import SystemRole
-from vsm.runtime.lifecycle import Platform, start_run
+from vsm.runtime.lifecycle import Platform, describe_role_runtimes, start_run
 from vsm.tools import AlgedonicRequest
 from vsm.web.models import RunGeneration, WebRun, WebRunStatus
 from vsm.web.projection import project_event
@@ -85,6 +84,9 @@ class RunManager:
                     WebRunStatus.WAITING_FOR_USER,
                 }:
                     raise RuntimeError("現在実行中のタスクがあります。完了または停止してから開始してください。")
+            runtimes, configuration_error = self._prepare_runtime_configuration(
+                budget_override
+            )
             run_id = generate_run_id()
             now = utc_now()
             run_dir = self.store.root / run_id
@@ -98,13 +100,54 @@ class RunManager:
                 updated_at=now,
                 status=WebRunStatus.QUEUED,
                 run_dir=run_dir,
+                runtimes=runtimes,
                 attachments=attachments,
             )
+            if configuration_error is not None:
+                run.status = WebRunStatus.FAILED
+                run.current_stage = "設定エラー"
+                run.error = configuration_error
+                run.updated_at = utc_now()
             self._runs[run_id] = run
             self._active_run_id = run_id
             self.store.create(run)
+            if configuration_error is not None:
+                self.store.record_state(run, "configuration_failed")
+                self._release_active(run_id)
+                return run
             self._start_generation(run, instruction="")
             return run
+
+    def _prepare_runtime_configuration(
+        self, budget_override: dict[str, float] | None
+    ) -> tuple[list[dict[str, str]], str | None]:
+        """Web Run の開始前に CLI と同じ runtime 解決を検証する。"""
+
+        try:
+            llm_config, run_config = load_config(None)
+            if budget_override:
+                run_config = replace(
+                    run_config,
+                    budget=BudgetConfig(
+                        run_tokens=int(
+                            budget_override.get("tokens", run_config.budget.run_tokens)
+                        ),
+                        run_wall_clock_seconds=float(
+                            budget_override.get(
+                                "wall_clock_seconds",
+                                run_config.budget.run_wall_clock_seconds,
+                            )
+                        ),
+                        roles=run_config.budget.roles,
+                    ),
+                )
+            runtimes = describe_role_runtimes(
+                run_config=run_config,
+                llm_config=llm_config,
+            )
+            return runtimes, None
+        except ConfigError as exc:
+            return [], self._format_configuration_error(exc)
 
     def _active_platform(self, run_id: str) -> Platform:
         self.get_run(run_id)
@@ -364,11 +407,6 @@ class RunManager:
     ) -> None:
         platform: Platform | None = None
         try:
-            run.status = WebRunStatus.RUNNING
-            run.current_stage = "VSMを起動"
-            run.updated_at = utc_now()
-            self.store.record_state(run, "platform_starting")
-
             llm_config, run_config = load_config(None)
             if run.budget_override:
                 run_config = replace(
@@ -386,21 +424,10 @@ class RunManager:
                         roles=run_config.budget.roles,
                     ),
                 )
-            use_fake = os.environ.get("NANIHOLD_USE_FAKE_LLM", "").lower() in {"1", "true", "yes"}
-            if use_fake or not (llm_config.provider_from_env or llm_config.provider_from_file):
-                runtime_overrides = {
-                    role: (
-                        None
-                        if run_config.agents.backend_for(role) is None
-                        else FakeAgentRuntime(
-                            response=lambda request: self._fake_response(request.prompt),
-                            latency=0.08,
-                        )
-                    )
-                    for role in SystemRole
-                }
-            else:
-                runtime_overrides = None
+            run.status = WebRunStatus.RUNNING
+            run.current_stage = "VSMを起動"
+            run.updated_at = utc_now()
+            self.store.record_state(run, "platform_starting")
 
             runtime_root = run.run_dir / "runtime"
             platform = await start_run(
@@ -408,7 +435,6 @@ class RunManager:
                 runs_dir=runtime_root,
                 run_config=run_config,
                 llm_config=llm_config,
-                runtime_overrides=runtime_overrides,
             )
             self._platforms[run.run_id] = platform
 
@@ -460,6 +486,17 @@ class RunManager:
                 await platform.shutdown()
                 platform = None
             raise
+        except ConfigError as exc:
+            if platform is not None:
+                await platform.shutdown()
+                platform = None
+            run.status = WebRunStatus.FAILED
+            run.current_stage = "設定エラー"
+            run.error = self._format_configuration_error(exc)
+            run.updated_at = utc_now()
+            self._mark_generation(run, "failed")
+            self._release_active(run.run_id)
+            self.store.record_state(run, "configuration_failed")
         except Exception as exc:
             if generation < MAX_AUTOMATIC_ATTEMPTS:
                 self._mark_generation(run, "failed")
@@ -724,19 +761,65 @@ class RunManager:
         return first_line[:42] + ("…" if len(first_line) > 42 else "")
 
     @staticmethod
-    def _fake_response(prompt: str) -> str:
-        if "最終編集者" in prompt:
+    def _format_configuration_error(exc: ConfigError) -> str:
+        roles = "、".join(exc.missing_roles) if exc.missing_roles else "対象ロール"
+        detail = exc.detail
+        if "LLM provider" in detail or "LITELLM_PROVIDER" in detail:
             return (
-                "## 実行結果\n\n"
-                "依頼内容をVSMの各担当で分析・実行し、監査まで完了しました。\n\n"
-                "### 要点\n\n"
-                "- 環境分析、方針決定、作業割当、実行、監査の順で処理しました。\n"
-                "- 現在はデモ用モデルで動作しています。`.env`に実モデルを設定すると実回答へ切り替わります。"
+                f"Runを開始できません。{roles} の LiteLLM バックエンドに必要な"
+                "プロバイダが未設定です。LITELLM_PROVIDER 環境変数、または "
+                'vsm.toml の [llm] provider = "<model>" を設定してください。'
             )
-        return "依頼内容を確認し、担当範囲の分析と実行を完了しました。"
+        if "claude-code" in detail:
+            return (
+                f"Runを開始できません。{roles} の claude-code 実行ファイルが"
+                "未設定です。vsm.toml の [agents.backends.claude-code] bin、"
+                "または CLAUDE_BIN を設定してください。"
+            )
+        if "codex" in detail:
+            return (
+                f"Runを開始できません。{roles} の codex 設定が不足しています。"
+                "vsm.toml の [agents.backends.codex] に bin、model、"
+                "reasoning_effort を設定してください。"
+            )
+        return (
+            f"Runを開始できません。{roles} の AgentRuntime 設定を解決できません。"
+            f"詳細: {detail}。vsm.toml の [agents] と [agents.roles] を確認してください。"
+        )
 
-    @staticmethod
-    def _summary(run: WebRun) -> dict[str, Any]:
+    def _runtime_summary(self, run: WebRun) -> list[dict[str, str]]:
+        by_role = {
+            item["role"]: dict(item)
+            for item in run.runtimes
+            if item.get("role")
+        }
+        node_roles: dict[str, str] = {}
+        for event in self._current_runtime_events(run):
+            event_type = event.get("event_type")
+            payload = event.get("payload") or {}
+            node_id = payload.get("node_id") or event.get("node_id")
+            if event_type == "agent_attached" and payload.get("role"):
+                role = str(payload["role"])
+                if node_id:
+                    node_roles[str(node_id)] = role
+                by_role[role] = {
+                    "role": role,
+                    "backend": str(payload.get("backend", "")),
+                    "model": str(payload.get("model", "")),
+                }
+            elif event_type == "llm_invocation" and node_id in node_roles:
+                role = node_roles[str(node_id)]
+                current = by_role[role]
+                current["backend"] = str(payload.get("backend", current["backend"]))
+                current["model"] = str(payload.get("model", current["model"]))
+
+        order = {role.value: index for index, role in enumerate(SystemRole)}
+        return sorted(
+            by_role.values(),
+            key=lambda item: (order.get(item["role"], len(order)), item["role"]),
+        )
+
+    def _summary(self, run: WebRun) -> dict[str, Any]:
         return {
             "run_id": run.run_id,
             "title": run.title,
@@ -746,4 +829,5 @@ class RunManager:
             "current_stage": run.current_stage,
             "progress": run.progress,
             "generation": run.generation,
+            "runtimes": self._runtime_summary(run),
         }

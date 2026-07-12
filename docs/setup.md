@@ -225,6 +225,11 @@ Run 終了時に破棄され、Run 間では引き継がれない。
 空文字を割り当てたロールには AgentRuntime を注入しない。未認識のバックエンドや不正な
 設定値は起動時エラーとなり、別バックエンドへの暗黙の切り替えは行わない。
 
+決定論 fake はテスト・デモで明示した場合だけ使用する。全ての割り当て済みロールを fake に
+するには `NANIHOLD_USE_FAKE_LLM=1` を設定するか、`[agents.roles]` の対象ロールへ `fake`
+を指定する。LiteLLM のプロバイダや CLI 設定が不足している場合、Run は開始されず、設定を
+修正するためのエラーが返る。
+
 `[budget]` は Run 全体のトークン合計（input + output + cache read）と AgentRuntime
 呼び出し時間を制限する。`[budget.roles]` に指定したロールは個別 envelope を使い、未指定
 ロールは Run envelope を使う。既消費量が上限以上の呼び出しは実行前に拒否され、

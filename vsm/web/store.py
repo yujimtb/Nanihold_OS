@@ -36,6 +36,7 @@ class RunStore:
             "description": run.description,
             "constraints": run.constraints,
             "budget_override": run.budget_override,
+            "runtimes": run.runtimes,
             "created_at": run.created_at,
             "updated_at": run.updated_at,
             "status": run.status.value,
@@ -71,6 +72,7 @@ class RunStore:
                 "description_ref": "input.json",
                 "constraints": run.constraints,
                 "budget_override": run.budget_override,
+                "runtimes": run.runtimes,
                 "created_at": run.created_at,
                 "updated_at": run.updated_at,
                 "status": run.status.value,
@@ -148,6 +150,7 @@ class RunStore:
             description=payload["description"],
             constraints=payload.get("constraints", {}),
             budget_override=payload.get("budget_override", {}),
+            runtimes=payload.get("runtimes", []),
             created_at=payload["created_at"],
             updated_at=payload["updated_at"],
             status=WebRunStatus(payload["status"]),
@@ -183,6 +186,7 @@ class RunStore:
             budget_override=input_payload.get(
                 "budget_override", payload.get("budget_override", {})
             ),
+            runtimes=payload.get("runtimes", []),
             created_at=payload["created_at"],
             updated_at=payload["updated_at"],
             status=WebRunStatus(payload["status"]),

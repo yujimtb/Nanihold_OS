@@ -290,7 +290,13 @@ class ChatManager:
             raise RuntimeError(f"チャット履歴のmodelが不正です: {path}")
         if not isinstance(workdir, str):
             raise RuntimeError(f"チャット履歴のworkdirが不正です: {path}")
-        resolved_workdir = self._resolve_workdir(workdir)
+        # 履歴は別ホスト(例: Windowsホストとコンテナ)間で共有され得るため、
+        # 復元時の workdir 不在は起動失敗にせず default_workdir へ退避する。
+        # 厳格な検証は新規セッション作成・メッセージ送信時に行う。
+        try:
+            resolved_workdir = self._resolve_workdir(workdir)
+        except ValueError:
+            resolved_workdir = self.default_workdir
         runtime = self._runtime_factory(backend, model)
         return (
             ChatSession(
