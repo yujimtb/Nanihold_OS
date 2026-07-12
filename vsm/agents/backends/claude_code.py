@@ -13,6 +13,7 @@ from vsm.agents.backends._common import (
     as_non_negative_int,
     is_quota_exhausted,
     parse_quota_reset_at,
+    resolve_bin,
     write_and_close_stdin,
 )
 from vsm.agents.runtime import AgentRequest, AgentResult, AgentRuntimeError
@@ -45,7 +46,7 @@ class ClaudeCodeRuntime:
         if request.context_view:
             prompt = f"{request.context_view}\n\n{prompt}"
         model = request.model if request.model is not None else self.model
-        argv = [self.claude_bin, "-p", "--output-format", "json"]
+        argv = [resolve_bin(self.claude_bin), "-p", "--output-format", "json"]
         if model:
             argv.extend(["--model", model])
         if request.session_ref:

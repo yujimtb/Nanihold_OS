@@ -12,6 +12,7 @@ from vsm.agents.backends._common import (
     as_non_negative_int,
     is_quota_exhausted,
     parse_quota_reset_at,
+    resolve_bin,
     write_and_close_stdin,
 )
 from vsm.agents.runtime import AgentRequest, AgentResult, AgentRuntimeError
@@ -51,10 +52,10 @@ class CodexRuntime:
             prompt = f"{request.context_view}\n\n{prompt}"
         model = request.model or self.model
         if request.session_ref:
-            argv = [self.codex_bin, "exec", "resume", request.session_ref]
+            argv = [resolve_bin(self.codex_bin), "exec", "resume", request.session_ref]
             argv.extend(["--json", "-m", model])
         else:
-            argv = [self.codex_bin, "exec", "--json", "-m", model]
+            argv = [resolve_bin(self.codex_bin), "exec", "--json", "-m", model]
         argv.extend(["-c", f"model_reasoning_effort={self.reasoning_effort}"])
 
         started = time.monotonic()

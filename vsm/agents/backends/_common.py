@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from datetime import datetime, timezone
 from typing import Any
 
@@ -16,6 +17,19 @@ _QUOTA_MARKERS = (
     "limit reached",
     "you have no weighted tokens left",
 )
+
+
+def resolve_bin(bin_name: str) -> str:
+    """CLI 実行ファイル名を PATH 上の実体パスに解決する。
+
+    Windows では npm の CLI が ``claude.cmd`` のようなシムとして配置され、
+    拡張子なしの名前を ``CreateProcess`` に渡すと WinError 2 になる。
+    ``shutil.which`` は PATHEXT を考慮して実体を返すため、見つかった場合は
+    そのパスを使う。見つからない場合は元の名前を返し、起動時の
+    ``process_start_failed`` として通常のエラー経路に乗せる。
+    """
+
+    return shutil.which(bin_name) or bin_name
 
 
 def is_quota_exhausted(text: str, returncode: int | None = None) -> bool:

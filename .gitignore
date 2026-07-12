@@ -34,3 +34,4 @@ env/
 .idea/
 .vscode/
 .DS_Store
+vsm.toml
