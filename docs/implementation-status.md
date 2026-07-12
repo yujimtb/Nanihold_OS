@@ -21,7 +21,9 @@
 | static / live topology | `vsm.runtime.topology.StaticTopologyEntry`, `LiveTopology`。Event_Log 由来の `node_created`, `node_differentiated`, lifecycle event を反映。 |
 | ParentAuthority / Lease | `vsm.authority.ParentAuthority`, `Lease`。分化上限、Tool effect 制限、外部資源 lease を表す。 |
 | ToolEffect / idempotency | `vsm.tools.ToolEffect`, `ToolInvocation`。`EXTERNAL_WRITE` と `CONTROL` は `idempotency_key` 必須。 |
-| Tool facade | `LLMCallFacade`, `CodexRunFacade`, `SpawnChildFacade`, `DifferentiationFacade`, `SearchPastSubtasksFacade`, `CoordinationFacade`, `EscalationFacade`, `HumanReviewFacade`, `NodeControlFacade`。 |
+| Tool facade | `LLMCallFacade`, `CodexRunFacade`, `SpawnChildFacade`, `DifferentiationFacade`, `SearchPastSubtasksFacade`, `CoordinationFacade`, `AlgedonicFacade`, `EscalationFacade`, `HumanReviewFacade`, `NodeControlFacade`。 |
+| S2 AI 調停 | `request_coordination` の issue / participants / claims を S2 AgentRuntime が判断し、`coordination_decided` に決定と理由を記録する。`[coordination] ai_deliberation` で無効化可能。 |
+| Algedonic / Consortium | 任意 Node / Human から S5 へ直送する `ALGEDONIC` channel、S5 の対応選択、階層非依存のラウンド制 Consortium、人間 statement timeout の `proceed` / `abort` を実装済み。 |
 | サブ VSM デプロイ | `differentiate` Tool と `LiveTopology` により、親 Authority の範囲内で child Node を u-VSM として展開する基礎機能を実装済み。 |
 | Role / Agent / Execution | `RoleSpec`, `AgentSpec`, `PromptTemplate`, `Execution`。Spec versioning と Agent / Tool 実行単位を明示。 |
 | Memory / Graph / Telemetry | `ContextView`, `TaskSummary`, `GraphProjection`, `TelemetryCorrelation` を実装。`ContextViewBuilder` は Node の直近イベント、親 directive、直接 child の TaskSummary、参照 Artifact を短い日本語ビューへ決定論的に射影する。S1 完了時は規則ベースの TaskSummary を Run 配下の `memory/task-summaries.jsonl` に登録する。 |
@@ -56,6 +58,7 @@ OpenTelemetry exporter 連携
 | `differentiate` | `DifferentiationFacade` と `DifferentiationRequest` を実装済み。`ParentAuthority.may_differentiate_to` を検証し、冪等な `CONTROL` ToolInvocation を生成する。 |
 | `search_past_subtasks` | `TaskSummaryIndex`, `SearchPastSubtasksFacade`, `IndexedTaskSummary` を実装済み。`TaskSummary` を JSONL の永続 index に保存し、`SearchScope` / query / limit で検索する `PURE_READ` ToolInvocation を生成する。 |
 | `request_coordination` | `CoordinationFacade` と `CoordinationRequest` を実装済み。`coordination_key` を `idempotency_key` とする `CONTROL` ToolInvocation を生成する。 |
+| `raise_algedonic` | `AlgedonicFacade` と `AlgedonicRequest` を実装済み。任意 Node または Human から階層をバイパスして S5 に配送し、設定に応じて人間向け通知イベントも記録する。 |
 | `request_escalation` | `EscalationFacade` と `EscalationRequest` を実装済み。`escalation_key` を `idempotency_key` とする `CONTROL` ToolInvocation を生成する。 |
 | `request_human_review` | `HumanReviewFacade` と `HumanReviewRequest` を実装済み。`HumanAgent` を任意に指定し、人間レビュー要求を `ToolEffect.HUMAN` の `ToolInvocation` として記録する。 |
 | `terminate_node` | `NodeControlFacade.terminate_node` を実装済み。`CONTROL` effect、`ParentAuthority.termination_authority`、`Node.terminable`、Node lifecycle transition を検証する。 |

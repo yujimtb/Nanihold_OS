@@ -54,7 +54,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from vsm.messaging.channels import ChannelId
+from vsm.messaging.channels import ChannelId, ExternalRole
 from vsm.roles import SystemRole
 
 __all__ = ["Message", "SendResult"]
@@ -94,7 +94,7 @@ class Message:
     """
 
     message_id: str
-    sender_role: SystemRole
+    sender_role: SystemRole | ExternalRole
     sender_id: str
     receiver_role: SystemRole
     receiver_id: str

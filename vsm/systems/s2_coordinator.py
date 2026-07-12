@@ -63,6 +63,7 @@ Validates Requirements: 8.1, 8.2, 8.3, 8.4, 8.6, 8.7.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -234,6 +235,7 @@ class S2Coordinator(System):
         # 組み合わせを記録するデデュープセット。同一 conflict が複数
         # サイクルにまたがって観測されても directive を二重発行しない。
         self._known_conflicts: set[tuple[str, str]] = set()
+        self._coordination_decisions: dict[str, dict[str, str]] = {}
 
     async def run(self) -> None:
         """Main S2_Coordinator loop.
@@ -332,6 +334,11 @@ class S2Coordinator(System):
             # 想定外 payload は無視。``MessageBus`` が既に
             # ``channel_message`` で生 payload を記録している。
             return
+        if payload.get("type") == "request_coordination" or (
+            "coordination_key" in payload and "issue" in payload
+        ):
+            await self.handle_coordination_request(payload, requested_by=msg.sender_id)
+            return
         if payload.get("type") != "ack":
             return
 
@@ -357,6 +364,79 @@ class S2Coordinator(System):
             else:
                 # 全 S1 が ack したのでエントリを削除。
                 del self._pending_acks[directive_id]
+
+    async def handle_coordination_request(
+        self, payload: dict[str, Any], *, requested_by: str
+    ) -> dict[str, str] | None:
+        """調停要求を記録し、設定時は S2 AgentRuntime に判断させる。"""
+
+        issue = payload.get("issue")
+        participants = payload.get("participants")
+        if not isinstance(issue, str) or not issue.strip():
+            raise ValueError("coordination request requires a non-empty issue")
+        if (
+            not isinstance(participants, list)
+            or len(participants) < 2
+            or any(not isinstance(item, str) or not item.strip() for item in participants)
+        ):
+            raise ValueError("coordination request requires at least two participants")
+        coordination_key = payload.get("coordination_key")
+        if not isinstance(coordination_key, str) or not coordination_key.strip():
+            raise ValueError("coordination request requires coordination_key")
+        scope = payload.get("scope")
+        if not isinstance(scope, str) or not scope.strip():
+            raise ValueError("coordination request requires scope")
+        claims = payload.get("claims", {})
+        if not isinstance(claims, dict):
+            raise ValueError("coordination request claims must be an object")
+
+        await self._eventlog.append(
+            "coordination_requested",
+            {
+                "coordination_key": coordination_key,
+                "scope": scope,
+                "participants": participants,
+                "issue": issue,
+                "claims": claims,
+                "requested_by": requested_by,
+            },
+            node_id=self.system_id,
+            actor_id=requested_by,
+        )
+        if not self._run_config.coordination.ai_deliberation:
+            return None
+        existing = self._coordination_decisions.get(coordination_key)
+        if existing is not None:
+            return dict(existing)
+
+        prompt = (
+            "あなたは VSM System 2 の調停者です。係争内容と当事者の主張を判断し、"
+            "JSON object のみを返してください。必須キーは decision と reason です。\n"
+            f"係争: {issue}\n参加者: {participants}\n主張: {claims}"
+        )
+        response = await self._sub_agents[0].respond(prompt)
+        try:
+            raw = json.loads(response.text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("S2 coordination response must be valid JSON") from exc
+        if not isinstance(raw, dict):
+            raise ValueError("S2 coordination response must be a JSON object")
+        decision = raw.get("decision")
+        reason = raw.get("reason")
+        if not isinstance(decision, str) or not decision.strip():
+            raise ValueError("S2 coordination response requires decision")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("S2 coordination response requires reason")
+        result = {"decision": decision, "reason": reason}
+        await self._eventlog.append(
+            "coordination_decided",
+            {"coordination_key": coordination_key, **result},
+            node_id=self.system_id,
+            actor_type="agent",
+            actor_id=self._sub_agents[0].sub_agent_id,
+        )
+        self._coordination_decisions[coordination_key] = result
+        return result
 
     async def _scan_and_dispatch_conflicts(self) -> None:
         """Detect new conflicts and dispatch directives.

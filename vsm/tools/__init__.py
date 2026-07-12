@@ -1,6 +1,7 @@
 """Tool contract and built-in control facade helpers."""
 
 from vsm.tools.codex import CodexRunFacade, CodexRunPolicy, CodexRunRequest, CodexRunResult
+from vsm.tools.algedonic import AlgedonicFacade, AlgedonicRequest
 from vsm.tools.differentiation import DifferentiationFacade, DifferentiationRequest
 from vsm.tools.escalation import EscalationFacade, EscalationRequest
 from vsm.tools.human import HumanReviewFacade, HumanReviewRequest
@@ -17,6 +18,8 @@ from vsm.tools.spawn import SpawnChildFacade, SpawnChildRequest, SpawnChildResul
 
 __all__ = [
     "CodexRunFacade",
+    "AlgedonicFacade",
+    "AlgedonicRequest",
     "CodexRunPolicy",
     "CodexRunRequest",
     "CodexRunResult",
