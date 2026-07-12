@@ -11,7 +11,7 @@ import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from vsm.agents.runtime import (
     AgentRequest,
@@ -24,6 +24,10 @@ from vsm.errors import ConfigError, LLMProviderError, LLMTimeoutError
 from vsm.eventlog.writer import EventLogWriter
 from vsm.ids import generate_uuid
 from vsm.roles import SystemRole
+
+if TYPE_CHECKING:
+    from vsm.memory.builder import ContextViewBuilder
+    from vsm.nodes.model import NodeRunState
 
 __all__ = ["SubAgent", "System"]
 
@@ -83,6 +87,10 @@ class SubAgent:
     _eventlog: EventLogWriter
     _clock: Clock
     _runtime_control: AgentRuntimeControl | None = None
+    _run_id: str | None = None
+    _run_state: "NodeRunState | None" = None
+    _context_builder: "ContextViewBuilder | None" = None
+    _resume_within_run: bool = False
 
     async def respond(
         self,
@@ -144,10 +152,18 @@ class SubAgent:
                 message=f"{self.system_id} のロールには AgentRuntime が割り当てられていません",
             )
         timeout = ctx.get("timeout_seconds", runtime.timeout_seconds)
+        full_context_view = ctx.get("context_view")
+        if full_context_view is None and self._context_builder is not None:
+            if self._run_id is None:
+                raise RuntimeError("ContextViewBuilder に対応する run_id がありません")
+            full_context_view = self._context_builder.build(self.system_id, self._run_id)
+        saved_session_ref: str | None = None
+        if self._resume_within_run and self._run_state is not None:
+            saved_session_ref = self._run_state.session_refs.get(runtime.backend_name)
         request = AgentRequest(
             prompt=prompt,
-            context_view=ctx.get("context_view"),
-            session_ref=ctx.get("session_ref"),
+            context_view=None if saved_session_ref is not None else full_context_view,
+            session_ref=saved_session_ref,
             workdir=(Path(ctx["workdir"]) if ctx.get("workdir") is not None else None),
             model=model,
             timeout_seconds=timeout,
@@ -177,10 +193,30 @@ class SubAgent:
         )
 
         try:
-            response = await asyncio.wait_for(
-                runtime.invoke(request),
-                timeout=timeout,
-            )
+            try:
+                response = await asyncio.wait_for(
+                    runtime.invoke(request),
+                    timeout=timeout,
+                )
+            except AgentRuntimeError:
+                if request.session_ref is None:
+                    raise
+                # Run 内キャッシュであるセッションが消滅した場合は、同じ
+                # 指示を新規セッション + 完全 context view で一度だけ再実行する。
+                if self._run_state is not None:
+                    self._run_state.session_refs.pop(runtime.backend_name, None)
+                request = AgentRequest(
+                    prompt=prompt,
+                    context_view=full_context_view,
+                    session_ref=None,
+                    workdir=request.workdir,
+                    model=request.model,
+                    timeout_seconds=request.timeout_seconds,
+                )
+                response = await asyncio.wait_for(
+                    runtime.invoke(request),
+                    timeout=timeout,
+                )
         except asyncio.TimeoutError:
             # REQ 3.4 / 3.5: バックエンド別タイムアウト。``asyncio.wait_for`` が
             # 既に裏側のタスクを cancel しているので、追加の cancel 操作
@@ -261,6 +297,12 @@ class SubAgent:
             await self._runtime_control.after_agent_invoke(
                 self.system_id, response, ctx.get("pending_message")
             )
+        if (
+            self._resume_within_run
+            and self._run_state is not None
+            and response.session_ref is not None
+        ):
+            self._run_state.session_refs[response.backend] = response.session_ref
 
         # REQ 3.3: 成功経路。``llm_invocation`` payload は AgentResult の
         # フィールドを忠実に転写する (design.md §Event_Log §payload 表)。
@@ -438,6 +480,21 @@ class System(ABC):
         )
         self._sub_agents.append(sub_agent)
         return sub_agent
+
+    def bind_node_context(
+        self,
+        *,
+        run_id: str,
+        run_state: "NodeRunState",
+        context_builder: "ContextViewBuilder",
+        resume_within_run: bool,
+    ) -> None:
+        """全 SubAgent を、この System に対応する Run/Node 状態へ結び付ける。"""
+        for sub_agent in self._sub_agents:
+            sub_agent._run_id = run_id
+            sub_agent._run_state = run_state
+            sub_agent._context_builder = context_builder
+            sub_agent._resume_within_run = resume_within_run
 
     @abstractmethod
     async def run(self) -> None:

@@ -17,14 +17,14 @@
 | Architecture / Role / Agent / Tool / Node 分離 | `vsm.architecture`, `vsm.roles`, `vsm.agents`, `vsm.tools`, `vsm.nodes` に分離済み。Architecture 層は VSM 構造、Role 層は契約、Agent 層は一時実行主体、Tool 層は具体手続き、Node 層は責任・履歴・権限・状態を扱う。 |
 | EventEnvelope v1 | `vsm.eventlog.schema.Event` と `vsm.architecture.events.EventEnvelope`。`event_id`, `stream_id`, `stream_version`, `schema_version`, `correlation_id`, `causation_id` を持つ。 |
 | Projection checkpoint | `vsm.architecture.projections.ProjectionCheckpoint`。処理済み `event_id` を保持して同一イベント再適用を防ぐ。 |
-| Node / u-VSM / NodeRunState | `vsm.nodes.model.Node`, `DifferentiationLevel`, `NodeRunState`。すべての Node を u-VSM として扱い、Run 固有状態は `NodeRunState` に分離。`NodeSource` により `terminable=False` は config 由来の Node のみに制限。 |
+| Node / u-VSM / NodeRunState | `vsm.nodes.model.Node`, `DifferentiationLevel`, `NodeRunState`。すべての Node を u-VSM として扱い、Run 固有状態は `NodeRunState` に分離。CLI セッション参照は backend ごとに Run 内・同一 Node 内だけで保持し、Run 終了時に破棄する。`NodeSource` により `terminable=False` は config 由来の Node のみに制限。 |
 | static / live topology | `vsm.runtime.topology.StaticTopologyEntry`, `LiveTopology`。Event_Log 由来の `node_created`, `node_differentiated`, lifecycle event を反映。 |
 | ParentAuthority / Lease | `vsm.authority.ParentAuthority`, `Lease`。分化上限、Tool effect 制限、外部資源 lease を表す。 |
 | ToolEffect / idempotency | `vsm.tools.ToolEffect`, `ToolInvocation`。`EXTERNAL_WRITE` と `CONTROL` は `idempotency_key` 必須。 |
 | Tool facade | `LLMCallFacade`, `CodexRunFacade`, `SpawnChildFacade`, `DifferentiationFacade`, `SearchPastSubtasksFacade`, `CoordinationFacade`, `EscalationFacade`, `HumanReviewFacade`, `NodeControlFacade`。 |
 | サブ VSM デプロイ | `differentiate` Tool と `LiveTopology` により、親 Authority の範囲内で child Node を u-VSM として展開する基礎機能を実装済み。 |
 | Role / Agent / Execution | `RoleSpec`, `AgentSpec`, `PromptTemplate`, `Execution`。Spec versioning と Agent / Tool 実行単位を明示。 |
-| Memory / Graph / Telemetry | `ContextView`, `TaskSummary`, `GraphProjection`, `TelemetryCorrelation` を軽量モデルとして実装。 |
+| Memory / Graph / Telemetry | `ContextView`, `TaskSummary`, `GraphProjection`, `TelemetryCorrelation` を実装。`ContextViewBuilder` は Node の直近イベント、親 directive、直接 child の TaskSummary、参照 Artifact を短い日本語ビューへ決定論的に射影する。S1 完了時は規則ベースの TaskSummary を Run 配下の `memory/task-summaries.jsonl` に登録する。 |
 | Run Budget / quota recovery | `[budget]` / `[budget.roles]` を Authority と NodeRunState に注入し、AgentResult の input/output/cache-read token と wall clock を累算・呼出前強制する。quota 枯渇時は Node を休眠し、reset 時刻に保留 Message を再投入して自動復帰する。 |
 
 ### まだ full runtime policy として有効化していないもの

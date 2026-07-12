@@ -217,6 +217,11 @@ fallback_resume_minutes = 60
 weekly_fallback_resume_minutes = 360
 ```
 
+`resume_within_run = true` の場合、同一 Run・同一 Node・同一 backend の2回目以降の
+呼び出しは CLI セッションを再開し、再開時には重複する context view を送らない。セッションが
+消滅していた場合だけ、新規セッションと完全な context view で1回再試行する。セッション参照は
+Run 終了時に破棄され、Run 間では引き継がれない。
+
 空文字を割り当てたロールには AgentRuntime を注入しない。未認識のバックエンドや不正な
 設定値は起動時エラーとなり、別バックエンドへの暗黙の切り替えは行わない。
 
