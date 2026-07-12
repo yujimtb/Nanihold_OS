@@ -2,7 +2,7 @@
 
 This module is the authoritative source of:
 
-* :class:`ChannelId` -- the seven inter-system channels of the VSM PoC
+* :class:`ChannelId` -- the inter-system channels of the VSM PoC
   (REQ 2.1〜2.6, 9.5).
 * :data:`ALLOWED_ROUTES` -- the immutable set of ``(sender_role, receiver_role,
   channel)`` triples that the :class:`vsm.messaging.bus.MessageBus` is allowed
@@ -40,7 +40,7 @@ from vsm.roles import SystemRole
 
 
 class ChannelId(str, Enum):
-    """Identifiers for the seven inter-system channels of the VSM PoC.
+    """Identifiers for the inter-system channels of the VSM PoC.
 
     Values match the canonical wire-format strings from ``design.md`` so that
     the Event_Log and external tooling can compare channel identities by their
@@ -54,6 +54,13 @@ class ChannelId(str, Enum):
     S4_S5 = "S4-S5"  # REQ 2.5
     S3STAR_TO_S1 = "S3*->S1"  # REQ 2.6, 9.1 (unidirectional)
     S3STAR_S5_AUDIT = "S3*->S5(audit)"  # REQ 9.5 (unidirectional)
+    ALGEDONIC = "ALGEDONIC"  # design §8 (all Nodes -> S5, hierarchy bypass)
+
+
+class ExternalRole(str, Enum):
+    """SystemRole ではない外部発信者。"""
+
+    HUMAN = "HUMAN"
 
 
 # Local aliases for readability of the route table below.
@@ -65,7 +72,9 @@ _S4 = SystemRole.S4_SCANNER
 _S5 = SystemRole.S5_POLICY
 
 
-ALLOWED_ROUTES: frozenset[tuple[SystemRole, SystemRole, ChannelId]] = frozenset(
+ALLOWED_ROUTES: frozenset[
+    tuple[SystemRole | ExternalRole, SystemRole, ChannelId]
+] = frozenset(
     {
         # S1 ↔ S2 (REQ 2.1)
         (_S1, _S2, ChannelId.S1_S2),
@@ -86,16 +95,18 @@ ALLOWED_ROUTES: frozenset[tuple[SystemRole, SystemRole, ChannelId]] = frozenset(
         (_S3STAR, _S1, ChannelId.S3STAR_TO_S1),
         # S3* → S5 audit (REQ 9.5) -- unidirectional
         (_S3STAR, _S5, ChannelId.S3STAR_S5_AUDIT),
+        # Algedonic signals bypass the ordinary hierarchy and terminate at S5.
+        *((role, _S5, ChannelId.ALGEDONIC) for role in SystemRole),
+        (ExternalRole.HUMAN, _S5, ChannelId.ALGEDONIC),
     }
 )
 """Immutable allow-list of ``(sender_role, receiver_role, channel)`` triples.
 
-Exactly 12 routes: 10 bilateral entries (5 channels × 2 directions) plus 2
-unidirectional S3*-originated entries (REQ 2.6, 9.5)."""
+The legacy routes plus hierarchy-bypassing Node/Human → S5 Algedonic routes."""
 
 
 def is_allowed(
-    sender_role: SystemRole,
+    sender_role: SystemRole | ExternalRole,
     receiver_role: SystemRole,
     channel: ChannelId,
 ) -> bool:
@@ -120,4 +131,4 @@ def is_allowed(
     return (sender_role, receiver_role, channel) in ALLOWED_ROUTES
 
 
-__all__ = ["ChannelId", "ALLOWED_ROUTES", "is_allowed"]
+__all__ = ["ChannelId", "ExternalRole", "ALLOWED_ROUTES", "is_allowed"]

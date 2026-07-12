@@ -48,6 +48,7 @@ Validates Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 9.5.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import TYPE_CHECKING
 
 from vsm.clock import Clock
@@ -172,6 +173,7 @@ class S5Policy(System):
         q_audit = self._bus.subscribe(
             self.system_id, ChannelId.S3STAR_S5_AUDIT
         )
+        q_algedonic = self._bus.subscribe(self.system_id, ChannelId.ALGEDONIC)
 
         # ``asyncio.wait(..., FIRST_COMPLETED)`` で 3 つの ``Queue.get``
         # を同時待機する。1 件届いたら他の Future を cancel して次の
@@ -181,6 +183,7 @@ class S5Policy(System):
                 asyncio.create_task(q_s4.get(), name="s5_recv_s4_s5"),
                 asyncio.create_task(q_s3.get(), name="s5_recv_s3_s5"),
                 asyncio.create_task(q_audit.get(), name="s5_recv_audit"),
+                asyncio.create_task(q_algedonic.get(), name="s5_recv_algedonic"),
             }
             try:
                 done, pending = await asyncio.wait(
@@ -216,6 +219,89 @@ class S5Policy(System):
                     # 観測のみ。後続 task で finding 内容を反映した
                     # PolicyDecision 生成へ拡張する余地を残す。
                     pass
+                elif msg.channel == ChannelId.ALGEDONIC:
+                    await self._handle_algedonic(msg)
+
+    async def _handle_algedonic(self, msg: Message) -> None:
+        payload = msg.payload
+        severity = payload.get("severity")
+        reason = payload.get("reason")
+        source_node_id = payload.get("source_node_id")
+        if severity not in {"pain", "pleasure"}:
+            raise ValueError("algedonic severity must be pain or pleasure")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("algedonic reason is required")
+        if not isinstance(source_node_id, str) or not source_node_id.strip():
+            raise ValueError("algedonic source_node_id is required")
+
+        prompt = (
+            "あなたは VSM System 5 です。Algedonic signal への対応を選び、JSON object "
+            "のみを返してください。必須キーは action と reason、action は suspend, "
+            "consortium, escalate のいずれかです。\n"
+            f"severity={severity}\nreason={reason}\nsource_node_id={source_node_id}"
+        )
+        response = await self._sub_agents[0].respond(prompt)
+        try:
+            raw = json.loads(response.text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("S5 algedonic response must be valid JSON") from exc
+        if not isinstance(raw, dict):
+            raise ValueError("S5 algedonic response must be a JSON object")
+        action = raw.get("action")
+        action_reason = raw.get("reason")
+        if action not in {"suspend", "consortium", "escalate"}:
+            raise ValueError("S5 algedonic action must be suspend, consortium, or escalate")
+        if not isinstance(action_reason, str) or not action_reason.strip():
+            raise ValueError("S5 algedonic response requires reason")
+
+        await self._eventlog.append(
+            "algedonic_handled",
+            {
+                "severity": severity,
+                "source_node_id": source_node_id,
+                "action": action,
+                "reason": action_reason,
+            },
+            node_id=self.system_id,
+            actor_type="agent",
+            actor_id=self._sub_agents[0].sub_agent_id,
+        )
+        if action == "suspend":
+            await self._platform.suspend_node_from_algedonic(
+                source_node_id=source_node_id,
+                reason=action_reason,
+                requested_by=self.system_id,
+            )
+        elif action == "consortium":
+            await self._platform.convene_consortium(
+                subject=f"Algedonic signal: {reason}",
+                convener_node_id=self.system_id,
+                trigger="algedonic",
+            )
+        else:
+            await self._eventlog.append(
+                "escalation_requested",
+                {
+                    "reason": action_reason,
+                    "blocking_issue": reason,
+                    "requested_by": self.system_id,
+                    "target_authority": "human",
+                },
+                node_id=self.system_id,
+                actor_id=self.system_id,
+            )
+
+    async def convene_consortium(
+        self, *, subject: str, participant_node_ids: tuple[str, ...] | None = None
+    ):
+        """S5 の任意招集トリガ。"""
+
+        return await self._platform.convene_consortium(
+            subject=subject,
+            convener_node_id=self.system_id,
+            participant_node_ids=participant_node_ids,
+            trigger="s5",
+        )
 
     # ------------------------------------------------------------------
     # Assessment handler

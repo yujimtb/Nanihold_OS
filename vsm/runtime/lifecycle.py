@@ -76,7 +76,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -96,10 +96,27 @@ from vsm.eventlog.writer import EventLogWriter
 from vsm.ids import generate_run_id, generate_uuid
 from vsm.llm.types import LLMProviderProtocol
 from vsm.messaging.bus import MessageBus
-from vsm.messaging.channels import ChannelId
-from vsm.nodes import DifferentiationLevel, Node, NodeRunState, NodeSource, NodeStatus
+from vsm.messaging.channels import ChannelId, ExternalRole
+from vsm.messaging.message import Message, SendResult
+from vsm.nodes import (
+    DifferentiationLevel,
+    Node,
+    NodeRunState,
+    NodeSource,
+    NodeStatus,
+    assert_transition_allowed,
+)
+from vsm.runtime.consortium import (
+    Consortium,
+    ConsortiumDecision,
+    ContextViewHook,
+    HumanStatementWaiter,
+    NodeParticipant,
+)
 from vsm.roles import MANDATORY_ROLES, RoleSpec, SystemRole
 from vsm.tools import (
+    AlgedonicFacade,
+    AlgedonicRequest,
     SpawnChildFacade,
     SpawnChildRequest,
     SpawnChildResult,
@@ -145,6 +162,7 @@ _ROLE_INBOUND_CHANNELS: dict[SystemRole, tuple[ChannelId, ...]] = {
         ChannelId.S4_S5,
         ChannelId.S3_S5,
         ChannelId.S3STAR_S5_AUDIT,
+        ChannelId.ALGEDONIC,
     ),
 }
 
@@ -166,6 +184,7 @@ def _role_spec_for_system_role(role: SystemRole) -> RoleSpec:
             "terminate_node",
             "suspend_node",
             "resume_node",
+            "raise_algedonic",
         ),
     )
 
@@ -215,6 +234,8 @@ class Platform:
         runtimes: Mapping[SystemRole, AgentRuntimeProtocol | None],
         clock: Clock,
         run_config: RunConfig,
+        context_view_hook: ContextViewHook | None = None,
+        human_statement_waiter: HumanStatementWaiter | None = None,
     ) -> None:
         self.run_id: str = run_id
         self.run_dir: Path = run_dir
@@ -223,6 +244,13 @@ class Platform:
         self.runtimes = dict(runtimes)
         self.clock: Clock = clock
         self.run_config: RunConfig = run_config
+        self.consortium = Consortium(
+            run_id=run_id,
+            eventlog=eventlog,
+            config=run_config.consortium,
+            context_view_hook=context_view_hook,
+            human_statement_waiter=human_statement_waiter,
+        )
 
         # 役割別 System インスタンス。``MANDATORY_ROLES`` 各役割に対して
         # 1 つずつ、S1_WORKER については :meth:`spawn_s1` が動的に追加。
@@ -259,6 +287,8 @@ class Platform:
         llm_override: LLMProviderProtocol | None = None,
         runtime_overrides: Mapping[SystemRole, AgentRuntimeProtocol | None] | None = None,
         clock: Clock | None = None,
+        context_view_hook: ContextViewHook | None = None,
+        human_statement_waiter: HumanStatementWaiter | None = None,
     ) -> "Platform":
         """Construct and bootstrap a :class:`Platform` for a new Run.
 
@@ -421,6 +451,8 @@ class Platform:
             runtimes=runtimes,
             clock=clk,
             run_config=rc,
+            context_view_hook=context_view_hook,
+            human_statement_waiter=human_statement_waiter,
         )
 
         try:
@@ -634,6 +666,178 @@ class Platform:
             s3 = self.systems.get(SystemRole.S3_ALLOCATOR, [])
             return s3[0].system_id if s3 else None
         return None
+
+    async def raise_algedonic(
+        self, request: AlgedonicRequest, *, human: bool = False
+    ) -> tuple[ToolInvocation, SendResult]:
+        """Node または人間から Algedonic signal を S5 へ直送する。"""
+
+        facade = AlgedonicFacade(runner=lambda req, inv: self._run_algedonic(req, inv, human))
+        return await facade.raise_algedonic(request)
+
+    async def _run_algedonic(
+        self,
+        request: AlgedonicRequest,
+        invocation: ToolInvocation,
+        human: bool,
+    ) -> SendResult:
+        s5_instances = self.systems.get(SystemRole.S5_POLICY, [])
+        if not s5_instances:
+            raise RuntimeError("S5 is required for algedonic routing")
+        if human:
+            sender_role: SystemRole | ExternalRole = ExternalRole.HUMAN
+            actor_type = "human"
+        else:
+            source_node = self.nodes.get(request.source_node_id)
+            if source_node is None or not isinstance(source_node.vsm_position, SystemRole):
+                raise KeyError(f"unknown source Node: {request.source_node_id}")
+            sender_role = source_node.vsm_position
+            actor_type = "agent"
+
+        self.tool_invocations[invocation.invocation_id] = invocation
+        await self.eventlog.append(
+            "tool_invoked",
+            {
+                "tool_invocation_id": invocation.invocation_id,
+                "tool_name": invocation.tool_name,
+                "effect": invocation.effect.value,
+                "requested_by_node_id": request.source_node_id,
+            },
+            node_id=None if human else request.source_node_id,
+            actor_type=actor_type,
+            actor_id=request.source_node_id,
+        )
+        await self.eventlog.append(
+            "algedonic_raised",
+            {
+                "severity": request.severity,
+                "reason": request.reason,
+                "source_node_id": request.source_node_id,
+                "source_kind": "human" if human else "node",
+            },
+            node_id=None if human else request.source_node_id,
+            actor_type=actor_type,
+            actor_id=request.source_node_id,
+        )
+        if self.run_config.algedonic.notify_human:
+            await self.eventlog.append(
+                "algedonic_human_notification",
+                {
+                    "severity": request.severity,
+                    "reason": request.reason,
+                    "source_node_id": request.source_node_id,
+                },
+                node_id=None if human else request.source_node_id,
+                actor_id=request.source_node_id,
+            )
+        result = await self.bus.send(
+            Message(
+                message_id=generate_uuid(),
+                sender_role=sender_role,
+                sender_id=request.source_node_id,
+                receiver_role=SystemRole.S5_POLICY,
+                receiver_id=s5_instances[0].system_id,
+                channel=ChannelId.ALGEDONIC,
+                payload={
+                    "severity": request.severity,
+                    "reason": request.reason,
+                    "source_node_id": request.source_node_id,
+                },
+                timestamp_ms=int(self.clock.now().timestamp() * 1000),
+            )
+        )
+        if not result.delivered:
+            raise RuntimeError("algedonic signal could not be delivered to S5")
+        await self.eventlog.append(
+            "tool_completed",
+            {
+                "tool_invocation_id": invocation.invocation_id,
+                "tool_name": invocation.tool_name,
+                "result": {"delivered": True},
+            },
+            node_id=None if human else request.source_node_id,
+            actor_type=actor_type,
+            actor_id=request.source_node_id,
+        )
+        return result
+
+    async def suspend_node_from_algedonic(
+        self, *, source_node_id: str, reason: str, requested_by: str
+    ) -> None:
+        node = self.nodes.get(source_node_id)
+        if node is None:
+            raise KeyError(f"unknown source Node: {source_node_id}")
+        assert_transition_allowed(node.status, NodeStatus.SUSPENDED)
+        node.status = NodeStatus.SUSPENDED
+        self.node_run_states[(self.run_id, node.id)].status = NodeStatus.SUSPENDED
+        await self.eventlog.append(
+            "node_suspended",
+            {"node_id": node.id, "status": NodeStatus.SUSPENDED.value, "reason": reason},
+            node_id=node.id,
+            actor_id=requested_by,
+        )
+
+    async def convene_consortium(
+        self,
+        *,
+        subject: str,
+        convener_node_id: str,
+        participant_node_ids: Sequence[str] | None = None,
+        trigger: str = "s5",
+    ) -> ConsortiumDecision:
+        """S5、Algedonic、人間の各トリガから共通合議を開始する。"""
+
+        if participant_node_ids is None:
+            root_roles = {
+                SystemRole.S3_ALLOCATOR,
+                SystemRole.S4_SCANNER,
+                SystemRole.S5_POLICY,
+            }
+            selected = [node for node in self.nodes.values() if node.vsm_position in root_roles]
+        else:
+            missing = [node_id for node_id in participant_node_ids if node_id not in self.nodes]
+            if missing:
+                raise KeyError(f"unknown consortium participant Nodes: {missing}")
+            selected = [self.nodes[node_id] for node_id in participant_node_ids]
+        if convener_node_id not in {node.id for node in selected}:
+            convener = self.nodes.get(convener_node_id)
+            if convener is None:
+                raise KeyError(f"unknown convener Node: {convener_node_id}")
+            selected.append(convener)
+        participants: list[NodeParticipant] = []
+        for node in selected:
+            if not isinstance(node.vsm_position, SystemRole):
+                raise TypeError(f"Node {node.id} has no SystemRole")
+            participants.append(
+                NodeParticipant(node=node, runtime=self.runtimes[node.vsm_position])
+            )
+        return await self.consortium.convene(
+            subject=subject,
+            participants=participants,
+            convener_node_id=convener_node_id,
+            trigger=trigger,
+        )
+
+    async def convene_consortium_from_human(
+        self,
+        *,
+        subject: str,
+        convener_node_id: str,
+        participant_node_ids: Sequence[str] | None = None,
+    ) -> ConsortiumDecision:
+        """Wave 5 API が接続する人間発の公開招集入口。"""
+
+        return await self.convene_consortium(
+            subject=subject,
+            convener_node_id=convener_node_id,
+            participant_node_ids=participant_node_ids,
+            trigger="human",
+        )
+
+    def submit_consortium_human_statement(
+        self, consortium_id: str, statement: str
+    ) -> None:
+        self.consortium.submit_human_statement(consortium_id, statement)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -1055,6 +1259,8 @@ async def start_run(
     llm_override: LLMProviderProtocol | None = None,
     runtime_overrides: Mapping[SystemRole, AgentRuntimeProtocol | None] | None = None,
     clock: Clock | None = None,
+    context_view_hook: ContextViewHook | None = None,
+    human_statement_waiter: HumanStatementWaiter | None = None,
 ) -> Platform:
     """Top-level coroutine to start a new Run.
 
@@ -1107,6 +1313,8 @@ async def start_run(
         llm_override=llm_override,
         runtime_overrides=runtime_overrides,
         clock=clock,
+        context_view_hook=context_view_hook,
+        human_statement_waiter=human_statement_waiter,
     )
     await platform.start()
     return platform

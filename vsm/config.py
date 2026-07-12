@@ -49,6 +49,9 @@ __all__ = [
     "AgentBackendConfig",
     "AgentsConfig",
     "SessionConfig",
+    "CoordinationConfig",
+    "AlgedonicConfig",
+    "ConsortiumConfig",
     "RunConfig",
     "load_config",
     "LITELLM_PROVIDER_ENV",
@@ -324,6 +327,58 @@ class SessionConfig:
     resume_within_run: bool = True
 
 
+@dataclass(frozen=True)
+class CoordinationConfig:
+    """S2 の調停判断に AgentRuntime を使うかを制御する。"""
+
+    ai_deliberation: bool = True
+
+
+@dataclass(frozen=True)
+class AlgedonicConfig:
+    """Algedonic signal の人間向け通知設定。"""
+
+    notify_human: bool = True
+
+
+@dataclass(frozen=True)
+class ConsortiumConfig:
+    """階層非依存 Consortium のプロトコル設定。"""
+
+    default_rounds: int = 2
+    human_participation: str = "invited"
+    human_timeout_seconds: float = 3600.0
+    human_timeout_policy: str = "proceed"
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.default_rounds, int)
+            or isinstance(self.default_rounds, bool)
+            or self.default_rounds < 1
+        ):
+            raise ConfigError(
+                missing_roles=[], detail="consortium.default_rounds must be a positive integer"
+            )
+        if self.human_participation not in {"invited", "required", "none"}:
+            raise ConfigError(
+                missing_roles=[],
+                detail="consortium.human_participation must be invited, required, or none",
+            )
+        if (
+            not isinstance(self.human_timeout_seconds, (int, float))
+            or isinstance(self.human_timeout_seconds, bool)
+            or self.human_timeout_seconds <= 0
+        ):
+            raise ConfigError(
+                missing_roles=[], detail="consortium.human_timeout_seconds must be positive"
+            )
+        if self.human_timeout_policy not in {"proceed", "abort"}:
+            raise ConfigError(
+                missing_roles=[],
+                detail="consortium.human_timeout_policy must be proceed or abort",
+            )
+
+
 def _validate_sub_agent_count(role: SystemRole, count: int) -> None:
     """Validate a Sub_Agent count for a single role.
 
@@ -419,6 +474,9 @@ class RunConfig:
     s1_dynamic_max: int = S1_DYNAMIC_MAX
     agents: AgentsConfig = field(default_factory=AgentsConfig)
     session: SessionConfig = field(default_factory=SessionConfig)
+    coordination: CoordinationConfig = field(default_factory=CoordinationConfig)
+    algedonic: AlgedonicConfig = field(default_factory=AlgedonicConfig)
+    consortium: ConsortiumConfig = field(default_factory=ConsortiumConfig)
 
     def __post_init__(self) -> None:
         if not isinstance(self.agents, AgentsConfig):
@@ -428,6 +486,18 @@ class RunConfig:
         if not isinstance(self.session, SessionConfig):
             raise ConfigError(
                 missing_roles=[], detail="RunConfig.session must be a SessionConfig"
+            )
+        if not isinstance(self.coordination, CoordinationConfig):
+            raise ConfigError(
+                missing_roles=[], detail="RunConfig.coordination must be a CoordinationConfig"
+            )
+        if not isinstance(self.algedonic, AlgedonicConfig):
+            raise ConfigError(
+                missing_roles=[], detail="RunConfig.algedonic must be an AlgedonicConfig"
+            )
+        if not isinstance(self.consortium, ConsortiumConfig):
+            raise ConfigError(
+                missing_roles=[], detail="RunConfig.consortium must be a ConsortiumConfig"
             )
         # Materialise the mapping into a plain dict so that callers can
         # not mutate the configuration after construction. The frozen
@@ -625,6 +695,9 @@ def _extract_run_section(
     *,
     agents: AgentsConfig,
     session: SessionConfig,
+    coordination: CoordinationConfig,
+    algedonic: AlgedonicConfig,
+    consortium: ConsortiumConfig,
 ) -> RunConfig:
     """Build a :class:`RunConfig` from the optional ``[run]`` TOML section.
 
@@ -637,7 +710,13 @@ def _extract_run_section(
     """
     section = raw.get("run")
     if section is None:
-        return RunConfig(agents=agents, session=session)
+        return RunConfig(
+            agents=agents,
+            session=session,
+            coordination=coordination,
+            algedonic=algedonic,
+            consortium=consortium,
+        )
     if not isinstance(section, Mapping):
         raise ConfigError(
             missing_roles=[],
@@ -688,6 +767,9 @@ def _extract_run_section(
         s1_dynamic_max=s1_dynamic_max,
         agents=agents,
         session=session,
+        coordination=coordination,
+        algedonic=algedonic,
+        consortium=consortium,
     )
 
 
@@ -840,6 +922,72 @@ def _extract_session_section(raw: Mapping[str, Any], path: Path) -> SessionConfi
     return SessionConfig(resume_within_run=value)
 
 
+def _extract_boolean_section(
+    raw: Mapping[str, Any],
+    path: Path,
+    *,
+    section_name: str,
+    field_name: str,
+    default: bool,
+) -> bool:
+    section = raw.get(section_name)
+    if section is None:
+        return default
+    if not isinstance(section, Mapping):
+        raise ConfigError(
+            missing_roles=[], detail=f"[{section_name}] section in {path} must be a table"
+        )
+    unknown = set(section) - {field_name}
+    if unknown:
+        raise ConfigError(
+            missing_roles=[], detail=f"unknown [{section_name}] fields: {sorted(unknown)}"
+        )
+    value = section.get(field_name, default)
+    if not isinstance(value, bool):
+        raise ConfigError(
+            missing_roles=[], detail=f"[{section_name}] {field_name} must be a boolean"
+        )
+    return value
+
+
+def _extract_consortium_section(raw: Mapping[str, Any], path: Path) -> ConsortiumConfig:
+    section = raw.get("consortium")
+    if section is None:
+        return ConsortiumConfig()
+    if not isinstance(section, Mapping):
+        raise ConfigError(
+            missing_roles=[], detail=f"[consortium] section in {path} must be a table"
+        )
+    allowed = {
+        "default_rounds",
+        "human_participation",
+        "human_timeout_seconds",
+        "human_timeout_policy",
+    }
+    unknown = set(section) - allowed
+    if unknown:
+        raise ConfigError(
+            missing_roles=[], detail=f"unknown [consortium] fields: {sorted(unknown)}"
+        )
+    defaults = ConsortiumConfig()
+    return ConsortiumConfig(
+        default_rounds=section.get("default_rounds", defaults.default_rounds),
+        human_participation=_require_string(
+            section.get("human_participation", defaults.human_participation),
+            field_name="[consortium] human_participation",
+            path=path,
+        ),
+        human_timeout_seconds=section.get(
+            "human_timeout_seconds", defaults.human_timeout_seconds
+        ),
+        human_timeout_policy=_require_string(
+            section.get("human_timeout_policy", defaults.human_timeout_policy),
+            field_name="[consortium] human_timeout_policy",
+            path=path,
+        ),
+    )
+
+
 def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
     """Load :class:`LLMConfig` and :class:`RunConfig` from disk + environment.
 
@@ -902,7 +1050,34 @@ def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
     file_provider, overrides = _extract_llm_section(raw, toml_path)
     agents = _extract_agents_section(raw, toml_path)
     session = _extract_session_section(raw, toml_path)
-    run_config = _extract_run_section(raw, toml_path, agents=agents, session=session)
+    coordination = CoordinationConfig(
+        ai_deliberation=_extract_boolean_section(
+            raw,
+            toml_path,
+            section_name="coordination",
+            field_name="ai_deliberation",
+            default=True,
+        )
+    )
+    algedonic = AlgedonicConfig(
+        notify_human=_extract_boolean_section(
+            raw,
+            toml_path,
+            section_name="algedonic",
+            field_name="notify_human",
+            default=True,
+        )
+    )
+    consortium = _extract_consortium_section(raw, toml_path)
+    run_config = _extract_run_section(
+        raw,
+        toml_path,
+        agents=agents,
+        session=session,
+        coordination=coordination,
+        algedonic=algedonic,
+        consortium=consortium,
+    )
     llm_config = LLMConfig(
         provider_from_env=env_provider,
         provider_from_file=file_provider,

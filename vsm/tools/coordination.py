@@ -16,6 +16,7 @@ class CoordinationRequest:
     participants: tuple[str, ...]
     issue: str
     requested_by: str
+    claims: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -40,6 +41,7 @@ class CoordinationFacade:
                 "scope": request.scope,
                 "participants": list(request.participants),
                 "issue": request.issue,
+                "claims": dict(request.claims),
                 "result": result,
             },
             idempotency_key=request.coordination_key,
