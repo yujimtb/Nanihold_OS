@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -64,18 +65,37 @@ class RunManifest:
     repository: Path
     base_sha: str
     worktree_path: Path
-    backend: str
-    model: str
-    budget: Mapping[str, Any]
-    risk_class: str
-    issued_by: Mapping[str, str]
+    backend: str = ""
+    model: str = ""
+    budget: Mapping[str, Any] = field(default_factory=dict)
+    risk_class: str = ""
+    issued_by: Mapping[str, str] = field(default_factory=dict)
+    schema_version: int = 1
+    proposal_id: str | None = None
+    attempt: int = 1
+    run_kind: str = "implementation"
+    parent_run_id: str | None = None
     branch: str = ""
     allowed_paths: tuple[str, ...] = ()
     forbidden_paths: tuple[str, ...] = DEFAULT_SELFDEV_FORBIDDEN_PATHS
-    acceptance_criteria: tuple[str, ...] = ()
+    proposal_manifest_ref: str | None = None
+    proposal_manifest_sha256: str | None = None
+    scope: tuple[Mapping[str, Any], ...] = ()
+    scope_sha256: str | None = None
+    acceptance_criteria: tuple[Any, ...] = ()
     required_gates: tuple[str, ...] = ()
+    writer_runtime: Mapping[str, Any] | None = None
+    analysis_runtime: Mapping[str, Any] | None = None
+    initial_decision_event_id: str | None = None
+    protected_approval_event_id: str | None = None
+    created_at: str | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "allowed_paths", tuple(self.allowed_paths))
+        object.__setattr__(self, "forbidden_paths", tuple(self.forbidden_paths))
+        object.__setattr__(self, "required_gates", tuple(self.required_gates))
+        object.__setattr__(self, "scope", tuple(self.scope))
+        object.__setattr__(self, "acceptance_criteria", tuple(self.acceptance_criteria))
         if not isinstance(self.run_id, str) or not self.run_id.strip():
             raise ValueError("run_id は空にできません")
         if any(char in self.run_id for char in "/\\"):
@@ -84,9 +104,27 @@ class RunManifest:
             raise TypeError("repository は pathlib.Path でなければなりません")
         if not isinstance(self.worktree_path, Path):
             raise TypeError("worktree_path は pathlib.Path でなければなりません")
+        if self.schema_version != 1:
+            raise ValueError("RunManifest schema_version は1固定です")
         if not isinstance(self.base_sha, str) or not self.base_sha.strip():
             raise ValueError("base_sha は空にできません")
-        expected_branch = f"selfdev/{self.run_id}"
+        new_contract = self.proposal_id is not None
+        if new_contract:
+            if not isinstance(self.proposal_id, str) or not __import__("re").fullmatch(
+                r"proposal-[0-9a-f]{32}", self.proposal_id
+            ):
+                raise ValueError("proposal_id は proposal-<32hex> でなければなりません")
+            if self.attempt not in (1, 2):
+                raise ValueError("attempt は1または2でなければなりません")
+            if self.run_kind not in {"implementation", "repair"}:
+                raise ValueError("run_kind は implementation または repair でなければなりません")
+            if self.run_kind == "repair" and (self.attempt != 2 or not self.parent_run_id):
+                raise ValueError("repair Run には attempt=2 と parent_run_id が必要です")
+            if self.run_kind == "implementation" and (self.attempt != 1 or self.parent_run_id is not None):
+                raise ValueError("implementation Run の attempt/parent_run_id が不正です")
+            expected_branch = f"selfdev/{self.proposal_id}"
+        else:
+            expected_branch = f"selfdev/{self.run_id}"
         branch = self.branch or expected_branch
         if branch != expected_branch:
             raise ValueError(
@@ -94,14 +132,31 @@ class RunManifest:
             )
         for name in ("backend", "model", "risk_class"):
             value = getattr(self, name)
-            if not isinstance(value, str) or not value.strip():
+            if not new_contract and (not isinstance(value, str) or not value.strip()):
                 raise ValueError(f"{name} は空にできません")
+        if new_contract:
+            if self.risk_class not in {"low", "normal", "protected"}:
+                raise ValueError("risk_class が不正です")
+            if self.required_gates != ("g1", "g2", "g3", "g4"):
+                raise ValueError("required_gates は g1,g2,g3,g4 固定です")
+            if not self.proposal_manifest_ref or not self.proposal_manifest_sha256:
+                raise ValueError("proposal manifest ref/hash は必須です")
+            if not __import__("re").fullmatch(r"[0-9a-f]{64}", self.proposal_manifest_sha256):
+                raise ValueError("proposal_manifest_sha256 が不正です")
+            if not self.scope or not self.scope_sha256:
+                raise ValueError("scope と scope_sha256 は必須です")
+            if self.writer_runtime is None:
+                raise ValueError("writer_runtime は必須です")
+            if not self.initial_decision_event_id:
+                raise ValueError("initial_decision_event_id は必須です")
+            if self.risk_class == "protected" and not self.protected_approval_event_id:
+                raise ValueError("protected Run には protected_approval_event_id が必要です")
         if not isinstance(self.budget, Mapping):
             raise TypeError("budget はマッピングでなければなりません")
-        if not isinstance(self.issued_by, Mapping) or not self.issued_by:
+        if not new_contract and (not isinstance(self.issued_by, Mapping) or not self.issued_by):
             raise ValueError("issued_by は空でない参照マップでなければなりません")
         issuer = dict(self.issued_by)
-        if any(
+        if not new_contract and any(
             not isinstance(key, str)
             or not key.strip()
             or not isinstance(value, str)
@@ -109,9 +164,9 @@ class RunManifest:
             for key, value in issuer.items()
         ):
             raise ValueError("issued_by のキーと値は空でない文字列でなければなりません")
-        if not ({"decision", "decision_ref"} & issuer.keys()) or not (
+        if not new_contract and (not ({"decision", "decision_ref"} & issuer.keys()) or not (
             {"conversation", "conversation_ref"} & issuer.keys()
-        ):
+        )):
             raise ValueError(
                 "issued_by は decision と conversation の参照を含まなければなりません"
             )
@@ -122,7 +177,7 @@ class RunManifest:
         normalised_forbidden = tuple(
             _normalise_relative_path(value) for value in self.forbidden_paths
         )
-        for field_name in ("acceptance_criteria", "required_gates"):
+        for field_name in ("required_gates",):
             values = getattr(self, field_name)
             if any(not isinstance(value, str) or not value.strip() for value in values):
                 raise ValueError(f"{field_name} は空でない文字列の列でなければなりません")
@@ -136,11 +191,23 @@ class RunManifest:
         object.__setattr__(self, "forbidden_paths", normalised_forbidden)
         object.__setattr__(self, "acceptance_criteria", tuple(self.acceptance_criteria))
         object.__setattr__(self, "required_gates", tuple(self.required_gates))
+        object.__setattr__(self, "scope", tuple(dict(item) for item in self.scope))
+        if new_contract and self.forbidden_paths == DEFAULT_SELFDEV_FORBIDDEN_PATHS:
+            object.__setattr__(self, "forbidden_paths", ())
+        if new_contract and not normalised_allowed:
+            object.__setattr__(
+                self,
+                "allowed_paths",
+                tuple(_normalise_relative_path(str(item["path"])) for item in self.scope),
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """JSON 永続化用の plain dict を返す。"""
 
-        return {
+        legacy = self.proposal_id is None
+        if legacy:
+            return {
+            "schema_version": self.schema_version,
             "run_id": self.run_id,
             "repository": str(self.repository),
             "base_sha": self.base_sha,
@@ -155,6 +222,31 @@ class RunManifest:
             "budget": dict(self.budget),
             "risk_class": self.risk_class,
             "issued_by": dict(self.issued_by),
+            }
+        return {
+            "schema_version": self.schema_version,
+            "run_id": self.run_id,
+            "proposal_id": self.proposal_id,
+            "attempt": self.attempt,
+            "run_kind": self.run_kind,
+            "parent_run_id": self.parent_run_id,
+            "repository": str(self.repository),
+            "base_sha": self.base_sha,
+            "branch": self.branch,
+            "worktree_path": str(self.worktree_path),
+            "proposal_manifest_ref": self.proposal_manifest_ref,
+            "proposal_manifest_sha256": self.proposal_manifest_sha256,
+            "scope": [dict(item) for item in self.scope],
+            "scope_sha256": self.scope_sha256,
+            "acceptance_criteria": list(self.acceptance_criteria),
+            "required_gates": list(self.required_gates),
+            "writer_runtime": dict(self.writer_runtime or {}),
+            "analysis_runtime": dict(self.analysis_runtime) if self.analysis_runtime else None,
+            "budget": dict(self.budget),
+            "risk_class": self.risk_class,
+            "initial_decision_event_id": self.initial_decision_event_id,
+            "protected_approval_event_id": self.protected_approval_event_id,
+            "created_at": self.created_at,
         }
 
     def persist(self, run_dir: Path) -> Path:
@@ -183,6 +275,8 @@ class RunManifest:
             raise ValueError(f"manifest を読み込めません: {target}: {exc}") from exc
         if not isinstance(payload, dict):
             raise ValueError(f"manifest の root は object でなければなりません: {target}")
+        if payload.get("schema_version") != 1:
+            raise ValueError("unversioned または未知の RunManifest は拒否します")
         for field_name in ("repository", "worktree_path"):
             if field_name in payload:
                 payload[field_name] = Path(payload[field_name])
@@ -191,6 +285,7 @@ class RunManifest:
             "forbidden_paths",
             "acceptance_criteria",
             "required_gates",
+            "scope",
         ):
             if field_name in payload:
                 payload[field_name] = tuple(payload[field_name])

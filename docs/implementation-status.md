@@ -72,6 +72,10 @@ OpenTelemetry exporter 連携
 
 ## 3. Current Scope and Roadmap
 
+### 自己開発ループ Wave 1 (2026-07-13)
+
+Proposal の Domain / State / Event / Store 境界を `vsm.selfdev` に実装済み。ProposalManifest、直交 pause、strict event schema、durable controller Event Log、projection replay、artifact hash、Proposal→RunManifest mapping、ready-queue の純粋判定を提供する。controller 駆動、workspace/GateRunner、API、CLI、WebUI は未実装で、[Wave 1 実装結果](../openspec/changes/selfdev-loop/wave1-result.md)に範囲と既知の逸脱を記録している。
+
 Nanihold OS は MVP 境界を越え、VSM ランタイムとしての実装範囲を拡張中である。S1_Worker は
 LLM 応答を `s1_completion` の `result` に記録し、S1〜S5 + S3* の各 System、Event_Log、
 Node / ParentAuthority、Tool facade、Projection、Role / Agent / Execution の基礎モデルを

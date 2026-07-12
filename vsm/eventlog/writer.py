@@ -47,7 +47,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from vsm.clock import Clock
 from vsm.errors import EventLogAppendError
@@ -69,11 +69,7 @@ _RETRY_BACKOFF_SECONDS = 0.11
 # milliseconds, which blocks the single asyncio event loop. ``flush`` is enough
 # for the CLI/read-side visibility SLA; set this env var when crash-durable
 # fsync is required for an operational run.
-_DURABLE_FSYNC = os.environ.get("VSM_EVENTLOG_FSYNC", "").lower() in {
-    "1",
-    "true",
-    "yes",
-}
+Durability = Literal["buffered", "durable"]
 
 
 class EventLogWriter:
@@ -106,19 +102,32 @@ class EventLogWriter:
         deterministic SLA verification with :class:`vsm.clock.FakeClock`.
     """
 
-    def __init__(self, run_id: str, path: Path, clock: Clock) -> None:
+    def __init__(
+        self,
+        run_id: str,
+        path: Path,
+        clock: Clock,
+        *,
+        durability: Durability = "buffered",
+        strict_recovery: bool = False,
+    ) -> None:
         # REQ 10.2 / 10.7: reject malformed run_ids before opening any file.
         validate_run_id(run_id)
 
         self._run_id: str = run_id
         self._path: Path = path
         self._clock: Clock = clock
+        if durability not in {"buffered", "durable"}:
+            raise ValueError("durability は buffered または durable でなければなりません")
+        self._durability = durability
+        self._strict_recovery = strict_recovery or durability == "durable"
 
         # REQ 10.5 / 10.8: the queue is the synchronisation point between
         # callers and the writer task. ``append`` enqueues from any coroutine,
         # ``_writer_loop`` is the sole consumer.
         self._queue: asyncio.Queue[
-            tuple[str, dict[str, Any], str, dict[str, Any]] | None
+            tuple[str, dict[str, Any], str, dict[str, Any], int | None, asyncio.Future[Event] | None]
+            | None
         ] = asyncio.Queue()
 
         # REQ 10.8: ``seq`` starts at 0 and is incremented exclusively on the
@@ -128,10 +137,33 @@ class EventLogWriter:
         self._stream_versions: dict[str, int] = {}
         if path.exists() and path.stat().st_size:
             with path.open("r", encoding="utf-8") as existing:
+                expected_seq = 0
+                expected_stream_versions: dict[str, int] = {}
                 for line in existing:
                     if not line.strip():
+                        if self._strict_recovery:
+                            raise ValueError("Event Log に空行があります")
                         continue
-                    record = json.loads(line)
+                    try:
+                        record = json.loads(line)
+                        if self._strict_recovery:
+                            envelope = Event.model_validate(record)
+                            validate_event_payload(
+                                envelope.event_type,
+                                envelope.payload,
+                                schema_version=envelope.schema_version,
+                            )
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                        raise ValueError("Event Log の既存行を strict 検証できません") from exc
+                    if self._strict_recovery:
+                        stream = record.get("stream_id") or record.get("node_id") or run_id
+                        if int(record["seq"]) != expected_seq:
+                            raise ValueError("Event Log の seq が連続していません")
+                        expected_seq += 1
+                        expected_version = expected_stream_versions.get(stream, 0) + 1
+                        if int(record.get("stream_version", 0)) != expected_version:
+                            raise ValueError("Event Log の stream_version が連続していません")
+                        expected_stream_versions[stream] = expected_version
                     self._seq = max(self._seq, int(record["seq"]) + 1)
                     stream_id = record.get("stream_id") or record.get("node_id") or run_id
                     self._stream_versions[stream_id] = max(
@@ -202,7 +234,8 @@ class EventLogWriter:
         correlation_id: str | None = None,
         causation_id: str | None = None,
         schema_version: int = 1,
-    ) -> None:
+        expected_stream_version: int | None = None,
+    ) -> Event | None:
         """Enqueue an event for the writer task to persist.
 
         Validates ``payload`` synchronously against the pydantic model
@@ -229,7 +262,7 @@ class EventLogWriter:
             If ``payload`` is malformed for the given ``event_type``.
         """
         # REQ 10.7: catch payload schema violations at the call site.
-        validate_event_payload(event_type, payload)
+        validate_event_payload(event_type, payload, schema_version=schema_version)
 
         # REQ 2.8 / 2.9 / 10.5 / 10.7: stamp ``ts`` at producer observation
         # time using the injected clock so SLA assertions remain meaningful
@@ -249,7 +282,13 @@ class EventLogWriter:
             "causation_id": causation_id,
             "schema_version": schema_version,
         }
-        await self._queue.put((event_type, payload, ts, metadata))
+        future: asyncio.Future[Event] | None = None
+        if self._durability == "durable":
+            future = asyncio.get_running_loop().create_future()
+        await self._queue.put((event_type, payload, ts, metadata, expected_stream_version, future))
+        if future is not None:
+            return await future
+        return None
 
     async def _writer_loop(self) -> None:
         """Drain the queue and persist each event in FIFO order.
@@ -266,15 +305,26 @@ class EventLogWriter:
             queued = await self._queue.get()
             if queued is None:
                 return
-            event_type, payload, ts, metadata = queued
+            event_type, payload, ts, metadata, expected_stream_version, future = queued
 
             # REQ 10.8: ``seq`` is assigned only here, on the single writer
             # task, so the assignment is race-free by construction.
             seq = self._seq
             self._seq += 1
             stream_id = metadata.get("stream_id") or metadata.get("node_id") or self._run_id
-            stream_version = self._stream_versions.get(stream_id, 0) + 1
-            self._stream_versions[stream_id] = stream_version
+            current_stream_version = self._stream_versions.get(stream_id, 0)
+            if (
+                expected_stream_version is not None
+                and expected_stream_version != current_stream_version
+            ):
+                error = ValueError(
+                    f"stale stream version for {stream_id!r}: "
+                    f"expected {expected_stream_version}, current {current_stream_version}"
+                )
+                if future is not None and not future.done():
+                    future.set_exception(error)
+                raise error
+            stream_version = current_stream_version + 1
 
             # REQ 10.7: ``Event`` validates the envelope (timestamp pattern,
             # run_id length, event_type membership, non-negative seq).
@@ -294,7 +344,15 @@ class EventLogWriter:
                 payload=payload,
             )
 
-            await self._write_with_retry(event)
+            try:
+                await self._write_with_retry(event)
+            except Exception as exc:
+                if future is not None and not future.done():
+                    future.set_exception(exc)
+                raise
+            self._stream_versions[stream_id] = stream_version
+            if future is not None and not future.done():
+                future.set_result(event)
 
     async def _write_with_retry(self, event: Event) -> None:
         """Serialise and append ``event``, retrying transient OS errors.
@@ -331,7 +389,7 @@ class EventLogWriter:
                 # commit the write so the entry is observable to ``vsm tail``
                 # within the 100 ms SLA.
                 self._fh.flush()
-                if _DURABLE_FSYNC:
+                if self._durability == "durable":
                     os.fsync(self._fh.fileno())
                 return
             except OSError as exc:

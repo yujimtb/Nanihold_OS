@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -102,9 +103,14 @@ class QuotaMonitor:
     def _normalise_reset_at(
         self, reset_at: datetime | None, quota_kind: str
     ) -> datetime:
-        now = self._clock.now()
         if reset_at is None:
-            return now + self._fallback_for(quota_kind)
+            # 既存の Wave 2 runtime は provider が quota 種別を返せない
+            # synthetic test/runtime だけ ``unknown`` を使う。正式な
+            # selfdev resume 接続面で使う five_hour/weekly は reset 不明を
+            # 推測せず fail-fast する。
+            if quota_kind == "unknown":
+                return self._clock.now() + self._fallback_for(quota_kind)
+            raise ValueError("quota_reset_at が不明なため QUOTA_WAIT を開始できません")
         if reset_at.tzinfo is None:
             raise ValueError("quota_reset_at must be timezone-aware")
         return reset_at.astimezone(timezone.utc)
@@ -235,19 +241,15 @@ class QuotaMonitor:
                     actor_id="quota-monitor",
                 )
         if not healthy:
-            next_reset = self._clock.now() + self._fallback_for(state.quota_kind)
-            state.reset_at = next_reset
             self._persist()
             await self._eventlog.append(
                 "quota_probe_failed",
                 {
                     "pool": pool,
                     "reason": "health probe returned quota unavailable",
-                    "next_probe_at": format_iso_ms(next_reset),
                 },
                 actor_id="quota-monitor",
             )
-            self._schedule(pool)
             return
 
         node_ids = list(state.node_ids)
@@ -366,21 +368,40 @@ class QuotaMonitor:
         if self._state_path is None or not self._state_path.exists():
             return
         payload = json.loads(self._state_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("quota-state.json の root は object でなければなりません")
+        if payload.get("version") != 1:
+            raise ValueError("quota-state.json の version は1固定です")
+        if payload.get("run_id") != self._run_id:
+            raise ValueError("quota-state.json の run_id が現在の Run と一致しません")
         pools = payload.get("pools")
         if not isinstance(pools, list):
             raise ValueError("quota-state.json の pools は配列でなければなりません")
         for item in pools:
             if not isinstance(item, dict):
                 raise ValueError("quota-state.json の pool state が不正です")
+            required = {"pool", "quota_kind", "reset_at", "node_ids"}
+            if set(item) != required:
+                raise ValueError("quota-state.json の pool state field が不正です")
+            if not isinstance(item["pool"], str) or not item["pool"]:
+                raise ValueError("quota-state.json の pool が不正です")
+            if item["quota_kind"] not in {"five_hour", "weekly", "unknown"}:
+                raise ValueError("quota-state.json の quota_kind が不正です")
+            if not isinstance(item["node_ids"], list) or any(
+                not isinstance(value, str) or not value for value in item["node_ids"]
+            ):
+                raise ValueError("quota-state.json の node_ids が不正です")
             state = _PoolState(
-                pool=str(item["pool"]),
-                quota_kind=str(item["quota_kind"]),
-                reset_at=_parse_datetime(str(item["reset_at"])),
-                node_ids=[str(value) for value in item["node_ids"]],
+                pool=item["pool"],
+                quota_kind=item["quota_kind"],
+                reset_at=_parse_datetime(item["reset_at"]),
+                node_ids=list(item["node_ids"]),
             )
+            if len(state.node_ids) != len(set(state.node_ids)):
+                raise ValueError("quota-state.json の node_ids は unique でなければなりません")
             self._pools[state.pool] = state
         messages = payload.get("pending_messages", [])
-        if not isinstance(messages, list):
+        if not isinstance(messages, list) or any(not isinstance(item, dict) for item in messages):
             raise ValueError("quota-state.json の pending_messages が不正です")
         self._bus.restore_deferred(
             [self._message_from_payload(item) for item in messages]
@@ -408,9 +429,13 @@ class QuotaMonitor:
             ],
         }
         temporary = self._state_path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        data = (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+            "utf-8"
         )
+        with temporary.open("wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
         temporary.replace(self._state_path)
 
     @staticmethod

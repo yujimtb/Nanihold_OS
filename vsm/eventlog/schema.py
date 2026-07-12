@@ -33,6 +33,7 @@ from typing import Any, Mapping
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from vsm.ids import generate_uuid
+from vsm.selfdev.events import SELFDEV_EVENT_TYPES, SELFDEV_PAYLOAD_MODELS
 
 __all__ = [
     "EventType",
@@ -71,6 +72,7 @@ __all__ = [
     "PAYLOAD_MODELS_V1",
     "KNOWN_PAYLOAD_MODELS",
     "validate_event_payload",
+    "PAYLOAD_MODELS_BY_VERSION",
 ]
 
 
@@ -176,6 +178,7 @@ EVENT_TYPES_V1: tuple[str, ...] = (
 )
 
 KNOWN_EVENT_TYPES: tuple[str, ...] = EVENT_TYPES + EVENT_TYPES_V1
+KNOWN_EVENT_TYPES = KNOWN_EVENT_TYPES + SELFDEV_EVENT_TYPES
 
 # Kept as a named alias for callers that imported EventType historically.
 EventType = str
@@ -738,10 +741,36 @@ PAYLOAD_MODELS_V1: Mapping[str, type[BaseModel]] = {
 KNOWN_PAYLOAD_MODELS: Mapping[str, type[BaseModel]] = {
     **PAYLOAD_MODELS,
     **PAYLOAD_MODELS_V1,
+    **{
+        event_type: model
+        for (event_type, version), model in SELFDEV_PAYLOAD_MODELS.items()
+        if version == 1
+    },
+}
+
+# Version-aware dispatch is the authoritative path for new controller events.
+# The unversioned maps above remain exported for the existing runtime API.
+PAYLOAD_MODELS_BY_VERSION: Mapping[tuple[str, int], type[BaseModel]] = {
+    **{(event_type, 1): model for event_type, model in PAYLOAD_MODELS.items()},
+    **{(event_type, 1): model for event_type, model in PAYLOAD_MODELS_V1.items()},
+    # The runtime already emits these formally versioned payloads.  Their v2
+    # contract is structurally identical to the current strict model; keeping
+    # the registration explicit still makes unknown versions fail fast.
+    **{
+        (event_type, 2): PAYLOAD_MODELS[event_type]
+        for event_type in ("llm_invocation", "llm_timeout", "llm_error")
+    },
+    **SELFDEV_PAYLOAD_MODELS,
 }
 
 
-def validate_event_payload(event_type: str, payload: dict[str, Any]) -> BaseModel:
+def validate_event_payload(
+    event_type: str,
+    payload: dict[str, Any] | int,
+    positional_payload: dict[str, Any] | None = None,
+    *,
+    schema_version: int = 1,
+) -> BaseModel:
     """Validate ``payload`` against the model registered for ``event_type``.
 
     This is the single entry point used by the Event_Log writer to enforce
@@ -769,11 +798,23 @@ def validate_event_payload(event_type: str, payload: dict[str, Any]) -> BaseMode
     pydantic.ValidationError
         If ``payload`` does not satisfy the registered model's schema.
     """
-    model_cls = KNOWN_PAYLOAD_MODELS.get(event_type)
+    # The original public call was ``(event_type, payload)``.  The formal
+    # versioned contract is also accepted as ``(event_type, schema_version,
+    # payload)`` so callers can make the dispatch key explicit.
+    if isinstance(payload, int):
+        if positional_payload is None:
+            raise TypeError("schema_version 指定時は payload も必要です")
+        schema_version = payload
+        payload = positional_payload
+    elif positional_payload is not None:
+        raise TypeError("payload は一度だけ指定してください")
+    if not isinstance(payload, dict):
+        raise TypeError("event payload は object でなければなりません")
+    model_cls = PAYLOAD_MODELS_BY_VERSION.get((event_type, schema_version))
     if model_cls is None:
         raise ValueError(
-            f"unknown event_type {event_type!r}; expected one of "
-            f"{sorted(KNOWN_PAYLOAD_MODELS)}"
+            f"unknown event schema ({event_type!r}, {schema_version}); "
+            "schema version must be explicitly registered"
         )
     return model_cls.model_validate(payload)
 
