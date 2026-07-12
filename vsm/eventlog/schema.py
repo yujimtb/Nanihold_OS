@@ -66,6 +66,7 @@ __all__ = [
     "AuditFindingPayload",
     "AuditReportSentPayload",
     "EventLogAppendErrorPayload",
+    "GateReportGeneratedPayload",
     "PAYLOAD_MODELS",
     "PAYLOAD_MODELS_V1",
     "KNOWN_PAYLOAD_MODELS",
@@ -166,6 +167,7 @@ EVENT_TYPES_V1: tuple[str, ...] = (
     "web_run_cancelled",
     "web_partial_result_accepted",
     "web_run_completed",
+    "gate_report_generated",
 )
 
 KNOWN_EVENT_TYPES: tuple[str, ...] = EVENT_TYPES + EVENT_TYPES_V1
@@ -666,6 +668,16 @@ class EventLogAppendErrorPayload(_StrictModel):
     reason: str = Field(min_length=1)
 
 
+class GateReportGeneratedPayload(_StrictModel):
+    """``gate_report_generated`` payload emitted after trusted validation."""
+
+    report_path: str = Field(min_length=1)
+    worktree: str = Field(min_length=1)
+    base: str = Field(min_length=1)
+    status: str = Field(min_length=1)
+    gate_statuses: dict[str, str]
+
+
 class GenericV1Payload(BaseModel):
     """Permissive payload model for new v1 domain/control events.
 
@@ -714,7 +726,8 @@ PAYLOAD_MODELS: Mapping[str, type[BaseModel]] = {
 }
 
 PAYLOAD_MODELS_V1: Mapping[str, type[BaseModel]] = {
-    event_type: GenericV1Payload for event_type in EVENT_TYPES_V1
+    **{event_type: GenericV1Payload for event_type in EVENT_TYPES_V1},
+    "gate_report_generated": GateReportGeneratedPayload,
 }
 
 KNOWN_PAYLOAD_MODELS: Mapping[str, type[BaseModel]] = {
