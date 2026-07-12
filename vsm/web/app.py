@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -15,12 +16,41 @@ from vsm.config import load_config
 from vsm.runtime.lifecycle import describe_role_runtimes
 from vsm.web.chat import ChatBusyError, ChatManager, ChatTimeoutError
 from vsm.web.manager import RunManager
+from vsm.web.selfdev import router as selfdev_router
 
 RUNS_ROOT = Path("runs") / "web"
 manager = RunManager(RUNS_ROOT)
 chat_manager = ChatManager(RUNS_ROOT / "chat")
+selfdev_service = None
 
-app = FastAPI(title="Nanihold OS", version="0.1.0")
+
+@asynccontextmanager
+async def _lifespan(application: FastAPI):
+    """selfdev controller を app と同じ single-worker loop で管理する。"""
+
+    service = getattr(application.state, "selfdev_service", None)
+    if service is None:
+        service = selfdev_service
+    if service is None:
+        from vsm.web.selfdev_runtime import build_selfdev_service
+
+        try:
+            service = build_selfdev_service()
+        except Exception as exc:
+            application.state.selfdev_startup_error = exc
+    if service is not None:
+        application.state.selfdev_service = service
+        await service.start()
+    try:
+        yield
+    finally:
+        if service is not None:
+            await service.stop()
+
+
+app = FastAPI(title="Nanihold OS", version="0.1.0", lifespan=_lifespan)
+app.state.selfdev_service = None
+app.state.selfdev_startup_error = None
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -31,6 +61,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(selfdev_router)
+
+
+def create_app(service=None) -> FastAPI:
+    """TestClient/運用配備用に selfdev service を明示注入した app を返す。
+
+    service を省略した app は selfdev mutation を 503 で拒否する。FakeRuntime
+    を含む決定論テストは、ここへ ``SelfDevService`` を渡して lifespan の
+    start/stop と controller lock を実際に通過させる。
+    """
+
+    app.state.selfdev_service = service
+    return app
 
 
 class InstructionBody(BaseModel):

@@ -1,4 +1,4 @@
-import type { AppConfig, ChatResponse, ChatSession, RunDetail, RunSummary, Topology } from "./types";
+import type { AppConfig, ChatResponse, ChatSession, RunDetail, RunSummary, SelfDevProposalDetail, SelfDevProposalSummary, Topology } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
@@ -84,4 +84,39 @@ export const api = {
     `${API_BASE}/api/runs/${runId}/attachments/${attachmentId}`,
   artifactUrl: (runId: string, name: string) =>
     `${API_BASE}/api/runs/${runId}/artifacts/${encodeURIComponent(name)}`,
+  selfdevList: (params?: { state?: string; pendingAction?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.state) query.set("state", params.state);
+    if (params?.pendingAction) query.set("pending_action", params.pendingAction);
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return request<{ items: SelfDevProposalSummary[] }>(`/api/selfdev/proposals${suffix}`);
+  },
+  selfdevDetail: (proposalId: string) =>
+    request<SelfDevProposalDetail>(`/api/selfdev/proposals/${encodeURIComponent(proposalId)}`),
+  selfdevCreate: (payload: Record<string, unknown>) =>
+    request<{ proposal_id: string; state: string; state_version: number; created_at: string }>("/api/selfdev/proposals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  selfdevControl: (proposalId: string, action: "suspend" | "resume" | "abort", reason: string, stateVersion: number) =>
+    request<{ accepted: boolean }>(`/api/selfdev/proposals/${encodeURIComponent(proposalId)}/control`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, reason, expected_state_version: stateVersion }),
+    }),
+  selfdevHumanDecision: (proposalId: string, payload: Record<string, unknown>) =>
+    request<{ accepted: boolean }>(`/api/selfdev/proposals/${encodeURIComponent(proposalId)}/human-decision`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  selfdevMergeOutcome: (proposalId: string, merged: boolean, reason: string) =>
+    request<{ accepted: boolean }>(`/api/selfdev/proposals/${encodeURIComponent(proposalId)}/merge-outcome`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ merged, reason }),
+    }),
+  selfdevArtifactUrl: (proposalId: string, name: string) =>
+    `${API_BASE}/api/selfdev/proposals/${encodeURIComponent(proposalId)}/artifacts/${name.split("/").map(encodeURIComponent).join("/")}`,
 };

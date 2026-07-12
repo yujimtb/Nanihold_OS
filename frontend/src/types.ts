@@ -150,3 +150,57 @@ export interface Topology {
   pending_human_reviews: Array<{ review_key: string; reason: string; subject: string }>;
   waiting_consortiums: Array<{ consortium_id: string; subject?: string }>;
 }
+
+export type ProposalState =
+  | "PROPOSED" | "CONSORTIUM_REVIEW" | "APPROVED" | "REJECTED" | "NEEDS_HUMAN"
+  | "WORKSPACE_READY" | "IMPLEMENTING" | "GATES_RUNNING" | "GATES_PASSED"
+  | "GATES_FAILED" | "ABORTED" | "AUDIT" | "FINAL_CONSORTIUM" | "MERGE_READY"
+  | "REJECTED_FINAL" | "DONE" | "ARCHIVED";
+
+export interface SelfDevPauseCause {
+  pause_id: string;
+  kind: "SUSPEND" | "QUOTA_WAIT";
+  actor_type: string;
+  actor_id: string;
+  pool_id: string | null;
+  reset_at: string | null;
+  source_event_id: string;
+  reason: string;
+}
+
+export interface SelfDevProposalSummary {
+  proposal_id: string;
+  title: string;
+  state: ProposalState;
+  pause_causes: SelfDevPauseCause[];
+  state_version: number;
+  risk_class: "low" | "normal" | "protected";
+  active_run_id: string | null;
+  pending_action: string | null;
+  updated_at: string;
+}
+
+export interface SelfDevProposalDetail extends SelfDevProposalSummary {
+  schema_version: number;
+  proposal: Record<string, unknown> & {
+    id: string;
+    title: string;
+    motivation: string;
+    scope: Array<{ path: string; kind: string }>;
+    acceptance_criteria: Array<{ id: string; statement: string; verifier: Record<string, unknown> }>;
+    risk_class: "low" | "normal" | "protected";
+    budget_estimate: Record<string, unknown>;
+  };
+  proposal_manifest_sha256?: string;
+  protected_scope_sha256?: string;
+  transitions: Array<{ event_id: string; ts: string; transition: Record<string, unknown> }>;
+  consortium_reviews: Array<Record<string, unknown>>;
+  implementation_runs: Array<Record<string, unknown>>;
+  gate_attempts: Array<Record<string, unknown>>;
+  audit_report: Record<string, unknown> | null;
+  budget_actual: Record<string, unknown>;
+  artifacts: Array<{ name: string; kind: string; sha256: string; event_id: string; created_at: string }>;
+  candidate: { branch?: string; commit_sha?: string; base_sha?: string; diff_sha256?: string } | null;
+  pr_description: string | null;
+  last_error: string | null;
+}

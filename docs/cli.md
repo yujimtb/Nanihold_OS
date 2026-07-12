@@ -17,6 +17,7 @@ PowerShell の例。`cmd.exe` では `.\vsm.ps1` の代わりに `vsm.cmd`、Doc
 | `.\vsm.ps1 submit "<description>"` | タスクを投入し、新しい Run を起動する。実行中の進捗は stderr に表示され、完了時の stdout は `run_id=...` / `task_id=...` の2行だけになる。 |
 | `.\vsm.ps1 submit "<description>" --file path\to\file.txt` | UTF-8 の補足ファイル付きでタスクを投入する。`--file` は複数指定できる。 |
 | `vsm instruct <run_id> "<text>" [--node <id>]` | ローカル FastAPI (`127.0.0.1:8000`) を通じて実行中 Run へ追加指示を配送する。`--node` 省略時は S5 宛。 |
+| `vsm selfdev ...` | `/api/selfdev` の loopback REST 経由で Proposal を作成・確認・承認・介入する。API 停止時に Event Log へ直接 fallback しない。 |
 | `.\vsm.ps1 runs` | `runs\` 配下の Run を新しい順に一覧表示する。短縮 run_id、開始時刻、導出状態、イベント数、Run 合計トークン、AgentRuntime 実行時間、タスク概要を確認できる。 |
 | `.\vsm.ps1 runs --full-id` | 詳細確認に使うフル run_id 付きで Run 一覧を表示する。 |
 | `.\vsm.ps1 status <run_id>` | `events.jsonl` から Task / System の状態と Node 別トークン（input/output/cache read）・AgentRuntime 実行時間を再構成して表示する。 |
@@ -34,6 +35,31 @@ vsm.cmd runs
 vsm.cmd status <run_id>
 vsm.cmd replay <run_id>
 ```
+
+## 自己開発 Proposal
+
+自己開発 CLI は必ず起動中の FastAPI (`127.0.0.1:8000`) を経由する。`propose` の JSON は
+controller が付与する `id` / `created_at` / `created_by` を含めず、`ProposalCreateBody` の
+項目だけを渡す。`list --json` と `show --json` は REST と同じ canonical JSON を出力する。
+
+```powershell
+vsm selfdev propose --file proposal-request.json
+vsm selfdev list --json
+vsm selfdev list --pending-action human --json
+vsm selfdev list --state MERGE_READY --json
+vsm selfdev show <proposal_id> --json
+vsm selfdev approve <proposal_id> --reason "protected scope を事前承認" --state-version 8
+vsm selfdev reject <proposal_id> --reason "リスクが高い" --state-version 8
+vsm selfdev respond <proposal_id> --statement "受入条件を明確化する" --state-version 8
+vsm selfdev suspend <proposal_id> --reason "確認まで停止" --state-version 12
+vsm selfdev resume <proposal_id> --reason "確認完了" --state-version 13
+vsm selfdev abort <proposal_id> --reason "パイロット中止" --state-version 12
+vsm selfdev outcome <proposal_id> --merged --reason "人間が merge 済み"
+vsm selfdev outcome <proposal_id> --archived --reason "候補を却下"
+```
+
+`approve` は protected Proposal にだけ使い、CLI/WebUI は detail の Manifest hash と protected scope
+hash を取得して自動付与する。MERGE_READY への到達後も CLI は push / PR 作成 / merge を実行しない。
 
 `.env` に API キーとモデルが設定済みであれば、追加の環境変数設定なしに `submit` できる。
 

@@ -140,6 +140,15 @@ app = typer.Typer(
     add_completion=False,
     cls=_ScopeGuardGroup,
 )
+selfdev_app = typer.Typer(
+    name="selfdev",
+    help="自己開発 Proposal の REST 操作。",
+    no_args_is_help=True,
+    add_completion=False,
+)
+app.add_typer(selfdev_app, name="selfdev")
+
+_SELFDEV_API_BASE = "http://127.0.0.1:8000/api/selfdev"
 
 # ---------------------------------------------------------------------------
 # Validation constants
@@ -648,6 +657,233 @@ def _event_summary(evt: dict[str, Any]) -> str | None:
             return f"web: state={state}"
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# selfdev REST client
+# ---------------------------------------------------------------------------
+
+
+def _selfdev_request(
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """自己開発 CLI の唯一の transport 経路。
+
+    API 停止時に Event Log を直接開く経路は持たない。接続失敗と HTTP
+    エラーはそのまま CLI の失敗として扱う。
+    """
+
+    from urllib.error import HTTPError, URLError
+    from urllib.request import Request, urlopen
+
+    url = f"{_SELFDEV_API_BASE}{path}"
+    request = Request(
+        url,
+        data=(json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None),
+        headers={"Content-Type": "application/json"} if payload is not None else {},
+        method=method,
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            raw = response.read().decode("utf-8")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        typer.echo(f"selfdev API が拒否しました ({exc.code}): {detail}", err=True)
+        raise typer.Exit(code=1) from None
+    except URLError as exc:
+        typer.echo(
+            f"Nanihold selfdev API に接続できません ({_SELFDEV_API_BASE}): {exc.reason}",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        typer.echo(f"selfdev API の応答が JSON ではありません: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    if not isinstance(value, dict):
+        typer.echo("selfdev API の応答は JSON object でなければなりません", err=True)
+        raise typer.Exit(code=1)
+    return value
+
+
+def _emit_selfdev_json(value: dict[str, Any], *, compact: bool = True) -> None:
+    typer.echo(json.dumps(value, ensure_ascii=False, indent=None if compact else 2))
+
+
+def _require_proposal_file(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        typer.echo(f"proposal file {path}: does not exist", err=True)
+        raise typer.Exit(code=2) from None
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        typer.echo(f"proposal file {path}: read failed ({exc})", err=True)
+        raise typer.Exit(code=2) from None
+    if not isinstance(value, dict):
+        typer.echo("proposal file は JSON object でなければなりません", err=True)
+        raise typer.Exit(code=2)
+    allowed = {
+        "title",
+        "motivation",
+        "scope",
+        "acceptance_criteria",
+        "risk_class",
+        "budget_estimate",
+        "origin",
+        "dependencies",
+    }
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        typer.echo(f"proposal file に controller 管理フィールドがあります: {unknown}", err=True)
+        raise typer.Exit(code=2)
+    return value
+
+
+@selfdev_app.command("propose")
+def selfdev_propose(
+    file: Path = typer.Option(..., "--file", exists=False, help="Proposal 作成 request の JSON file."),
+) -> None:
+    """ProposalManifest の controller 管理フィールドを除いた request を投入する。"""
+
+    _emit_selfdev_json(_selfdev_request("POST", "/proposals", _require_proposal_file(file)))
+
+
+@selfdev_app.command("list")
+def selfdev_list(
+    state: str | None = typer.Option(None, "--state", help="ProposalPhase."),
+    pending_action: str | None = typer.Option(None, "--pending-action", help="human のみ."),
+    json_output: bool = typer.Option(False, "--json", help="canonical JSON を出力する."),
+) -> None:
+    """Proposal を状態または Human 承認待ちで一覧する。"""
+
+    from urllib.parse import urlencode
+
+    query: dict[str, str] = {}
+    if state:
+        query["state"] = state
+    if pending_action:
+        query["pending_action"] = pending_action
+    suffix = f"?{urlencode(query)}" if query else ""
+    value = _selfdev_request("GET", f"/proposals{suffix}")
+    if json_output:
+        _emit_selfdev_json(value)
+        return
+    for item in value.get("items", []):
+        typer.echo(
+            f"{item.get('proposal_id')}  {item.get('state')}  "
+            f"{item.get('title')}  updated={item.get('updated_at')}"
+        )
+
+
+@selfdev_app.command("show")
+def selfdev_show(
+    proposal_id: str = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json", help="canonical JSON を出力する."),
+) -> None:
+    """Proposal の専用 projection を表示する。"""
+
+    from urllib.parse import quote
+
+    value = _selfdev_request("GET", f"/proposals/{quote(proposal_id, safe='')}")
+    _emit_selfdev_json(value, compact=json_output)
+
+
+def _selfdev_control_command(
+    proposal_id: str,
+    action: str,
+    reason: str,
+    state_version: int,
+) -> None:
+    from urllib.parse import quote
+
+    value = _selfdev_request(
+        "POST",
+        f"/proposals/{quote(proposal_id, safe='')}/control",
+        {"action": action, "reason": reason, "expected_state_version": state_version},
+    )
+    _emit_selfdev_json(value)
+
+
+@selfdev_app.command("suspend")
+def selfdev_suspend(proposal_id: str, reason: str = typer.Option(..., "--reason"), state_version: int = typer.Option(..., "--state-version")) -> None:
+    _selfdev_control_command(proposal_id, "suspend", reason, state_version)
+
+
+@selfdev_app.command("resume")
+def selfdev_resume(proposal_id: str, reason: str = typer.Option(..., "--reason"), state_version: int = typer.Option(..., "--state-version")) -> None:
+    _selfdev_control_command(proposal_id, "resume", reason, state_version)
+
+
+@selfdev_app.command("abort")
+def selfdev_abort(proposal_id: str, reason: str = typer.Option(..., "--reason"), state_version: int = typer.Option(..., "--state-version")) -> None:
+    _selfdev_control_command(proposal_id, "abort", reason, state_version)
+
+
+def _selfdev_human_command(
+    proposal_id: str,
+    decision: str,
+    reason: str,
+    state_version: int,
+    statement: str | None = None,
+) -> None:
+    from urllib.parse import quote
+
+    payload: dict[str, Any] = {
+        "decision": decision,
+        "reason": reason,
+        "statement": statement,
+        "expected_state_version": state_version,
+    }
+    if decision == "approve":
+        detail = _selfdev_request("GET", f"/proposals/{quote(proposal_id, safe='')}")
+        for field in ("proposal_manifest_sha256", "protected_scope_sha256"):
+            value = detail.get(field)
+            if not isinstance(value, str) or not value:
+                typer.echo(f"Proposal detail に {field} がありません", err=True)
+                raise typer.Exit(code=1)
+            payload[field] = value
+    value = _selfdev_request(
+        "POST", f"/proposals/{quote(proposal_id, safe='')}/human-decision", payload
+    )
+    _emit_selfdev_json(value)
+
+
+@selfdev_app.command("approve")
+def selfdev_approve(proposal_id: str, reason: str = typer.Option(..., "--reason"), state_version: int = typer.Option(..., "--state-version")) -> None:
+    _selfdev_human_command(proposal_id, "approve", reason, state_version)
+
+
+@selfdev_app.command("reject")
+def selfdev_reject(proposal_id: str, reason: str = typer.Option(..., "--reason"), state_version: int = typer.Option(..., "--state-version")) -> None:
+    _selfdev_human_command(proposal_id, "reject", reason, state_version)
+
+
+@selfdev_app.command("respond")
+def selfdev_respond(proposal_id: str, statement: str = typer.Option(..., "--statement"), state_version: int = typer.Option(..., "--state-version")) -> None:
+    _selfdev_human_command(proposal_id, "respond", "", state_version, statement=statement)
+
+
+@selfdev_app.command("outcome")
+def selfdev_outcome(
+    proposal_id: str,
+    merged: bool = typer.Option(False, "--merged"),
+    archived: bool = typer.Option(False, "--archived"),
+    reason: str = typer.Option(..., "--reason"),
+) -> None:
+    if merged == archived:
+        typer.echo("--merged または --archived のどちらか一方が必要です", err=True)
+        raise typer.Exit(code=2)
+    from urllib.parse import quote
+
+    value = _selfdev_request(
+        "POST",
+        f"/proposals/{quote(proposal_id, safe='')}/merge-outcome",
+        {"merged": merged, "reason": reason},
+    )
+    _emit_selfdev_json(value)
 
 
 # ---------------------------------------------------------------------------

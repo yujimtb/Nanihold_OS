@@ -7,7 +7,7 @@ Node 介入、追加指示、Algedonic、Human 合議参加、停止、履歴、
 
 ```bash
 docker compose up -d app
-docker compose exec app uvicorn vsm.web.app:app --host 127.0.0.1 --port 8000 --reload
+docker compose exec app uvicorn vsm.web.app:app --host 127.0.0.1 --port 8000 --workers 1
 
 # 別ターミナル
 cd frontend
@@ -57,3 +57,22 @@ Codex と会話できる。チャットIDごとに履歴とCLIの `session_ref` 
 Run の作成・詳細応答にはロール別の `runtimes`（`role` / `backend` / `model`）も含まれる。
 
 CLI呼び出しのチャットタイムアウトは既定300秒で、`ChatManager(timeout_seconds=...)` から変更できる。
+
+## 自己開発タブ
+
+トップバーの「自己開発」は通常の Run projection と分離した Proposal 専用画面である。全件、
+承認待ち (`NEEDS_HUMAN`)、`MERGE_READY` の3つの一覧を切り替え、ProposalManifest、状態 rail、
+状態遷移履歴、初回 / 最終 Consortium の全文、Gate report、S3★ audit、予算見積対実績、候補
+branch / commit、artifact を確認できる。
+
+- 新規Proposalフォームは `scope`、受入条件、risk、予算、origin を入力し、作成後の Manifest を
+  immutable として controller へ渡す。
+- `NEEDS_HUMAN` では追加 statement、approve、reject を state version 付きで送信する。protected
+  approve は ProposalManifest hash と protected scope hash に束縛される。
+- 非terminal Proposal は suspend / resume / abort、`MERGE_READY` は merged / archived の結果記録を
+  できる。stale state version は 409 として表示する。
+- PR説明文は `MERGE_READY` かつ artifact hash が有効な場合だけコピーできる。画面から push、PR作成、
+  merge は実行しない。
+
+自己開発 API の正規 endpoint は `/api/selfdev` だけで、重複 alias `/approvals` や `/merge-ready` は
+設けない。controller が未配備・fatal・reconcile失敗の場合、health は degraded、mutation は 503 になる。

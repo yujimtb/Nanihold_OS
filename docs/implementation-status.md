@@ -29,6 +29,7 @@
 | Memory / Graph / Telemetry | `ContextView`, `TaskSummary`, `GraphProjection`, `TelemetryCorrelation` を実装。`ContextViewBuilder` は Node の直近イベント、親 directive、直接 child の TaskSummary、参照 Artifact を短い日本語ビューへ決定論的に射影する。S1 完了時は規則ベースの TaskSummary を Run 配下の `memory/task-summaries.jsonl` に登録する。 |
 | Run Budget / quota recovery | `[budget]` / `[budget.roles]` を Authority と NodeRunState に注入し、AgentResult の input/output/cache-read token と wall clock を累算・呼出前強制する。quota 枯渇時は Node を休眠し、reset 時刻に保留 Message を再投入して自動復帰する。resume 失敗時の物理再試行は論理呼び出し内に閉じ、成功結果への課金とイベント発行を各1回にする。Quota/Algedonic の suspend は共通 lifecycle 操作を使う。 |
 | Wave 5 REST / 外部指示 | JSON の Run 投入、Node 宛追加指示、Human Algedonic、Consortium statement、topology、budget API を FastAPI に実装。`vsm instruct` は `127.0.0.1:8000` の instruction API を呼ぶ。追加指示は `instruction_received` と Human→Node の `INSTRUCTION` Message の両方で記録・配送される。 |
+| 自己開発 Wave 4 API / CLI / WebUI | `/api/selfdev` の Proposal create/list/detail、SSE、Human decision、control、merge outcome、artifact、health、`vsm selfdev` loopback subgroup、専用自己開発タブを実装。FastAPI lifespan は controller service を single worker で管理し、Compose から `--reload` を除去。 |
 | ライブ組織図 | `events.jsonl` の Node lifecycle、`agent_attached`、`tool_invoked`、`llm_invocation`、`budget_consumed` 等だけから役割、親子、backend/model、状態、活動、指示元、予算を再構成する。React UI はポーリングし、Node の休眠・再開・停止、追加指示、Algedonic、Consortium/Human review 応答を提供する。 |
 | 対話コンソール | FastAPI の `/api/chat`、`/messages`、履歴APIが AgentRuntime の Claude Code / Codex をチャットセッションとして公開する。`runs/web/chat/*.jsonl` に履歴と `session_ref` を追記し、再起動後の `--resume` を可能にする。React の日本語「対話」タブからRun投入・実行中Runへの指示を1クリックで行える。 |
 
@@ -79,6 +80,11 @@ Proposal の Domain / State / Event / Store 基盤に加え、Proposal 所有 wo
 ### 自己開発ループ Wave 3 (2026-07-13)
 
 headless controller、S3/S4/S5 Consortium adapter、durable Human waiter、risk 別 timeout、protected approval、implementation/repair Run、Gate attempt 1/2、candidate commit、S3★ audit、final Consortium、PR description、MERGE_READY、terminal cleanup、ready-queue scheduler、daily report の生成器を実装済み。Wave 4 の REST API、CLI、WebUI、FastAPI lifespan 配線は未実装で、詳細は [Wave 3 実装結果](../openspec/changes/selfdev-loop/wave3-result.md)に記録している。
+headless controller、S3/S4/S5 Consortium adapter、durable Human waiter、risk 別 timeout、protected approval、implementation/repair Run、Gate attempt 1/2、candidate commit、S3★ audit、final Consortium、PR description、MERGE_READY、terminal cleanup、ready-queue scheduler、daily report の生成器を実装済み。公開 surface は [Wave 4 実装結果](../openspec/changes/selfdev-loop/wave4-result.md)に記録する。
+
+### 自己開発ループ Wave 4 (2026-07-13)
+
+Proposal 専用 REST、loopback CLI、自己開発 WebUI、FastAPI lifespan / controller health / single-worker Compose 配線を実装済み。`[selfdev].enabled=true` と S1/S3/S4/S5/S3★ の明示 runtime が揃った環境だけ本番 service を起動し、未配備時の mutation は 503 で fail fast する。
 
 Nanihold OS は MVP 境界を越え、VSM ランタイムとしての実装範囲を拡張中である。S1_Worker は
 LLM 応答を `s1_completion` の `result` に記録し、S1〜S5 + S3* の各 System、Event_Log、

@@ -25,6 +25,12 @@ class SelfDevService:
     def healthy(self) -> bool:
         return self._task is not None and not self._task.done() and self._fatal is None
 
+    @property
+    def fatal(self) -> BaseException | None:
+        """FastAPI health/mutation surface 用の停止理由。"""
+
+        return self._fatal
+
     async def start(self) -> None:
         if self._task is not None:
             return

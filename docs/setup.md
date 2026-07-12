@@ -201,6 +201,10 @@ S2_COORDINATOR = "claude-code"
 S3STAR_AUDITOR = "claude-code"
 S1_WORKER = "codex"
 
+[selfdev]
+enabled = true
+repository = "."
+
 [session]
 resume_within_run = true
 
@@ -216,6 +220,10 @@ suspend_on_exhausted = true
 fallback_resume_minutes = 60
 weekly_fallback_resume_minutes = 360
 ```
+
+自己開発を有効にする場合は、S3_ALLOCATOR、S4_SCANNER、S5_POLICY、S3STAR_AUDITOR、S1_WORKER の
+5 role に AgentRuntime を明示してください。いずれかが未設定なら selfdev controller は起動せず、
+API は degraded / 503 になります。`NANIHOLD_USE_FAKE_LLM=1` は決定論テスト時だけ明示的に使えます。
 
 `resume_within_run = true` の場合、同一 Run・同一 Node・同一 backend の2回目以降の
 呼び出しは CLI セッションを再開し、再開時には重複する context view を送らない。セッションが

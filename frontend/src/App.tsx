@@ -5,6 +5,7 @@ import {
   CircleStop,
   CornerDownLeft,
   FileText,
+  GitPullRequest,
   History,
   LoaderCircle,
   MessageCircle,
@@ -22,6 +23,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import { api } from "./api";
+import { SelfDevView } from "./SelfDevView";
 import {
   isRecentlyActive,
   layoutTopology,
@@ -114,7 +116,7 @@ function formatDate(value: string) {
 }
 
 function App() {
-  const [view, setView] = useState<"home" | "chat" | "run">("home");
+  const [view, setView] = useState<"home" | "chat" | "run" | "selfdev">("home");
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [selected, setSelected] = useState<RunDetail | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -193,6 +195,9 @@ function App() {
           <button className={`nav-tab ${view === "chat" ? "active" : ""}`} onClick={() => setView("chat")}>
             <MessageCircle size={15} /> 対話
           </button>
+          <button className={`nav-tab ${view === "selfdev" ? "active" : ""}`} onClick={() => { setSelected(null); setView("selfdev"); }}>
+            <GitPullRequest size={15} /> 自己開発
+          </button>
         </nav>
         <div
           className={`model-badge ${config?.demo_mode ? "is-demo" : ""}`}
@@ -214,6 +219,8 @@ function App() {
 
       {view === "chat" ? (
         <ChatView runs={runs} onRunCreated={handleCreated} onOpenRun={openRun} />
+      ) : view === "selfdev" ? (
+        <SelfDevView />
       ) : selected && view === "run" ? (
         <RunView
           run={selected}
