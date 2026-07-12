@@ -107,7 +107,9 @@ def test_run_store_writes_formal_event_envelopes_and_object_refs(tmp_path) -> No
     assert events[0]["payload"]["description_ref"] == "input.json"
     assert "description" not in events[0]["payload"]
     assert json.loads((run.run_dir / "input.json").read_text(encoding="utf-8")) == {
-        "description": "市場調査を行ってください"
+        "description": "市場調査を行ってください",
+        "constraints": {},
+        "budget_override": {},
     }
 
 

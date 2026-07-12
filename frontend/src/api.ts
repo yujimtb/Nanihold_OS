@@ -1,4 +1,4 @@
-import type { AppConfig, RunDetail, RunSummary } from "./types";
+import type { AppConfig, RunDetail, RunSummary, Topology } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
@@ -16,12 +16,42 @@ export const api = {
   config: () => request<AppConfig>("/api/config"),
   listRuns: () => request<RunSummary[]>("/api/runs"),
   getRun: (runId: string) => request<RunDetail>(`/api/runs/${runId}`),
-  createRun: (description: string, files: File[]) => {
-    const body = new FormData();
-    body.set("description", description);
-    files.forEach((file) => body.append("files", file));
-    return request<RunDetail>("/api/runs", { method: "POST", body });
-  },
+  createRun: (goal: string) => request<RunDetail>("/api/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ goal, constraints: {} }),
+  }),
+  topology: (runId: string) => request<Topology>(`/api/runs/${runId}/topology`),
+  instruct: (runId: string, instruction: string, targetNode?: string) =>
+    request<{ delivered: boolean }>(`/api/runs/${runId}/instructions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instruction, target_node: targetNode }),
+    }),
+  controlNode: (runId: string, nodeId: string, action: "suspend" | "resume" | "terminate") =>
+    request<{ status: string }>(`/api/runs/${runId}/nodes/${nodeId}/control`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    }),
+  algedonic: (runId: string, severity: "pain" | "pleasure", reason: string, sourceNodeId: string) =>
+    request<{ delivered: boolean }>(`/api/runs/${runId}/algedonic`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ severity, reason, source_node_id: sourceNodeId }),
+    }),
+  consortiumStatement: (consortiumId: string, statement: string) =>
+    request<{ accepted: boolean }>(`/api/consortium/${consortiumId}/statement`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ statement }),
+    }),
+  humanReview: (runId: string, reviewKey: string, response: string) =>
+    request<{ accepted: boolean }>(`/api/runs/${runId}/human-review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ review_key: reviewKey, response }),
+    }),
   interrupt: (runId: string, instruction: string) =>
     request<RunDetail>(`/api/runs/${runId}/interrupt`, {
       method: "POST",

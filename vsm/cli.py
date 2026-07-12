@@ -1,4 +1,4 @@
-"""vsm CLI: ``submit`` / ``status`` / ``tail`` / ``replay`` subcommands.
+"""vsm CLI: Run 投入・指示・状態確認・replay の操作入口。
 
 The ``vsm`` console script defined in ``pyproject.toml`` resolves to the
 :data:`app` Typer application below. Four subcommands are exposed; each
@@ -653,6 +653,47 @@ def _event_summary(evt: dict[str, Any]) -> str | None:
 # ---------------------------------------------------------------------------
 # submit (Task 19.1)
 # ---------------------------------------------------------------------------
+
+
+@app.command()
+def instruct(
+    run_id: str = typer.Argument(..., help="Run identifier."),
+    text: str = typer.Argument(..., help="Human instruction text."),
+    node: Optional[str] = typer.Option(None, "--node", help="Target Node id. Defaults to S5."),
+) -> None:
+    """実行中 Run の Node へローカル REST API 経由で追加指示を送る。"""
+
+    _validate_run_id_or_exit(run_id)
+    if not text.strip():
+        typer.echo("instruction must not be empty", err=True)
+        raise typer.Exit(code=2)
+
+    from urllib.error import HTTPError, URLError
+    from urllib.request import Request, urlopen
+
+    payload: dict[str, Any] = {"instruction": text.strip()}
+    if node is not None:
+        payload["target_node"] = node
+    request = Request(
+        f"http://127.0.0.1:8000/api/runs/{run_id}/instructions",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        typer.echo(f"instruction API rejected the request ({exc.code}): {detail}", err=True)
+        raise typer.Exit(code=1) from None
+    except URLError as exc:
+        typer.echo(
+            f"Nanihold API に接続できません (http://127.0.0.1:8000): {exc.reason}",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+    typer.echo(json.dumps(result, ensure_ascii=False))
 
 
 @app.command()

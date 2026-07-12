@@ -23,6 +23,7 @@ from vsm.clock import Clock
 from vsm.errors import ConfigError, LLMProviderError, LLMTimeoutError
 from vsm.eventlog.writer import EventLogWriter
 from vsm.ids import generate_uuid
+from vsm.messaging.message import Message
 from vsm.roles import SystemRole
 
 if TYPE_CHECKING:
@@ -401,6 +402,8 @@ class System(ABC):
         # ``run()`` を保持する asyncio Task。``start()`` で生成され、
         # ``shutdown()`` で cancel + await される。
         self._task: asyncio.Task[None] | None = None
+        self._instruction_task: asyncio.Task[None] | None = None
+        self._instruction_queue: asyncio.Queue[Message] | None = None
         self._runtime_control: AgentRuntimeControl | None = None
 
     def bind_runtime_control(self, control: AgentRuntimeControl) -> None:
@@ -409,6 +412,71 @@ class System(ABC):
         self._runtime_control = control
         for sub_agent in self._sub_agents:
             sub_agent._runtime_control = control
+
+    def bind_instruction_queue(self, queue: asyncio.Queue[Message]) -> None:
+        """Human からの追加指示を受ける Run 内専用キューを接続する。"""
+
+        if self._instruction_queue is not None and self._instruction_queue is not queue:
+            raise RuntimeError(f"instruction queue already bound: {self.system_id}")
+        self._instruction_queue = queue
+
+    async def _consume_instructions(self) -> None:
+        if self._instruction_queue is None:
+            raise RuntimeError(f"instruction queue is not bound: {self.system_id}")
+        while True:
+            message = await self._instruction_queue.get()
+            instruction = message.payload.get("instruction")
+            instruction_id = message.payload.get("instruction_id")
+            if not isinstance(instruction, str) or not instruction.strip():
+                await self._eventlog.append(
+                    "instruction_failed",
+                    {
+                        "instruction_id": instruction_id,
+                        "target_node": self.system_id,
+                        "reason": "instruction must be a non-empty string",
+                    },
+                    node_id=self.system_id,
+                    actor_id=self.system_id,
+                )
+                continue
+            if not self._sub_agents:
+                await self._eventlog.append(
+                    "instruction_failed",
+                    {
+                        "instruction_id": instruction_id,
+                        "target_node": self.system_id,
+                        "reason": "target Node has no SubAgent",
+                    },
+                    node_id=self.system_id,
+                    actor_id=self.system_id,
+                )
+                continue
+            try:
+                response = await self._sub_agents[0].respond(
+                    f"人間からの追加指示:\n{instruction.strip()}",
+                    context={"pending_message": message},
+                )
+                await self._eventlog.append(
+                    "instruction_completed",
+                    {
+                        "instruction_id": instruction_id,
+                        "target_node": self.system_id,
+                        "response": response.text,
+                    },
+                    node_id=self.system_id,
+                    actor_id=self.system_id,
+                )
+            except Exception as exc:
+                await self._eventlog.append(
+                    "instruction_failed",
+                    {
+                        "instruction_id": instruction_id,
+                        "target_node": self.system_id,
+                        "reason": str(exc),
+                    },
+                    node_id=self.system_id,
+                    actor_id=self.system_id,
+                )
 
     @property
     def sub_agents(self) -> list[SubAgent]:
@@ -521,6 +589,13 @@ class System(ABC):
                 self.run(),
                 name=f"{self.role.value}[{self.system_id}]",
             )
+        if self._instruction_queue is not None and (
+            self._instruction_task is None or self._instruction_task.done()
+        ):
+            self._instruction_task = asyncio.create_task(
+                self._consume_instructions(),
+                name=f"instruction[{self.system_id}]",
+            )
 
     async def shutdown(self) -> None:
         """``run()`` Task を cancel し、終了を待つ。
@@ -540,3 +615,10 @@ class System(ABC):
                 pass
         # ``done()`` 判定後も次回 ``start()`` で再生成できるようリセット。
         self._task = None
+        if self._instruction_task is not None and not self._instruction_task.done():
+            self._instruction_task.cancel()
+            try:
+                await self._instruction_task
+            except asyncio.CancelledError:
+                pass
+        self._instruction_task = None

@@ -5,19 +5,22 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from dataclasses import replace
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from vsm.agents.backends.fake import FakeAgentRuntime
-from vsm.config import load_config
+from vsm.config import BudgetConfig, load_config
 from vsm.eventlog.reader import read_all
 from vsm.ids import generate_run_id, generate_uuid
 from vsm.roles import SystemRole
 from vsm.runtime.lifecycle import Platform, start_run
+from vsm.tools import AlgedonicRequest
 from vsm.web.models import RunGeneration, WebRun, WebRunStatus
 from vsm.web.projection import project_event
+from vsm.web.topology import project_budget, project_topology
 from vsm.web.store import RunStore
 
 MAX_AUTOMATIC_ATTEMPTS = 2
@@ -66,6 +69,8 @@ class RunManager:
         description: str,
         title: str | None,
         attachments: list,
+        constraints: dict[str, Any] | None = None,
+        budget_override: dict[str, float] | None = None,
     ) -> WebRun:
         cleaned = description.strip()
         if not 1 <= len(cleaned) <= 8192:
@@ -87,6 +92,8 @@ class RunManager:
                 run_id=run_id,
                 title=(title or self._make_title(cleaned)).strip()[:80],
                 description=cleaned,
+                constraints=dict(constraints or {}),
+                budget_override=dict(budget_override or {}),
                 created_at=now,
                 updated_at=now,
                 status=WebRunStatus.QUEUED,
@@ -98,6 +105,67 @@ class RunManager:
             self.store.create(run)
             self._start_generation(run, instruction="")
             return run
+
+    def _active_platform(self, run_id: str) -> Platform:
+        self.get_run(run_id)
+        platform = self._platforms.get(run_id)
+        if platform is None:
+            raise RuntimeError("Run は現在実行中ではありません")
+        return platform
+
+    async def instruct(
+        self, run_id: str, instruction: str, target_node: str | None = None
+    ) -> dict[str, Any]:
+        instruction_id = await self._active_platform(run_id).deliver_instruction(
+            instruction, target_node=target_node
+        )
+        return {"run_id": run_id, "instruction_id": instruction_id, "delivered": True}
+
+    async def raise_algedonic(
+        self, run_id: str, *, severity: str, reason: str, source_node_id: str
+    ) -> dict[str, Any]:
+        invocation, result = await self._active_platform(run_id).raise_algedonic(
+            AlgedonicRequest(
+                severity=severity,
+                reason=reason,
+                source_node_id=source_node_id,
+            ),
+            human=True,
+        )
+        return {
+            "run_id": run_id,
+            "invocation_id": invocation.invocation_id,
+            "delivered": result.delivered,
+        }
+
+    def submit_consortium_statement(
+        self, consortium_id: str, statement: str
+    ) -> dict[str, Any]:
+        for run_id, platform in self._platforms.items():
+            try:
+                platform.submit_consortium_human_statement(consortium_id, statement)
+            except KeyError:
+                continue
+            return {"run_id": run_id, "consortium_id": consortium_id, "accepted": True}
+        raise KeyError(f"consortium is not waiting for human: {consortium_id}")
+
+    async def control_node(self, run_id: str, node_id: str, action: str) -> dict[str, Any]:
+        status = await self._active_platform(run_id).control_node(node_id, action)
+        return {"run_id": run_id, "node_id": node_id, "status": status.value}
+
+    async def respond_human_review(
+        self, run_id: str, review_key: str, response: str
+    ) -> dict[str, Any]:
+        await self._active_platform(run_id).respond_human_review(review_key, response)
+        return {"run_id": run_id, "review_key": review_key, "accepted": True}
+
+    def topology(self, run_id: str) -> dict[str, Any]:
+        run = self.get_run(run_id)
+        return project_topology(self._current_runtime_events(run), run_id)
+
+    def budget(self, run_id: str) -> dict[str, Any]:
+        run = self.get_run(run_id)
+        return project_budget(self._current_runtime_events(run), run_id)
 
     async def cancel(self, run_id: str) -> WebRun:
         run = self.get_run(run_id)
@@ -302,6 +370,22 @@ class RunManager:
             self.store.record_state(run, "platform_starting")
 
             llm_config, run_config = load_config(None)
+            if run.budget_override:
+                run_config = replace(
+                    run_config,
+                    budget=BudgetConfig(
+                        run_tokens=int(
+                            run.budget_override.get("tokens", run_config.budget.run_tokens)
+                        ),
+                        run_wall_clock_seconds=float(
+                            run.budget_override.get(
+                                "wall_clock_seconds",
+                                run_config.budget.run_wall_clock_seconds,
+                            )
+                        ),
+                        roles=run_config.budget.roles,
+                    ),
+                )
             use_fake = os.environ.get("NANIHOLD_USE_FAKE_LLM", "").lower() in {"1", "true", "yes"}
             if use_fake or not (llm_config.provider_from_env or llm_config.provider_from_file):
                 runtime_overrides = {
@@ -456,6 +540,10 @@ class RunManager:
 
     def _build_task_context(self, run: WebRun, instruction: str) -> str:
         sections = [f"ユーザー依頼:\n{run.description}"]
+        if run.constraints:
+            sections.append(
+                "制約:\n" + json.dumps(run.constraints, ensure_ascii=False, indent=2)
+            )
         if instruction:
             sections.append(f"最新の追加指示（以前の実行より優先）:\n{instruction}")
         for attachment in run.attachments:
@@ -525,6 +613,13 @@ class RunManager:
             if path.exists():
                 events.extend(read_all(path))
         return events
+
+    def _current_runtime_events(self, run: WebRun) -> list[dict[str, Any]]:
+        if not run.generations:
+            return []
+        generation = run.generations[-1]
+        path = run.run_dir / "runtime" / generation.runtime_run_id / "events.jsonl"
+        return read_all(path) if path.exists() else []
 
     @staticmethod
     def _fallback_answer(events: list[dict[str, Any]]) -> str:

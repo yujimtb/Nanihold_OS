@@ -67,3 +67,30 @@ export interface AppConfig {
   demo_mode: boolean;
   single_run: boolean;
 }
+
+export type NodeStatus = "CREATED" | "RUNNING" | "IDLE" | "SUSPENDED" | "WAITING" | "COMPLETED" | "TERMINATED" | "FAILED";
+
+export interface TopologyNode {
+  node_id: string;
+  parent_id: string | null;
+  role: string;
+  status: NodeStatus;
+  terminable: boolean;
+  backend: string;
+  model: string;
+  activity: string;
+  authority: { kind: string; id?: string; summary: string };
+  budget: {
+    tokens_limit: number;
+    tokens_consumed: number;
+    wall_clock_seconds_limit: number;
+    wall_clock_seconds_consumed: number;
+  };
+}
+
+export interface Topology {
+  run_id: string;
+  nodes: TopologyNode[];
+  pending_human_reviews: Array<{ review_key: string; reason: string; subject: string }>;
+  waiting_consortiums: Array<{ consortium_id: string; subject?: string }>;
+}

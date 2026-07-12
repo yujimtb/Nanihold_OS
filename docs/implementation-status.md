@@ -28,6 +28,8 @@
 | Role / Agent / Execution | `RoleSpec`, `AgentSpec`, `PromptTemplate`, `Execution`。Spec versioning と Agent / Tool 実行単位を明示。 |
 | Memory / Graph / Telemetry | `ContextView`, `TaskSummary`, `GraphProjection`, `TelemetryCorrelation` を実装。`ContextViewBuilder` は Node の直近イベント、親 directive、直接 child の TaskSummary、参照 Artifact を短い日本語ビューへ決定論的に射影する。S1 完了時は規則ベースの TaskSummary を Run 配下の `memory/task-summaries.jsonl` に登録する。 |
 | Run Budget / quota recovery | `[budget]` / `[budget.roles]` を Authority と NodeRunState に注入し、AgentResult の input/output/cache-read token と wall clock を累算・呼出前強制する。quota 枯渇時は Node を休眠し、reset 時刻に保留 Message を再投入して自動復帰する。resume 失敗時の物理再試行は論理呼び出し内に閉じ、成功結果への課金とイベント発行を各1回にする。Quota/Algedonic の suspend は共通 lifecycle 操作を使う。 |
+| Wave 5 REST / 外部指示 | JSON の Run 投入、Node 宛追加指示、Human Algedonic、Consortium statement、topology、budget API を FastAPI に実装。`vsm instruct` は `127.0.0.1:8000` の instruction API を呼ぶ。追加指示は `instruction_received` と Human→Node の `INSTRUCTION` Message の両方で記録・配送される。 |
+| ライブ組織図 | `events.jsonl` の Node lifecycle、`agent_attached`、`tool_invoked`、`llm_invocation`、`budget_consumed` 等だけから役割、親子、backend/model、状態、活動、指示元、予算を再構成する。React UI はポーリングし、Node の休眠・再開・停止、追加指示、Algedonic、Consortium/Human review 応答を提供する。 |
 
 ### まだ full runtime policy として有効化していないもの
 
@@ -85,8 +87,9 @@ Node / ParentAuthority、Tool facade、Projection、Role / Agent / Execution の
   `request_escalation` などの Tool facade と Node / ParentAuthority の基礎モデルを実装済み。
   自律運用するランタイムポリシーは段階的に有効化する。
 - **REQ 14.6**: S2_Coordinator によるセミステートフル記憶の集団的混合は未実装。
-- **REQ 14.7**: ローカル HTTP で到達可能な Web UI ダッシュボードを実装済み。タスク投入、
-  Run 履歴、リアルタイム進捗、追加指示、停止、結果表示を扱う。
+- **REQ 14.7**: ローカル HTTP で到達可能な Web UI ダッシュボードを実装済み。JSON タスク投入、
+  Run 履歴、リアルタイム進捗、Event_Log 再構成の組織図、予算、Node lifecycle 介入、追加指示、
+  Algedonic、Consortium/Human review 応答、結果表示を扱う。
 
 コード実行、ファイル編集、外部プロセス実行は短期ロードマップの対象。これらは
 ToolEffect / ToolInvocation の effect 境界、idempotency key、ParentAuthority / Lease による

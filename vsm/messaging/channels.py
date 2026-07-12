@@ -55,6 +55,7 @@ class ChannelId(str, Enum):
     S3STAR_TO_S1 = "S3*->S1"  # REQ 2.6, 9.1 (unidirectional)
     S3STAR_S5_AUDIT = "S3*->S5(audit)"  # REQ 9.5 (unidirectional)
     ALGEDONIC = "ALGEDONIC"  # design §8 (all Nodes -> S5, hierarchy bypass)
+    INSTRUCTION = "INSTRUCTION"  # Human -> any Node (design §10)
 
 
 class ExternalRole(str, Enum):
@@ -98,6 +99,7 @@ ALLOWED_ROUTES: frozenset[
         # Algedonic signals bypass the ordinary hierarchy and terminate at S5.
         *((role, _S5, ChannelId.ALGEDONIC) for role in SystemRole),
         (ExternalRole.HUMAN, _S5, ChannelId.ALGEDONIC),
+        *((ExternalRole.HUMAN, role, ChannelId.INSTRUCTION) for role in SystemRole),
     }
 )
 """Immutable allow-list of ``(sender_role, receiver_role, channel)`` triples.

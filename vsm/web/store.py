@@ -34,6 +34,8 @@ class RunStore:
             "run_id": run.run_id,
             "title": run.title,
             "description": run.description,
+            "constraints": run.constraints,
+            "budget_override": run.budget_override,
             "created_at": run.created_at,
             "updated_at": run.updated_at,
             "status": run.status.value,
@@ -67,6 +69,8 @@ class RunStore:
             {
                 "title": run.title,
                 "description_ref": "input.json",
+                "constraints": run.constraints,
+                "budget_override": run.budget_override,
                 "created_at": run.created_at,
                 "updated_at": run.updated_at,
                 "status": run.status.value,
@@ -142,6 +146,8 @@ class RunStore:
             run_id=payload["run_id"],
             title=payload["title"],
             description=payload["description"],
+            constraints=payload.get("constraints", {}),
+            budget_override=payload.get("budget_override", {}),
             created_at=payload["created_at"],
             updated_at=payload["updated_at"],
             status=WebRunStatus(payload["status"]),
@@ -172,6 +178,10 @@ class RunStore:
             description=input_payload.get(
                 "description",
                 payload.get("description", ""),
+            ),
+            constraints=input_payload.get("constraints", payload.get("constraints", {})),
+            budget_override=input_payload.get(
+                "budget_override", payload.get("budget_override", {})
             ),
             created_at=payload["created_at"],
             updated_at=payload["updated_at"],
@@ -348,7 +358,11 @@ class RunStore:
     def _save_input(self, run: WebRun) -> None:
         self._write_input_payload(
             run.run_dir,
-            {"description": run.description},
+            {
+                "description": run.description,
+                "constraints": run.constraints,
+                "budget_override": run.budget_override,
+            },
         )
 
     @staticmethod

@@ -1,15 +1,15 @@
 # Nanihold OS ロードマップ
 
-- 更新日: 2026-07-09
+- 更新日: 2026-07-12
 - 作成: Claude (自律作業セッション)。上流(node event model 世代)の実態調査・2026-06 のロードマップ議論・07-08〜09 の統合作業に基づく
 
-## いまの姿 (2026-07-09 時点)
+## いまの姿 (2026-07-12 時点)
 
 - Stafford Beer の VSM(Viable System Model)に基づく「AI 自動会社」ランタイム。2026-06 中旬の大規模リファクタで **Architecture / Role / Agent / Tool / Node の5層構成+ノードイベントモデル**に進化した
-- **Webダッシュボード**(FastAPI + React/Vite)が実働: 日本語UIでタスク投入・ファイル添付・実行アーカイブ閲覧ができる(起動: `uvicorn vsm.web.app:app` + `cd frontend && npm run dev` → http://localhost:5173)
+- **Webダッシュボード**(FastAPI + React/Vite)が実働: 日本語UIで JSON タスク投入、実行アーカイブ、Event_Log 由来のライブ組織図、Node/人間介入、予算消費を確認できる
 - ツールファサード 11 種(codex_run、search、spawn、human、escalation など)
-- CLI(`vsm submit / status / tail / replay / runs`)は 2026-07-09 の統合で人間可読化済み
-- テスト 334 件 + 1 skip(discord.py 未導入時)
+- CLI(`vsm submit / instruct / status / tail / replay / runs`)から Run 投入と実行中 Node への外部指示が可能
+- AgentRuntime、Budget/quota、ContextView/Node内session resume、S2 AI調停、Algedonic、Consortium、Wave 5 API/UI まで実装済み
 
 ## 2026-07-09 の統合作業(夜間UX改善の上流移植)
 
@@ -24,10 +24,18 @@
 
 ## 次の一歩(短期)
 
-1. **コスト可視化** — 上流の OpenSpec phase plans 自身が Phase 1 最優先(P0)に挙げているのに、CLI にも Web UI にもトークン消費・料金の表示が皆無。Run 単位・System 単位の消費を `vsm status` とダッシュボードに出すのが次の一手
-2. **CLI Run と Web Run の統合** — 現状 CLI(`runs/<id>/`)と Web(`runs/web/<id>/runtime/<runtime_id>/`)が別ディレクトリ・別 run_id 体系で相互参照不能(ダッシュボードの「0 runs」表示は CLI Run が見えていないため)。片方に寄せるか相互リンクする
-3. **ランタイムのシャットダウン品質** — 調査で発見した6システム共通の実バグ2件(キャンセル時の孤児タスクリーク、シャットダウン競合時に最大2メッセージ消失)の修正。テストは直したがランタイム本体は未修正
-4. Web ダッシュボードの起動手順を README に一本化(uvicorn + vite の2プロセス、API 既定 http://localhost:8000、`VITE_API_BASE_URL` で変更可)
+1. **CLI Run と Web Run の統合** — 現状 CLI(`runs/<id>/`)と Web(`runs/web/<id>/runtime/<runtime_id>/`)は別ディレクトリ・別 run_id 体系。Event_Log projection を共有できる単一 Run identity へ寄せる
+2. **ランタイムのシャットダウン品質** — キャンセル時の孤児タスクとシャットダウン競合時の Message 消失を、実運用負荷テストを含めて継続検証する
+3. **Human review の待機継続** — API から回答イベントを記録する段階から、要求元 Tool の Future を解決して作業を継続する正式な待機プロトコルへ拡張する
+4. **Run 間の会計・長期記憶** — 現在の Run 内 Budget/ContextView を、Node と LETHE を介した長期運用へ接続する
+
+## 2026-07-12 Wave 5 完了
+
+- `POST /api/runs` を `goal` / `constraints` / `budget` の JSON 契約へ統一
+- Human→Node の追加指示 Message と `vsm instruct` を追加
+- Algedonic / Consortium statement / topology / budget API を公開
+- Event_Log だけから再構成できるライブ組織図と Node 介入 UI を追加
+- README の標準起動手順を Docker Compose app + uvicorn + Vite に一本化
 
 ## 中期(LETHE / Eos との接続)
 

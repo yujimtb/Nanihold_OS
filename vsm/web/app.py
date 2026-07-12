@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from vsm.config import load_config
-from vsm.web.attachments import save_attachments
 from vsm.web.manager import RunManager
 
-RUNS_ROOT = Path(os.environ.get("NANIHOLD_RUNS_DIR", "runs")) / "web"
+RUNS_ROOT = Path("runs") / "web"
 manager = RunManager(RUNS_ROOT)
 
 app = FastAPI(title="Nanihold OS", version="0.1.0")
@@ -29,6 +27,37 @@ app.add_middleware(
 
 class InstructionBody(BaseModel):
     instruction: str
+    target_node: str | None = None
+
+
+class BudgetOverrideBody(BaseModel):
+    tokens: int | None = Field(default=None, gt=0)
+    wall_clock_seconds: float | None = Field(default=None, gt=0)
+
+
+class CreateRunBody(BaseModel):
+    goal: str
+    constraints: dict = Field(default_factory=dict)
+    budget: BudgetOverrideBody | None = None
+
+
+class AlgedonicBody(BaseModel):
+    severity: str
+    reason: str
+    source_node_id: str
+
+
+class StatementBody(BaseModel):
+    statement: str
+
+
+class NodeControlBody(BaseModel):
+    action: str
+
+
+class HumanReviewBody(BaseModel):
+    review_key: str
+    response: str
 
 
 class RenameBody(BaseModel):
@@ -58,31 +87,16 @@ def list_runs() -> list[dict]:
 
 @app.post("/api/runs", status_code=201)
 async def create_run(
-    description: str = Form(...),
-    title: str | None = Form(None),
-    files: list[UploadFile] = File(default=[]),
+    body: CreateRunBody,
 ) -> dict:
-    run_id = None
     try:
-        from vsm.ids import generate_run_id
-
-        run_id = generate_run_id()
-        temp_dir = RUNS_ROOT / ".uploads" / run_id
-        attachments = await save_attachments(files, temp_dir)
         run = await manager.create_run(
-            description=description,
-            title=title,
-            attachments=attachments,
+            description=body.goal,
+            title=None,
+            attachments=[],
+            constraints=body.constraints,
+            budget_override=(body.budget.model_dump(exclude_none=True) if body.budget else None),
         )
-        destination = run.run_dir / "attachments"
-        destination.mkdir(parents=True, exist_ok=True)
-        for attachment in attachments:
-            new_path = destination / attachment.path.name
-            attachment.path.replace(new_path)
-            attachment.path = new_path
-        if temp_dir.exists():
-            temp_dir.rmdir()
-        manager.store.save(run)
         return manager.detail(run.run_id)
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=409 if isinstance(exc, RuntimeError) else 422, detail=str(exc)) from exc
@@ -115,6 +129,83 @@ async def interrupt(run_id: str, body: InstructionBody) -> dict:
         run = await manager.interrupt(run_id, body.instruction)
         return manager.detail(run.run_id)
     except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/runs/{run_id}/instructions")
+async def instruct(run_id: str, body: InstructionBody) -> dict:
+    try:
+        return await manager.instruct(run_id, body.instruction, body.target_node)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Runが見つかりません") from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/runs/{run_id}/algedonic")
+async def algedonic(run_id: str, body: AlgedonicBody) -> dict:
+    try:
+        return await manager.raise_algedonic(
+            run_id,
+            severity=body.severity,
+            reason=body.reason,
+            source_node_id=body.source_node_id,
+        )
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/consortium/{consortium_id}/statement")
+def consortium_statement(consortium_id: str, body: StatementBody) -> dict:
+    try:
+        return manager.submit_consortium_statement(consortium_id, body.statement)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/runs/{run_id}/topology")
+def topology(run_id: str) -> dict:
+    try:
+        return manager.topology(run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Runが見つかりません") from exc
+
+
+@app.get("/api/runs/{run_id}/budget")
+def budget(run_id: str) -> dict:
+    try:
+        return manager.budget(run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Runが見つかりません") from exc
+
+
+@app.post("/api/runs/{run_id}/nodes/{node_id}/control")
+async def control_node(run_id: str, node_id: str, body: NodeControlBody) -> dict:
+    try:
+        return await manager.control_node(run_id, node_id, body.action)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/runs/{run_id}/human-review")
+async def human_review(run_id: str, body: HumanReviewBody) -> dict:
+    try:
+        return await manager.respond_human_review(run_id, body.review_key, body.response)
+    except KeyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 

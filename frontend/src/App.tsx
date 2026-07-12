@@ -5,7 +5,10 @@ import {
   FileText,
   History,
   LoaderCircle,
-  Paperclip,
+  Network,
+  OctagonAlert,
+  Pause,
+  Play,
   Plus,
   RotateCcw,
   Send,
@@ -13,10 +16,10 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { api } from "./api";
-import type { AppConfig, RunDetail, RunStatus, RunSummary, TimelineItem } from "./types";
+import type { AppConfig, RunDetail, RunStatus, RunSummary, TimelineItem, Topology, TopologyNode } from "./types";
 
 const STATUS_LABELS: Record<RunStatus, string> = {
   queued: "準備中",
@@ -151,22 +154,15 @@ function Home({
   onError: (message: string) => void;
 }) {
   const [description, setDescription] = useState("");
-  const [files, setFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
-  const fileInput = useRef<HTMLInputElement>(null);
   const activeRun = runs.find((run) => ["queued", "running", "interrupting", "waiting_for_user"].includes(run.status));
-
-  const addFiles = (incoming: FileList | null) => {
-    if (!incoming) return;
-    setFiles((current) => [...current, ...Array.from(incoming)].slice(0, 10));
-  };
 
   const submit = async () => {
     if (!description.trim() || submitting) return;
     setSubmitting(true);
     onError("");
     try {
-      onCreated(await api.createRun(description, files));
+      onCreated(await api.createRun(description));
       if ("Notification" in window && Notification.permission === "default") {
         Notification.requestPermission();
       }
@@ -203,31 +199,8 @@ function Home({
             rows={7}
             disabled={Boolean(activeRun)}
           />
-          {files.length > 0 && (
-            <div className="file-list">
-              {files.map((file, index) => (
-                <span className="file-chip" key={`${file.name}-${index}`}>
-                  <FileText size={14} /> {file.name}
-                  <button onClick={() => setFiles((current) => current.filter((_, i) => i !== index))}>
-                    <X size={13} />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
           <div className="composer-footer">
-            <input
-              ref={fileInput}
-              type="file"
-              multiple
-              accept=".txt,.md,.json,.csv,.pdf,.png,.jpg,.jpeg,.webp"
-              onChange={(event) => addFiles(event.target.files)}
-              hidden
-            />
-            <button className="attach-button" onClick={() => fileInput.current?.click()} disabled={Boolean(activeRun)}>
-              <Paperclip size={17} /> ファイル
-            </button>
-            <span className="composer-hint">最大10件 / 合計50 MB</span>
+            <span className="composer-hint">ローカル API から安全に投入されます</span>
             <button
               className="primary-button"
               onClick={submit}
@@ -330,7 +303,7 @@ function RunView({
         <section className="intervention-panel">
           <div>
             <h2>進行中の判断に口を挟む</h2>
-            <p>現在の処理を中断し、最新の指示を優先してこの工程から組み直します。</p>
+            <p>S5 に追加指示を届け、現在の組織と文脈を保ったまま反映します。</p>
           </div>
           <div className="instruction-row">
             <input
@@ -339,14 +312,22 @@ function RunView({
               placeholder="例: 実装速度より保守性を優先して"
               onKeyDown={(event) => {
                 if (event.key === "Enter" && instruction.trim()) {
-                  action(() => api.interrupt(run.run_id, instruction)).then(() => setInstruction(""));
+                  setBusy(true);
+                  api.instruct(run.run_id, instruction)
+                    .then(() => setInstruction(""))
+                    .finally(() => setBusy(false));
                 }
               }}
             />
             <button
               className="secondary-button"
               disabled={!instruction.trim() || busy}
-              onClick={() => action(() => api.interrupt(run.run_id, instruction)).then(() => setInstruction(""))}
+              onClick={() => {
+                setBusy(true);
+                api.instruct(run.run_id, instruction)
+                  .then(() => setInstruction(""))
+                  .finally(() => setBusy(false));
+              }}
             >
               <Send size={17} /> 指示する
             </button>
@@ -374,6 +355,8 @@ function RunView({
           </div>
         </section>
       )}
+
+      <OrganizationView runId={run.run_id} active={active} />
 
       <div className="run-content">
         <section className="result-column">
@@ -433,6 +416,162 @@ function RunView({
         </div>
       )}
     </main>
+  );
+}
+
+const ROLE_LABELS: Record<string, string> = {
+  S5_POLICY: "方針・統括",
+  S4_SCANNER: "環境監視",
+  S3_ALLOCATOR: "実行配分",
+  S3STAR_AUDITOR: "独立監査",
+  S2_COORDINATOR: "調整",
+  S1_WORKER: "実行担当",
+};
+
+function OrganizationView({ runId, active }: { runId: string; active: boolean }) {
+  const [topology, setTopology] = useState<Topology | null>(null);
+  const [selectedNode, setSelectedNode] = useState<string>("");
+  const [instruction, setInstruction] = useState("");
+  const [signal, setSignal] = useState("");
+  const [statement, setStatement] = useState("");
+  const [reviewResponse, setReviewResponse] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const next = await api.topology(runId);
+      setTopology(next);
+      if (!selectedNode && next.nodes.length) setSelectedNode(next.nodes[0].node_id);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }, [runId, selectedNode]);
+
+  useEffect(() => {
+    refresh();
+    if (!active) return;
+    const timer = window.setInterval(refresh, 1500);
+    return () => window.clearInterval(timer);
+  }, [active, refresh]);
+
+  const perform = async (operation: () => Promise<unknown>, clear?: () => void) => {
+    setBusy(true);
+    setError("");
+    try {
+      await operation();
+      clear?.();
+      await refresh();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const depthOf = (node: TopologyNode) => {
+    let depth = 0;
+    let parent = node.parent_id;
+    while (parent && depth < 8) {
+      depth += 1;
+      parent = topology?.nodes.find((item) => item.node_id === parent)?.parent_id ?? null;
+    }
+    return depth;
+  };
+
+  return (
+    <section className="organization-panel">
+      <div className="organization-heading">
+        <div>
+          <p className="eyebrow">LIVE ORGANIZATION</p>
+          <h2><Network size={20} /> 組織図</h2>
+        </div>
+        <span className={`live-indicator ${active ? "on" : ""}`}><i /> {active ? "ライブ" : "最終状態"}</span>
+      </div>
+      {error && <p className="organization-error">{error}</p>}
+      {!topology ? (
+        <div className="topology-loading"><LoaderCircle className="spin" /> 組織を再構成しています</div>
+      ) : (
+        <>
+          <div className="node-tree">
+            {topology.nodes.map((node) => {
+              const tokenRatio = node.budget.tokens_limit > 0
+                ? Math.min(100, node.budget.tokens_consumed / node.budget.tokens_limit * 100)
+                : 0;
+              return (
+                <article
+                  className={`node-card node-${node.status.toLowerCase()} ${selectedNode === node.node_id ? "selected" : ""}`}
+                  key={node.node_id}
+                  style={{ marginLeft: `${depthOf(node) * 34}px` }}
+                  onClick={() => setSelectedNode(node.node_id)}
+                >
+                  <div className="node-card-top">
+                    <div>
+                      <span className="node-role-code">{node.role}</span>
+                      <h3>{ROLE_LABELS[node.role] || node.role}</h3>
+                    </div>
+                    <span className="node-status"><i /> {node.status}</span>
+                  </div>
+                  <p className="node-model">{node.backend || "未接続"}{node.model ? ` / ${node.model}` : ""}</p>
+                  <p className="node-activity">{node.activity}</p>
+                  <div className="authority-line"><span>{node.authority.kind}</span>{node.authority.summary}</div>
+                  <div className="budget-line">
+                    <div><span style={{ width: `${tokenRatio}%` }} /></div>
+                    <small>{Math.round(node.budget.tokens_consumed).toLocaleString()} / {Math.round(node.budget.tokens_limit).toLocaleString()} tokens</small>
+                  </div>
+                  {active && selectedNode === node.node_id && (
+                    <div className="node-actions" onClick={(event) => event.stopPropagation()}>
+                      {node.status === "SUSPENDED" ? (
+                        <button disabled={busy} onClick={() => perform(() => api.controlNode(runId, node.node_id, "resume"))}><Play size={14} /> 再開</button>
+                      ) : (
+                        <button disabled={busy} onClick={() => perform(() => api.controlNode(runId, node.node_id, "suspend"))}><Pause size={14} /> 休眠</button>
+                      )}
+                      {node.terminable && <button disabled={busy} className="danger" onClick={() => perform(() => api.controlNode(runId, node.node_id, "terminate"))}><CircleStop size={14} /> 停止</button>}
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+
+          {active && (
+            <div className="organization-controls">
+              <div className="control-card">
+                <h3>Node へ追加指示</h3>
+                <select value={selectedNode} onChange={(event) => setSelectedNode(event.target.value)}>
+                  {topology.nodes.map((node) => <option key={node.node_id} value={node.node_id}>{ROLE_LABELS[node.role] || node.role}</option>)}
+                </select>
+                <textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="この Node に伝える具体的な指示" />
+                <button disabled={busy || !instruction.trim()} onClick={() => perform(() => api.instruct(runId, instruction, selectedNode), () => setInstruction(""))}><Send size={15} /> 指示を送る</button>
+              </div>
+              <div className="control-card alert-card">
+                <h3><OctagonAlert size={16} /> Algedonic</h3>
+                <textarea value={signal} onChange={(event) => setSignal(event.target.value)} placeholder="組織全体へ即時通知する痛み・懸念" />
+                <div className="split-actions">
+                  <button disabled={busy || !signal.trim() || !selectedNode} onClick={() => perform(() => api.algedonic(runId, "pain", signal, selectedNode), () => setSignal(""))}>痛覚を発信</button>
+                  <button disabled={busy || !signal.trim() || !selectedNode} onClick={() => perform(() => api.algedonic(runId, "pleasure", signal, selectedNode), () => setSignal(""))}>好機を発信</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {topology.waiting_consortiums.map((item) => (
+            <div className="human-action" key={item.consortium_id}>
+              <div><strong>合議体への意見</strong><p>{item.subject || item.consortium_id}</p></div>
+              <input value={statement} onChange={(event) => setStatement(event.target.value)} placeholder="人間参加者としての意見" />
+              <button disabled={busy || !statement.trim()} onClick={() => perform(() => api.consortiumStatement(item.consortium_id, statement), () => setStatement(""))}>投稿</button>
+            </div>
+          ))}
+          {topology.pending_human_reviews.map((review) => (
+            <div className="human-action" key={review.review_key}>
+              <div><strong>Human review</strong><p>{review.subject} — {review.reason}</p></div>
+              <input value={reviewResponse} onChange={(event) => setReviewResponse(event.target.value)} placeholder="判断・回答" />
+              <button disabled={busy || !reviewResponse.trim()} onClick={() => perform(() => api.humanReview(runId, review.review_key, reviewResponse), () => setReviewResponse(""))}>回答</button>
+            </div>
+          ))}
+        </>
+      )}
+    </section>
   );
 }
 

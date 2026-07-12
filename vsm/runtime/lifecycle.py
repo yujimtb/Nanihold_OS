@@ -99,6 +99,7 @@ from vsm.errors import (
     SystemInstantiationError,
 )
 from vsm.eventlog.writer import EventLogWriter
+from vsm.eventlog.reader import read_all
 from vsm.ids import generate_run_id, generate_uuid
 from vsm.llm.types import LLMProviderProtocol
 from vsm.messaging.bus import MessageBus
@@ -499,6 +500,14 @@ class Platform:
         )
 
         try:
+            await writer.append(
+                "budget_configured",
+                {
+                    "run_tokens": rc.budget.run_tokens,
+                    "run_wall_clock_seconds": rc.budget.run_wall_clock_seconds,
+                },
+                actor_id="platform",
+            )
             # 遅延 import: Tasks 12〜17 で実装される。
             from vsm.systems.s2_coordinator import S2Coordinator  # noqa: F401
             from vsm.systems.s3_allocator import S3Allocator  # noqa: F401
@@ -645,6 +654,9 @@ class Platform:
         )
         self.node_run_states[(self.run_id, node.id)] = run_state
         system.bind_runtime_control(self)
+        system.bind_instruction_queue(
+            self.bus.subscribe(system.system_id, ChannelId.INSTRUCTION)
+        )
         system.bind_node_context(
             run_id=self.run_id,
             run_state=run_state,
@@ -708,6 +720,17 @@ class Platform:
                 "node_id": node.id,
                 "agent_kind": system.__class__.__name__,
                 "role": role.value,
+                "backend": (
+                    self.runtimes[role].backend_name
+                    if self.runtimes.get(role) is not None
+                    else "deterministic"
+                ),
+                "model": (
+                    getattr(self.runtimes[role], "model", "")
+                    if self.runtimes.get(role) is not None
+                    else ""
+                ),
+                "budget": dict(run_state.budget),
                 "tools": list(role_spec.allowed_tools),
             },
             node_id=node.id,
@@ -901,6 +924,118 @@ class Platform:
         self, consortium_id: str, statement: str
     ) -> None:
         self.consortium.submit_human_statement(consortium_id, statement)
+
+    def _system_for_node(self, node_id: str) -> "System":
+        for systems in self.systems.values():
+            for system in systems:
+                if system.system_id == node_id:
+                    return system
+        raise KeyError(f"unknown Node: {node_id}")
+
+    async def deliver_instruction(
+        self, instruction: str, *, target_node: str | None = None
+    ) -> str:
+        """追加指示を Event_Log に記録し、Human Message として配送する。"""
+
+        cleaned = instruction.strip()
+        if not cleaned:
+            raise ValueError("instruction is required")
+        if target_node is None:
+            s5 = self.systems.get(SystemRole.S5_POLICY, [])
+            if not s5:
+                raise RuntimeError("S5 Node is not available")
+            target = s5[0]
+        else:
+            target = self._system_for_node(target_node)
+        instruction_id = generate_uuid()
+        await self.eventlog.append(
+            "instruction_received",
+            {
+                "instruction_id": instruction_id,
+                "instruction": cleaned,
+                "target_node": target.system_id,
+                "source": "human",
+            },
+            node_id=target.system_id,
+            actor_type="human",
+            actor_id="local-user",
+        )
+        result = await self.bus.send(
+            Message(
+                message_id=generate_uuid(),
+                sender_role=ExternalRole.HUMAN,
+                sender_id="local-user",
+                receiver_role=target.role,
+                receiver_id=target.system_id,
+                channel=ChannelId.INSTRUCTION,
+                payload={
+                    "instruction_id": instruction_id,
+                    "instruction": cleaned,
+                },
+                timestamp_ms=int(self.clock.now().timestamp() * 1000),
+            )
+        )
+        if not result.delivered:
+            raise RuntimeError(f"instruction delivery rejected: {target.system_id}")
+        return instruction_id
+
+    async def control_node(self, node_id: str, action: str) -> NodeStatus:
+        """Web 介入を Node lifecycle の検証付き遷移として適用する。"""
+
+        node = self.nodes.get(node_id)
+        if node is None:
+            raise KeyError(f"unknown Node: {node_id}")
+        state = self.node_run_states[(self.run_id, node_id)]
+        actor_id = "local-user"
+        if action == "suspend":
+            transition_node_status(node, state, NodeStatus.SUSPENDED)
+            self.bus.suspend_receiver(node_id)
+            event_type = "node_suspended"
+        elif action == "resume":
+            transition_node_status(node, state, NodeStatus.RUNNING)
+            self.bus.resume_receiver(node_id)
+            self._node_started_at[node_id] = self.clock.monotonic()
+            event_type = "node_resumed"
+        elif action == "terminate":
+            if not node.terminable:
+                raise ValueError(f"Node is not terminable: {node_id}")
+            transition_node_status(node, state, NodeStatus.TERMINATED)
+            await self._system_for_node(node_id).shutdown()
+            event_type = "node_terminated"
+        else:
+            raise ValueError(f"unknown Node action: {action}")
+        await self.eventlog.append(
+            event_type,
+            {"node_id": node_id, "status": state.status.value, "reason": "human_control"},
+            node_id=node_id,
+            actor_type="human",
+            actor_id=actor_id,
+        )
+        return state.status
+
+    async def respond_human_review(self, review_key: str, response: str) -> None:
+        cleaned = response.strip()
+        if not review_key.strip() or not cleaned:
+            raise ValueError("review_key and response are required")
+        events = read_all(self.run_dir / _EVENTS_FILENAME)
+        requested = any(
+            event.get("event_type") == "human_review_requested"
+            and (event.get("payload") or {}).get("review_key") == review_key
+            for event in events
+        )
+        already_responded = any(
+            event.get("event_type") == "human_review_responded"
+            and (event.get("payload") or {}).get("review_key") == review_key
+            for event in events
+        )
+        if not requested or already_responded:
+            raise KeyError(f"human review is not pending: {review_key}")
+        await self.eventlog.append(
+            "human_review_responded",
+            {"review_key": review_key, "response": cleaned},
+            actor_type="human",
+            actor_id="local-user",
+        )
 
     async def before_agent_invoke(self, node_id: str) -> None:
         """AgentRuntime 呼び出し前に Node/Run の既消費量を強制する。"""
