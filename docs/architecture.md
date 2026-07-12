@@ -584,6 +584,8 @@ Budget:
 quota 枯渇時は Node を `SUSPENDED` にし、reset 時刻（不明時は設定した間隔）に自動復帰する。
 MessageBus は当該 Node の処理中 Message と休眠中に到着した Message を保留し、`quota_resumed`
 発行時に同じ購読キューへ再投入する。QuotaMonitor の timer は Platform shutdown で全て cancel する。
+Quota と Algedonic の suspend は同じ検証付き Node lifecycle 操作を通し、Node と
+`NodeRunState` を一度だけ同時更新する。既に `SUSPENDED` の Node への二重 suspend は失敗させる。
 
 ---
 

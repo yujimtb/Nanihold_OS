@@ -1,6 +1,10 @@
 """Node and per-Run Node state models."""
 
-from vsm.nodes.lifecycle import NODE_STATUS_TRANSITIONS, assert_transition_allowed
+from vsm.nodes.lifecycle import (
+    NODE_STATUS_TRANSITIONS,
+    assert_transition_allowed,
+    transition_node_status,
+)
 from vsm.nodes.model import DifferentiationLevel, Node, NodeRunState, NodeSource, NodeStatus
 
 __all__ = [
@@ -11,4 +15,5 @@ __all__ = [
     "NodeStatus",
     "NODE_STATUS_TRANSITIONS",
     "assert_transition_allowed",
+    "transition_node_status",
 ]

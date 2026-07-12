@@ -69,6 +69,20 @@ async def test_writer_emits_event_envelope_v1(tmp_path) -> None:
     assert envelope.actor_id == "root"
 
 
+@pytest.mark.asyncio
+async def test_writer_stop_drains_all_accepted_events(tmp_path) -> None:
+    path = tmp_path / "events.jsonl"
+    writer = EventLogWriter(run_id="run-drain", path=path, clock=SystemClock())
+    await writer.start()
+
+    await writer.append("node_created", {"node_id": "node-a"})
+    await writer.append("node_created", {"node_id": "node-b"})
+    await writer.stop()
+
+    events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert [event["payload"]["node_id"] for event in events] == ["node-a", "node-b"]
+
+
 def test_projection_checkpoint_is_idempotent() -> None:
     event = EventEnvelope(
         event_id="e1",

@@ -116,9 +116,9 @@ class EventLogWriter:
         # REQ 10.5 / 10.8: the queue is the synchronisation point between
         # callers and the writer task. ``append`` enqueues from any coroutine,
         # ``_writer_loop`` is the sole consumer.
-        self._queue: asyncio.Queue[tuple[str, dict[str, Any], str, dict[str, Any]]] = (
-            asyncio.Queue()
-        )
+        self._queue: asyncio.Queue[
+            tuple[str, dict[str, Any], str, dict[str, Any]] | None
+        ] = asyncio.Queue()
 
         # REQ 10.8: ``seq`` starts at 0 and is incremented exclusively on the
         # writer task, which guarantees a strict monotonic sequence even
@@ -150,23 +150,26 @@ class EventLogWriter:
         )
 
     async def stop(self) -> None:
-        """Cancel the writer task and close the underlying file handle.
+        """Drain the writer queue and close the underlying file handle.
 
-        The writer task is cancelled (rather than allowed to drain) because
-        the lifecycle layer is expected to call ``stop`` only after every
-        System has been shut down, at which point no further ``append``
-        calls can race against this method. The file handle is flushed and
-        closed unconditionally so that even a partially-drained queue still
-        produces a well-formed (truncated) JSONL file on disk.
+        A sentinel is queued after every event already accepted by
+        :meth:`append`, then the writer task is awaited. FIFO ordering therefore
+        guarantees that shutdown does not discard the tail of the Event_Log.
+        The lifecycle layer calls ``stop`` only after every System has been shut
+        down, so no further ``append`` calls may race with the sentinel.
         """
         if self._task is not None:
-            self._task.cancel()
             try:
+                await self._queue.put(None)
                 await self._task
-            except asyncio.CancelledError:
-                # Expected: ``_writer_loop`` runs forever until cancelled.
-                pass
-            self._task = None
+            finally:
+                self._task = None
+                if not self._fh.closed:
+                    try:
+                        self._fh.flush()
+                    finally:
+                        self._fh.close()
+            return
 
         if not self._fh.closed:
             try:
@@ -247,7 +250,10 @@ class EventLogWriter:
         4. delegates the durable write to :meth:`_write_with_retry`.
         """
         while True:
-            event_type, payload, ts, metadata = await self._queue.get()
+            queued = await self._queue.get()
+            if queued is None:
+                return
+            event_type, payload, ts, metadata = queued
 
             # REQ 10.8: ``seq`` is assigned only here, on the single writer
             # task, so the assignment is race-free by construction.

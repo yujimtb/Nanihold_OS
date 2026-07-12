@@ -10,7 +10,7 @@ from vsm.clock import Clock, format_iso_ms
 from vsm.eventlog.writer import EventLogWriter
 from vsm.messaging.bus import MessageBus
 from vsm.messaging.message import Message
-from vsm.nodes import Node, NodeRunState, NodeStatus
+from vsm.nodes import Node, NodeRunState, NodeStatus, transition_node_status
 
 Sleep = Callable[[float], Awaitable[None]]
 
@@ -58,8 +58,7 @@ class QuotaMonitor:
             raise ValueError("quota_reset_at must be timezone-aware")
         reset_at = reset_at.astimezone(timezone.utc)
 
-        node.status = NodeStatus.SUSPENDED
-        state.status = NodeStatus.SUSPENDED
+        transition_node_status(node, state, NodeStatus.SUSPENDED)
         self._bus.suspend_receiver(node_id)
         if pending_message is not None:
             self._bus.defer(pending_message)
@@ -91,8 +90,7 @@ class QuotaMonitor:
             return
         node = self._nodes[node_id]
         state = self._states[(self._run_id, node_id)]
-        node.status = NodeStatus.RUNNING
-        state.status = NodeStatus.RUNNING
+        transition_node_status(node, state, NodeStatus.RUNNING)
         pending_count = self._bus.resume_receiver(node_id)
         await self._eventlog.append(
             "quota_resumed",
@@ -122,3 +120,9 @@ class QuotaMonitor:
     @property
     def timer_count(self) -> int:
         return sum(not task.done() for task in self._timers.values())
+
+    def has_pending_resume(self, node_id: str) -> bool:
+        """当該 Node の quota 復帰 timer をこの monitor が所有するか返す。"""
+
+        timer = self._timers.get(node_id)
+        return timer is not None and not timer.done()

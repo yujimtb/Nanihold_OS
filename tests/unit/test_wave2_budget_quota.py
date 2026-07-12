@@ -136,6 +136,7 @@ async def test_agent_result_quota_exhausted_suspends_node(tmp_path) -> None:
         clock=FakeClock(),
     )
     try:
+        await platform.start()
         system = platform.systems[SystemRole.S5_POLICY][0]
         runtime = platform.runtimes[SystemRole.S5_POLICY]
         assert isinstance(runtime, FakeAgentRuntime)

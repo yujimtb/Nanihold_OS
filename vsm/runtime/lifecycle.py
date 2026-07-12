@@ -110,7 +110,7 @@ from vsm.nodes import (
     NodeRunState,
     NodeSource,
     NodeStatus,
-    assert_transition_allowed,
+    transition_node_status,
 )
 from vsm.roles import MANDATORY_ROLES, RoleSpec, SystemRole
 from vsm.runtime.consortium import (
@@ -828,9 +828,11 @@ class Platform:
         node = self.nodes.get(source_node_id)
         if node is None:
             raise KeyError(f"unknown source Node: {source_node_id}")
-        assert_transition_allowed(node.status, NodeStatus.SUSPENDED)
-        node.status = NodeStatus.SUSPENDED
-        self.node_run_states[(self.run_id, node.id)].status = NodeStatus.SUSPENDED
+        transition_node_status(
+            node,
+            self.node_run_states[(self.run_id, node.id)],
+            NodeStatus.SUSPENDED,
+        )
         await self.eventlog.append(
             "node_suspended",
             {"node_id": node.id, "status": NodeStatus.SUSPENDED.value, "reason": reason},
@@ -906,7 +908,9 @@ class Platform:
         node = self.nodes[node_id]
         state = self.node_run_states[(self.run_id, node_id)]
         if state.status is NodeStatus.SUSPENDED:
-            raise QuotaExhaustedError(f"node {node_id} is suspended by quota")
+            if self.quota_monitor.has_pending_resume(node_id):
+                raise QuotaExhaustedError(f"node {node_id} is suspended by quota")
+            raise RuntimeError(f"node {node_id} is suspended")
 
         node_tokens = state.cost_consumed["tokens_total"]
         node_wall_ms = state.cost_consumed["wall_clock_ms"]

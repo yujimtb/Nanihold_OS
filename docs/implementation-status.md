@@ -23,11 +23,11 @@
 | ToolEffect / idempotency | `vsm.tools.ToolEffect`, `ToolInvocation`。`EXTERNAL_WRITE` と `CONTROL` は `idempotency_key` 必須。 |
 | Tool facade | `LLMCallFacade`, `CodexRunFacade`, `SpawnChildFacade`, `DifferentiationFacade`, `SearchPastSubtasksFacade`, `CoordinationFacade`, `AlgedonicFacade`, `EscalationFacade`, `HumanReviewFacade`, `NodeControlFacade`。 |
 | S2 AI 調停 | `request_coordination` の issue / participants / claims を S2 AgentRuntime が判断し、`coordination_decided` に決定と理由を記録する。`[coordination] ai_deliberation` で無効化可能。 |
-| Algedonic / Consortium | 任意 Node / Human から S5 へ直送する `ALGEDONIC` channel、S5 の対応選択、階層非依存のラウンド制 Consortium、人間 statement timeout の `proceed` / `abort` を実装済み。 |
+| Algedonic / Consortium | 任意 Node / Human から S5 へ直送する `ALGEDONIC` channel、S5 の対応選択、階層非依存のラウンド制 Consortium、人間 statement timeout の `proceed` / `abort` を実装済み。AI 参加者の context view は Platform が `ContextViewBuilder` を hook adapter として注入する。 |
 | サブ VSM デプロイ | `differentiate` Tool と `LiveTopology` により、親 Authority の範囲内で child Node を u-VSM として展開する基礎機能を実装済み。 |
 | Role / Agent / Execution | `RoleSpec`, `AgentSpec`, `PromptTemplate`, `Execution`。Spec versioning と Agent / Tool 実行単位を明示。 |
 | Memory / Graph / Telemetry | `ContextView`, `TaskSummary`, `GraphProjection`, `TelemetryCorrelation` を実装。`ContextViewBuilder` は Node の直近イベント、親 directive、直接 child の TaskSummary、参照 Artifact を短い日本語ビューへ決定論的に射影する。S1 完了時は規則ベースの TaskSummary を Run 配下の `memory/task-summaries.jsonl` に登録する。 |
-| Run Budget / quota recovery | `[budget]` / `[budget.roles]` を Authority と NodeRunState に注入し、AgentResult の input/output/cache-read token と wall clock を累算・呼出前強制する。quota 枯渇時は Node を休眠し、reset 時刻に保留 Message を再投入して自動復帰する。 |
+| Run Budget / quota recovery | `[budget]` / `[budget.roles]` を Authority と NodeRunState に注入し、AgentResult の input/output/cache-read token と wall clock を累算・呼出前強制する。quota 枯渇時は Node を休眠し、reset 時刻に保留 Message を再投入して自動復帰する。resume 失敗時の物理再試行は論理呼び出し内に閉じ、成功結果への課金とイベント発行を各1回にする。Quota/Algedonic の suspend は共通 lifecycle 操作を使う。 |
 
 ### まだ full runtime policy として有効化していないもの
 
