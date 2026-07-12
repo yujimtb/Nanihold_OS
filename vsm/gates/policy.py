@@ -7,7 +7,11 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
+from typing import Any, Mapping, Sequence, TextIO
+
+from vsm.selfdev.models import is_protected_path as _canonical_is_protected_path
+from vsm.selfdev.verification import ProtectedApproval, ScopeCheckResult, verify_scope
+from vsm.selfdev.git import candidate_diff_sha256
 
 MAX_CHANGED_FILES = 400
 MAX_CHANGED_LINES = 8000
@@ -42,6 +46,11 @@ class DiffSnapshot:
     changed_lines: int
     symlink_paths: tuple[str, ...]
     added_paths: tuple[str, ...] = ()
+    diff_sha256: str = ""
+    scope: tuple[Mapping[str, Any], ...] = ()
+    scope_violations: tuple[str, ...] = ()
+    protected_paths: tuple[str, ...] = ()
+    protected_approval_event_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -51,6 +60,9 @@ class PolicyResult:
     passed: bool
     summary: str
     highlights: tuple[str, ...]
+    changed_paths: tuple[str, ...] = ()
+    scope_violations: tuple[str, ...] = ()
+    protected_paths: tuple[str, ...] = ()
 
 
 def _write_log(log: TextIO, text: str) -> None:
@@ -143,6 +155,11 @@ def collect_diff_snapshot(
     *,
     log_path: Path,
     output_root: Path | None = None,
+    scope: Sequence[Mapping[str, Any]] | None = None,
+    risk_class: str | None = None,
+    proposal_manifest_sha256: str | None = None,
+    protected_scope_sha256: str | None = None,
+    protected_approval: ProtectedApproval | Mapping[str, Any] | None = None,
 ) -> DiffSnapshot:
     """Collect the candidate diff once, so all gates use the same view."""
 
@@ -262,6 +279,33 @@ def collect_diff_snapshot(
         if summary_has_symlink:
             symlink_paths.add("(deleted or replaced symlink in diff)")
 
+        scope_rules = tuple(dict(item) for item in (scope or ()))
+        scope_result: ScopeCheckResult | None = None
+        if scope_rules:
+            scope_result = verify_scope(
+                tuple(sorted(changed_paths)),
+                scope_rules,
+                protected_approval=protected_approval,
+                proposal_manifest_sha256=proposal_manifest_sha256,
+                protected_scope_sha256=protected_scope_sha256,
+                risk_class=risk_class,
+            )
+        try:
+            digest = candidate_diff_sha256(worktree, base)
+        except Exception as exc:
+            raise GateExecutionUnavailable(f"candidate diff digest を計算できません: {exc}") from exc
+        approval = ProtectedApproval.from_value(protected_approval)
+        authorized_protected = (
+            scope_result is not None
+            and not scope_result.protected_paths
+            and not scope_result.outside_scope_paths
+        )
+        approval_event_id = (
+            approval.event_id
+            if authorized_protected and approval is not None and scope_result and scope_result.protected_paths == ()
+            and any(_canonical_is_protected_path(path) for path in changed_paths)
+            else None
+        )
         return DiffSnapshot(
             changed_paths=tuple(sorted(changed_paths)),
             untracked_paths=tuple(sorted(untracked_paths)),
@@ -273,27 +317,16 @@ def collect_diff_snapshot(
             changed_lines=changed_lines,
             symlink_paths=tuple(sorted(symlink_paths)),
             added_paths=tuple(sorted(added_paths)),
+            diff_sha256=digest,
+            scope=scope_rules,
+            scope_violations=scope_result.outside_scope_paths if scope_result else (),
+            protected_paths=scope_result.protected_paths if scope_result else (),
+            protected_approval_event_id=approval_event_id,
         )
 
 
 def _is_protected_path(path: str) -> bool:
-    normalized = path.replace("\\", "/")
-    if normalized == "AGENTS.md" or normalized == "vsm.toml":
-        return True
-    if normalized.startswith(_PROTECTED_ROOTS):
-        return True
-    if not normalized.startswith("openspec/changes/"):
-        return False
-    name = normalized.rsplit("/", 1)[-1]
-    if name == "tasks.md" or name.endswith("-result.md"):
-        return False
-    # OpenSpec sources are policy inputs.  Result notes and tasks are the
-    # explicitly writable records for this workflow.
-    return "/specs/" in f"/{normalized}" or name in {
-        "spec.md",
-        "proposal.md",
-        "design.md",
-    }
+    return _canonical_is_protected_path(path)
 
 
 def _looks_like_env(path: str) -> bool:
@@ -314,10 +347,14 @@ def evaluate_policy(snapshot: DiffSnapshot) -> PolicyResult:
     """Evaluate all G1 rules and return every finding, not only the first."""
 
     findings: list[str] = []
-    protected = [path for path in snapshot.changed_paths if _is_protected_path(path)]
+    protected = list(snapshot.protected_paths)
+    if not snapshot.scope:
+        protected = [path for path in snapshot.changed_paths if _is_protected_path(path)]
+    if snapshot.scope_violations:
+        findings.append("scope outside: " + ", ".join(snapshot.scope_violations))
     if protected:
         findings.append("protected path changed: " + ", ".join(protected))
-    if snapshot.untracked_paths:
+    if snapshot.untracked_paths and not snapshot.scope:
         findings.append("untracked files: " + ", ".join(snapshot.untracked_paths))
     if snapshot.symlink_paths:
         findings.append("symbolic link changed: " + ", ".join(snapshot.symlink_paths))
@@ -349,6 +386,9 @@ def evaluate_policy(snapshot: DiffSnapshot) -> PolicyResult:
             passed=False,
             summary="; ".join(findings),
             highlights=tuple(findings),
+            changed_paths=snapshot.changed_paths,
+            scope_violations=snapshot.scope_violations,
+            protected_paths=tuple(protected),
         )
     return PolicyResult(
         passed=True,
@@ -357,6 +397,9 @@ def evaluate_policy(snapshot: DiffSnapshot) -> PolicyResult:
             f"{snapshot.changed_lines} changed lines"
         ),
         highlights=("all G1 checks passed",),
+        changed_paths=snapshot.changed_paths,
+        scope_violations=(),
+        protected_paths=(),
     )
 
 
@@ -366,6 +409,11 @@ def run_g1(
     *,
     log_path: Path,
     output_root: Path | None = None,
+    scope: Sequence[Mapping[str, Any]] | None = None,
+    risk_class: str | None = None,
+    proposal_manifest_sha256: str | None = None,
+    protected_scope_sha256: str | None = None,
+    protected_approval: ProtectedApproval | Mapping[str, Any] | None = None,
 ) -> tuple[DiffSnapshot, PolicyResult]:
     """Collect and evaluate G1, returning the snapshot for G3 reuse."""
 
@@ -374,6 +422,11 @@ def run_g1(
         base,
         log_path=log_path,
         output_root=output_root,
+        scope=scope,
+        risk_class=risk_class,
+        proposal_manifest_sha256=proposal_manifest_sha256,
+        protected_scope_sha256=protected_scope_sha256,
+        protected_approval=protected_approval,
     )
     result = evaluate_policy(snapshot)
     with log_path.open("a", encoding="utf-8") as log:

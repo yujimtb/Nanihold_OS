@@ -1365,6 +1365,10 @@ class Platform:
     async def shutdown(self) -> None:
         """Gracefully tear down all Systems, the EventLogWriter, and lockfile.
 
+        Proposal-owned selfdev worktrees are borrowed by this Platform and
+        intentionally remain registered until the selfdev controller reaches
+        gate/audit/commit cleanup.
+
         実行順序:
 
         1. 全 System の ``run()`` Task を cancel + await (基底実装で
@@ -1414,7 +1418,13 @@ class Platform:
             run_state.session_refs.clear()
 
         workspace_error: Exception | None = None
-        if self.workspace_controller is not None:
+        # Proposal workspace の所有者は selfdev controller である。Run の
+        # Platform は借用者なので、gate/audit/candidate commit までの間に
+        # shutdown しても worktree を削除しない。既存の通常 self-hosting
+        # Run だけは従来どおり Run 境界で finalize する。
+        if self.workspace_controller is not None and (
+            self.manifest is None or self.manifest.proposal_id is None
+        ):
             try:
                 self.workspace_controller.finalize()
             except Exception as exc:
@@ -1922,7 +1932,9 @@ async def _cleanup_partial_run(
         # 停止すらできない場合でも、後段の dir 削除は試みる。
         pass
 
-    if workspace_controller is not None:
+    if workspace_controller is not None and (
+        workspace_controller.manifest.proposal_id is None
+    ):
         try:
             workspace_controller.discard()
         except Exception:

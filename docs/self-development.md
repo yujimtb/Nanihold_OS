@@ -1,6 +1,6 @@
-# 自己開発ループ Wave 1
+# 自己開発ループ Wave 2
 
-Wave 1 は Proposal の Domain / State / Event / Store 境界を提供する。controller、API、CLI、UI、workspace 操作、GateRunner、Consortium 駆動は後続 Wave の責務であり、この Wave では実装していない。
+Wave 2 は Proposal 所有 workspace、scope-aware な trusted GateRunner v2、候補 commit の境界を提供する。controller、API、CLI、UI、Consortium 駆動は後続 Wave の責務であり、この Wave では実装していない。
 
 ## 永続契約
 
@@ -15,6 +15,15 @@ Wave 1 は Proposal の Domain / State / Event / Store 境界を提供する。c
 `vsm.selfdev.models` が manifest・gate/audit/PR data model、`state_machine` が遷移と pause、`events` が version 1 payload、`store` が durable stream、`artifacts` が atomic write/hash、`ready_queue` が依存・scope・quota の純粋判定を提供する。
 
 `RunManifest` は新契約では Proposal と Run を分離し、branch を `selfdev/<proposal_id>` から導出する。旧 runtime の既存テストで使われる legacy constructor は残している。
+
+## Wave 2 の実装入口
+
+- `vsm.selfdev.workspace`: `create` / `adopt_existing` / `snapshot` / `finalize` と Proposal workspace descriptor。
+- `vsm.selfdev.verification`: scope、protected approval hash、固定 `g1..g4` の検証。
+- `vsm.selfdev.git`: controller 限定の diff digest と `CandidateCommitter`。push/merge は提供しない。
+- `vsm.gates.runner`: controller-owned 出力先を要求する GateReport v2。適用外 `skip` と実行不能 `error` を分離する。
+
+Platform は Proposal Run の worktree を借用するだけで、`shutdown()` では削除しない。terminal または `MERGE_READY` の cleanup は Proposal workspace controller が行う。
 
 ## 検証
 

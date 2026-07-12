@@ -254,6 +254,14 @@ class GateResult(StrictModel):
     log_ref: str = Field(min_length=1)
     log_sha256: str = Field(pattern=_SHA256)
 
+    @model_validator(mode="after")
+    def _log_ref_is_relative(self) -> "GateResult":
+        if self.log_ref.startswith("/") or "\\" in self.log_ref or "\x00" in self.log_ref:
+            raise ValueError("gate log_ref は repository-relative の slash path でなければなりません")
+        if any(part in {"", ".", ".."} for part in self.log_ref.split("/")):
+            raise ValueError("gate log_ref に不正な path 要素があります")
+        return self
+
 
 class GateReport(StrictModel):
     schema_version: Literal[2] = 2
@@ -262,11 +270,12 @@ class GateReport(StrictModel):
     gate_attempt: Literal[1, 2]
     generated_at: str
     worktree_path: str = Field(min_length=1)
+    report_ref: str | None = None
     base_sha: str = Field(min_length=1)
     scope_sha256: str = Field(pattern=_SHA256)
     candidate_diff_sha256: str = Field(pattern=_SHA256)
     gates_requested: tuple[Literal["g1", "g2", "g3", "g4"], ...]
-    status: Literal["pass", "fail"]
+    status: Literal["pass", "fail", "error"]
     exit_code: int
     changed_paths: tuple[str, ...] = ()
     scope_violations: tuple[str, ...] = ()

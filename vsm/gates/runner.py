@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -18,6 +20,7 @@ from vsm.gates.policy import (
     collect_diff_snapshot,
     evaluate_policy,
 )
+from vsm.selfdev.verification import ProtectedApproval, REQUIRED_GATES, scope_sha256 as calculate_scope_sha256
 
 DEFAULT_GATES: tuple[str, ...] = ("g1", "g2", "g3", "g4")
 
@@ -77,7 +80,20 @@ def _write_log(path: Path, text: str) -> None:
             log.write("\n")
 
 
-def _run_command(command: Sequence[str], *, cwd: Path, log_path: Path) -> int:
+def _trusted_environment() -> dict[str, str]:
+    """candidate の同名 module より control-plane を優先する環境。"""
+
+    environment = dict(os.environ)
+    control_root = str(Path(__file__).resolve().parents[2])
+    environment["PYTHONPATH"] = control_root
+    environment["PYTHONNOUSERSITE"] = "1"
+    environment["NANIHOLD_TRUSTED_GATE_RUNNER"] = "1"
+    return environment
+
+
+def _run_command(
+    command: Sequence[str], *, cwd: Path, log_path: Path, trusted: bool = False
+) -> int:
     _write_log(log_path, "$ " + _command_text(command))
     try:
         completed = subprocess.run(
@@ -86,6 +102,7 @@ def _run_command(command: Sequence[str], *, cwd: Path, log_path: Path) -> int:
             capture_output=True,
             text=True,
             check=False,
+            env=_trusted_environment() if trusted else None,
         )
     except OSError as exc:
         _write_log(log_path, f"execution error: {exc}")
@@ -100,8 +117,11 @@ def _run_command(command: Sequence[str], *, cwd: Path, log_path: Path) -> int:
     return completed.returncode
 
 
-def _run_g2(worktree: Path, log_path: Path) -> tuple[str, str, tuple[str, ...]]:
-    returncode = _run_command(G2_COMMAND, cwd=worktree, log_path=log_path)
+def _run_g2(worktree: Path, log_path: Path, *, trusted: bool = False) -> tuple[str, str, tuple[str, ...]]:
+    kwargs = {"cwd": worktree, "log_path": log_path}
+    if trusted:
+        kwargs["trusted"] = True  # type: ignore[assignment]
+    returncode = _run_command(G2_COMMAND, **kwargs)  # type: ignore[arg-type]
     if returncode == 0:
         return "pass", "Docker Compose app の pytest が成功しました", ("pytest exit code 0",)
     return "fail", f"Docker Compose app の pytest が失敗しました (exit={returncode})", (
@@ -120,6 +140,8 @@ def _run_g3(
     worktree: Path,
     changed_paths: Iterable[str],
     log_path: Path,
+    *,
+    trusted: bool = False,
 ) -> tuple[str, str, tuple[str, ...]]:
     if not _frontend_changed(changed_paths):
         _write_log(log_path, "frontend change not detected; G3 skipped")
@@ -139,10 +161,16 @@ def _run_g3(
     frontend_dir = worktree / "frontend"
     findings: list[str] = []
     if "lint" in scripts:
-        lint_code = _run_command(G3_LINT_COMMAND, cwd=frontend_dir, log_path=log_path)
+        kwargs = {"cwd": frontend_dir, "log_path": log_path}
+        if trusted:
+            kwargs["trusted"] = True  # type: ignore[assignment]
+        lint_code = _run_command(G3_LINT_COMMAND, **kwargs)  # type: ignore[arg-type]
         if lint_code != 0:
             findings.append(f"lint exit code {lint_code}")
-    build_code = _run_command(G3_BUILD_COMMAND, cwd=frontend_dir, log_path=log_path)
+    kwargs = {"cwd": frontend_dir, "log_path": log_path}
+    if trusted:
+        kwargs["trusted"] = True  # type: ignore[assignment]
+    build_code = _run_command(G3_BUILD_COMMAND, **kwargs)  # type: ignore[arg-type]
     if build_code != 0:
         findings.append(f"build exit code {build_code}")
     if findings:
@@ -152,13 +180,19 @@ def _run_g3(
     return "pass", "frontend gate が成功しました", tuple(commands)
 
 
-def _run_g4(worktree: Path, log_path: Path) -> tuple[str, str, tuple[str, ...]]:
-    help_code = _run_command(G4_HELP_COMMAND, cwd=worktree, log_path=log_path)
+def _run_g4(worktree: Path, log_path: Path, *, trusted: bool = False) -> tuple[str, str, tuple[str, ...]]:
+    kwargs = {"cwd": worktree, "log_path": log_path}
+    if trusted:
+        kwargs["trusted"] = True  # type: ignore[assignment]
+    help_code = _run_command(G4_HELP_COMMAND, **kwargs)  # type: ignore[arg-type]
     if help_code != 0:
         return "fail", f"python -m vsm --help が失敗しました (exit={help_code})", (
             f"help exit code {help_code}",
         )
-    smoke_code = _run_command(G4_SMOKE_COMMAND, cwd=worktree, log_path=log_path)
+    kwargs = {"cwd": worktree, "log_path": log_path}
+    if trusted:
+        kwargs["trusted"] = True  # type: ignore[assignment]
+    smoke_code = _run_command(G4_SMOKE_COMMAND, **kwargs)  # type: ignore[arg-type]
     if smoke_code != 0:
         return "fail", f"Fake 設定の mini Run が失敗しました (exit={smoke_code})", (
             f"smoke exit code {smoke_code}",
@@ -234,8 +268,36 @@ def run(
     base: str | None = None,
     gates: str | Iterable[str] = DEFAULT_GATES,
     out: Path | None = None,
+    proposal_id: str | None = None,
+    implementation_run_id: str | None = None,
+    gate_attempt: int = 1,
+    scope: Iterable[dict[str, object]] | None = None,
+    scope_sha256: str | None = None,
+    risk_class: str | None = None,
+    proposal_manifest_sha256: str | None = None,
+    protected_scope_sha256: str | None = None,
+    protected_approval: ProtectedApproval | dict[str, object] | None = None,
+    protected_approval_event_id: str | None = None,
 ) -> tuple[dict[str, object], int]:
     """Run the selected trusted gates and write ``gate_report.json``."""
+
+    if proposal_id is not None or implementation_run_id is not None or scope is not None:
+        return run_v2(
+            worktree,
+            base=base,
+            out=out,
+            gates=gates,
+            proposal_id=proposal_id,
+            implementation_run_id=implementation_run_id,
+            gate_attempt=gate_attempt,
+            scope=scope,
+            scope_sha256=scope_sha256,
+            risk_class=risk_class,
+            proposal_manifest_sha256=proposal_manifest_sha256,
+            protected_scope_sha256=protected_scope_sha256,
+            protected_approval=protected_approval,
+            protected_approval_event_id=protected_approval_event_id,
+        )
 
     candidate = worktree.resolve(strict=False)
     if not candidate.exists() or not candidate.is_dir():
@@ -327,6 +389,182 @@ def run(
     except OSError as exc:
         raise GateExecutionUnavailable(f"gate report を保存できません: {exc}") from exc
     return report, exit_code
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise GateInputError(f"gate log を読めません: {path}: {exc}") from exc
+    return digest.hexdigest()
+
+
+def _v2_log_ref(output_root: Path, log_path: Path) -> str:
+    """Proposal root から見た canonical な log ref を返す。"""
+
+    # output_root is .../gates/attempt-N.  The caller may pass another
+    # controller-owned directory, in which case the path remains explicit and
+    # never becomes a candidate-worktree path.
+    try:
+        return log_path.resolve(strict=False).relative_to(output_root.parent.parent.resolve(strict=False)).as_posix()
+    except ValueError:
+        return log_path.name
+
+
+def run_v2(
+    worktree: Path,
+    *,
+    base: str | None,
+    out: Path | None,
+    gates: str | Iterable[str] = REQUIRED_GATES,
+    proposal_id: str | None,
+    implementation_run_id: str | None,
+    gate_attempt: int,
+    scope: Iterable[dict[str, object]] | None,
+    scope_sha256: str | None,
+    risk_class: str | None,
+    proposal_manifest_sha256: str | None,
+    protected_scope_sha256: str | None,
+    protected_approval: ProtectedApproval | dict[str, object] | None,
+    protected_approval_event_id: str | None,
+) -> tuple[dict[str, object], int]:
+    """Wave 2 strict runner。legacy ``run`` の省略契約とは分離する。"""
+
+    candidate = worktree.resolve(strict=False)
+    if not candidate.is_dir():
+        raise GateInputError(f"worktree がディレクトリではありません: {worktree}")
+    if proposal_id is None or implementation_run_id is None:
+        raise GateInputError("v2 GateRunner には proposal_id と implementation_run_id が必要です")
+    if gate_attempt not in (1, 2):
+        raise GateInputError("gate_attempt は1または2でなければなりません")
+    if scope is None or not scope_sha256:
+        raise GateInputError("v2 GateRunner には scope と scope_sha256 が必要です")
+    if not risk_class or not proposal_manifest_sha256:
+        raise GateInputError("v2 GateRunner には risk_class と proposal_manifest_sha256 が必要です")
+    if protected_approval_event_id is not None:
+        if protected_approval is not None:
+            raise GateInputError("protected approval は event object と event id を同時指定できません")
+        if not protected_scope_sha256:
+            raise GateInputError("protected approval event id には protected_scope_sha256 が必要です")
+        protected_approval = {
+            "event_id": protected_approval_event_id,
+            "proposal_manifest_sha256": proposal_manifest_sha256,
+            "protected_scope_sha256": protected_scope_sha256,
+        }
+    if out is None:
+        raise GateInputError("v2 GateRunner の report/log 出力先は worktree 外で明示してください")
+    selected = _normalise_gates(gates)
+    if selected != REQUIRED_GATES:
+        raise GateInputError("v2 GateRunner の gates は g1,g2,g3,g4 固定です")
+    base_ref = base
+    if not base_ref:
+        raise GateInputError("v2 GateRunner には base を明示してください")
+    output_root, report_path = _resolve_output(out, candidate)
+    try:
+        output_root.resolve(strict=False).relative_to(candidate)
+    except ValueError:
+        pass
+    else:
+        raise GateInputError("gate report/log は candidate worktree 外へ出力してください")
+    output_root.mkdir(parents=True, exist_ok=True)
+    logs_root = output_root / "logs"
+    scope_rules = tuple(
+        item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item)
+        for item in scope
+    )
+    if calculate_scope_sha256(scope_rules) != scope_sha256:
+        raise GateInputError("scope_sha256 が scope の canonical hash と一致しません")
+
+    try:
+        snapshot = collect_diff_snapshot(
+            candidate,
+            base_ref,
+            log_path=logs_root / "g1.log",
+            output_root=output_root,
+            scope=scope_rules,
+            risk_class=risk_class,
+            proposal_manifest_sha256=proposal_manifest_sha256,
+            protected_scope_sha256=protected_scope_sha256,
+            protected_approval=protected_approval,
+        )
+        snapshot_error: str | None = None
+    except GateExecutionUnavailable as exc:
+        snapshot = None
+        snapshot_error = str(exc)
+        _write_log(logs_root / "g1.log", "execution error: " + snapshot_error)
+
+    results: dict[str, GateResult] = {}
+    if snapshot_error is not None:
+        started = time.monotonic()
+        results["g1"] = GateResult("error", int((time.monotonic() - started) * 1000), snapshot_error, (snapshot_error,), logs_root / "g1.log", True)
+        _write_log(logs_root / "g3.log", "execution error: " + snapshot_error)
+        results["g3"] = GateResult("error", 0, snapshot_error, (snapshot_error,), logs_root / "g3.log", True)
+    else:
+        assert snapshot is not None
+        started = time.monotonic()
+        policy_result = evaluate_policy(snapshot)
+        _write_log(logs_root / "g1.log", "G1 result: " + policy_result.summary)
+        results["g1"] = GateResult(
+            "pass" if policy_result.passed else "fail",
+            int((time.monotonic() - started) * 1000),
+            policy_result.summary,
+            policy_result.highlights,
+            logs_root / "g1.log",
+        )
+        results["g3"] = _run_one(
+            "g3", log_path=logs_root / "g3.log",
+            callback=lambda: _run_g3(candidate, snapshot.changed_paths, logs_root / "g3.log", trusted=True),
+        )
+    results["g2"] = _run_one(
+        "g2", log_path=logs_root / "g2.log",
+        callback=lambda: _run_g2(candidate, logs_root / "g2.log", trusted=True),
+    )
+    results["g4"] = _run_one("g4", log_path=logs_root / "g4.log", callback=lambda: _run_g4(candidate, logs_root / "g4.log", trusted=True))
+
+    # Legacy GateResult maps an unavailable tool to skip.  v2 explicitly
+    # distinguishes it as error in the report without changing old callers.
+    has_error = any(result.execution_unavailable for result in results.values())
+    has_failure = any(result.status == "fail" for result in results.values())
+    overall = "error" if has_error else "fail" if has_failure else "pass"
+    report_gates: dict[str, dict[str, object]] = {}
+    for name in REQUIRED_GATES:
+        result = results[name]
+        report_gates[name] = {
+            "status": "error" if result.execution_unavailable else result.status,
+            "duration_ms": result.duration_ms,
+            "summary": result.summary,
+            "highlights": list(result.highlights),
+            "log_ref": _v2_log_ref(output_root, result.log_path),
+            "log_sha256": _sha256_path(result.log_path),
+        }
+    report: dict[str, object] = {
+        "schema_version": 2,
+        "proposal_id": proposal_id,
+        "implementation_run_id": implementation_run_id,
+        "gate_attempt": gate_attempt,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "worktree_path": str(candidate),
+        "report_ref": _v2_log_ref(output_root, report_path),
+        "base_sha": base_ref,
+        "scope_sha256": scope_sha256,
+        "candidate_diff_sha256": snapshot.diff_sha256 if snapshot is not None else "0" * 64,
+        "gates_requested": list(REQUIRED_GATES),
+        "status": overall,
+        "exit_code": 2 if has_error else 1 if has_failure else 0,
+        "changed_paths": list(snapshot.changed_paths) if snapshot else [],
+        "scope_violations": list(snapshot.scope_violations) if snapshot else [],
+        "protected_paths": list(snapshot.protected_paths) if snapshot else [],
+        "protected_approval_event_id": snapshot.protected_approval_event_id if snapshot else None,
+        "gates": report_gates,
+    }
+    try:
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise GateExecutionUnavailable(f"gate report を保存できません: {exc}") from exc
+    return report, int(report["exit_code"])
 
 
 def _parser() -> argparse.ArgumentParser:

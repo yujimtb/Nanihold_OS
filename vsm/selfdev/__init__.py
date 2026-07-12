@@ -23,6 +23,17 @@ from vsm.selfdev.state_machine import (
     ProposalStateMachine,
     assert_transition_allowed,
 )
+from vsm.selfdev.git import CandidateCommit, CandidateCommitter
+from vsm.selfdev.verification import (
+    ProtectedApproval,
+    REQUIRED_GATES,
+    ScopeCheckResult,
+    canonical_scope,
+    scope_sha256,
+    verify_protected_approval,
+    verify_scope,
+)
+from vsm.selfdev.workspace import ProposalWorkspace, WorkspaceController, WorkspaceDescriptor, WorkspaceStatus
 
 __all__ = [
     "AcceptanceCriterion",
@@ -44,4 +55,17 @@ __all__ = [
     "assert_transition_allowed",
     "is_protected_path",
     "proposal_to_run_manifest",
+    "CandidateCommit",
+    "CandidateCommitter",
+    "ProtectedApproval",
+    "REQUIRED_GATES",
+    "ScopeCheckResult",
+    "canonical_scope",
+    "scope_sha256",
+    "verify_protected_approval",
+    "verify_scope",
+    "ProposalWorkspace",
+    "WorkspaceController",
+    "WorkspaceDescriptor",
+    "WorkspaceStatus",
 ]

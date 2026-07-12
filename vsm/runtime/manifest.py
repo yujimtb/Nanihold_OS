@@ -10,6 +10,8 @@ worktree を登録解除する。
 from __future__ import annotations
 
 import json
+import hashlib
+import re
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -50,6 +52,16 @@ def _normalise_relative_path(value: str) -> str:
 
 def _path_matches(path: str, rule: str) -> bool:
     return path == rule or path.startswith(f"{rule}/")
+
+
+def _normalise_required_gates(value: Iterable[str] | str) -> tuple[str, ...]:
+    """Wave 2 の RunManifest にだけ適用する gate 契約の正規化。"""
+
+    values = value.split(",") if isinstance(value, str) else list(value)
+    normalized = tuple(str(item).strip().lower() for item in values)
+    if normalized != ("g1", "g2", "g3", "g4"):
+        raise ValueError("required_gates は g1,g2,g3,g4 の順序で固定です")
+    return normalized
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,14 +149,15 @@ class RunManifest:
         if new_contract:
             if self.risk_class not in {"low", "normal", "protected"}:
                 raise ValueError("risk_class が不正です")
-            if self.required_gates != ("g1", "g2", "g3", "g4"):
-                raise ValueError("required_gates は g1,g2,g3,g4 固定です")
+            object.__setattr__(self, "required_gates", _normalise_required_gates(self.required_gates))
             if not self.proposal_manifest_ref or not self.proposal_manifest_sha256:
                 raise ValueError("proposal manifest ref/hash は必須です")
-            if not __import__("re").fullmatch(r"[0-9a-f]{64}", self.proposal_manifest_sha256):
+            if not re.fullmatch(r"[0-9a-f]{64}", self.proposal_manifest_sha256):
                 raise ValueError("proposal_manifest_sha256 が不正です")
             if not self.scope or not self.scope_sha256:
                 raise ValueError("scope と scope_sha256 は必須です")
+            if not re.fullmatch(r"[0-9a-f]{64}", self.scope_sha256):
+                raise ValueError("scope_sha256 が不正です")
             if self.writer_runtime is None:
                 raise ValueError("writer_runtime は必須です")
             if not self.initial_decision_event_id:
@@ -190,8 +203,28 @@ class RunManifest:
         object.__setattr__(self, "allowed_paths", normalised_allowed)
         object.__setattr__(self, "forbidden_paths", normalised_forbidden)
         object.__setattr__(self, "acceptance_criteria", tuple(self.acceptance_criteria))
-        object.__setattr__(self, "required_gates", tuple(self.required_gates))
+        object.__setattr__(
+            self,
+            "required_gates",
+            self.required_gates if isinstance(self.required_gates, str) else tuple(self.required_gates),
+        )
         object.__setattr__(self, "scope", tuple(dict(item) for item in self.scope))
+        if new_contract:
+            for rule in self.scope:
+                if set(rule) != {"path", "kind"}:
+                    raise ValueError("scope の PathRule は path/kind のみを持たなければなりません")
+                if not isinstance(rule["path"], str) or not isinstance(rule["kind"], str):
+                    raise ValueError("scope の path/kind は文字列でなければなりません")
+                path = _normalise_relative_path(rule["path"])
+                if rule["kind"] not in {"file", "tree"}:
+                    raise ValueError("scope の kind は file または tree でなければなりません")
+                if path != str(rule["path"]).replace("\\", "/").rstrip("/"):
+                    raise ValueError("scope の path は正規化済みでなければなりません")
+            canonical_scope = json.dumps(
+                list(self.scope), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            if hashlib.sha256(canonical_scope).hexdigest() != self.scope_sha256:
+                raise ValueError("scope_sha256 が scope の canonical hash と一致しません")
         if new_contract and self.forbidden_paths == DEFAULT_SELFDEV_FORBIDDEN_PATHS:
             object.__setattr__(self, "forbidden_paths", ())
         if new_contract and not normalised_allowed:

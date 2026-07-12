@@ -90,6 +90,14 @@ class WorkspacePolicyError(WorkspaceError):
     """manifest が許可していないパスに変更があった。"""
 
 
+class GateError(VSMError):
+    """信頼済み GateRunner の入力または検証に失敗した。"""
+
+
+class CandidateCommitError(VSMError):
+    """候補 commit の完全性検証または作成に失敗した。"""
+
+
 # ---------------------------------------------------------------------------
 # Messaging
 # ---------------------------------------------------------------------------
@@ -237,6 +245,8 @@ __all__ = [
     "RunDirectoryError",
     "WorkspaceError",
     "WorkspacePolicyError",
+    "GateError",
+    "CandidateCommitError",
     "MessagingError",
     "ChannelRejected",
     "LLMError",

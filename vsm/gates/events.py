@@ -28,6 +28,30 @@ async def record_gate_report_generated(
         for name, detail in gates.items()
         if isinstance(detail, Mapping)
     }
+    if report.get("schema_version") == 2:
+        required = (
+            "proposal_id", "implementation_run_id", "gate_attempt", "report_ref",
+            "scope_sha256", "candidate_diff_sha256",
+        )
+        missing = [name for name in required if name not in report]
+        if missing:
+            raise ValueError("GateReport v2 の event metadata が不足しています: " + ", ".join(missing))
+        await eventlog.append(
+            "gate_report_generated",
+            {
+                "proposal_id": str(report["proposal_id"]),
+                "implementation_run_id": str(report["implementation_run_id"]),
+                "gate_attempt": int(report["gate_attempt"]),
+                "report_ref": str(report["report_ref"]),
+                "status": str(report["status"]),
+                "gate_statuses": gate_statuses,
+                "scope_sha256": str(report["scope_sha256"]),
+                "candidate_diff_sha256": str(report["candidate_diff_sha256"]),
+            },
+            actor_type="trusted_gate_runner",
+            schema_version=2,
+        )
+        return
     await eventlog.append(
         "gate_report_generated",
         {

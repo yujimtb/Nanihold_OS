@@ -121,6 +121,24 @@ class AuditReportSentV1Payload(SelfDevPayload):
     report_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class GateReportGeneratedV2Payload(SelfDevPayload):
+    """Wave 2 の GateReport v2 を参照する strict event payload。"""
+
+    proposal_id: str = Field(pattern=r"^proposal-[0-9a-f]{32}$")
+    implementation_run_id: str = Field(min_length=1)
+    gate_attempt: Literal[1, 2]
+    report_ref: str = Field(min_length=1)
+    status: Literal["pass", "fail", "error"]
+    gate_statuses: dict[str, Literal["pass", "fail", "skip", "error"]]
+    scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidate_diff_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("report_ref")
+    @classmethod
+    def _report_ref(cls, value: str) -> str:
+        return _relative_ref(value)
+
+
 SELFDEV_EVENT_TYPES: tuple[str, ...] = (
     "proposal_state_changed",
     "proposal_pause_changed",
@@ -134,12 +152,14 @@ SELFDEV_PAYLOAD_MODELS: dict[tuple[str, int], type[BaseModel]] = {
     ("artifact_created", 2): ArtifactCreatedPayload,
     ("audit_report_sent", 2): AuditReportSentV1Payload,
     ("consortium_decided", 2): ConsortiumDecidedV2Payload,
+    ("gate_report_generated", 2): GateReportGeneratedV2Payload,
 }
 
 __all__ = [
     "ArtifactCreatedPayload",
     "AuditReportSentV1Payload",
     "ConsortiumDecidedV2Payload",
+    "GateReportGeneratedV2Payload",
     "ProposalPauseChangedPayload",
     "ProposalRunLinkedPayload",
     "ProposalStateChangedPayload",
