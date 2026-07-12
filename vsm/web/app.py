@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from vsm.agents.runtime import AgentRuntimeError
 from vsm.config import load_config
+from vsm.web.chat import ChatBusyError, ChatManager, ChatTimeoutError
 from vsm.web.manager import RunManager
 
 RUNS_ROOT = Path("runs") / "web"
 manager = RunManager(RUNS_ROOT)
+chat_manager = ChatManager(RUNS_ROOT / "chat")
 
 app = FastAPI(title="Nanihold OS", version="0.1.0")
 app.add_middleware(
@@ -64,9 +68,57 @@ class RenameBody(BaseModel):
     title: str
 
 
+class CreateChatBody(BaseModel):
+    backend: Literal["claude-code", "codex"]
+    model: str | None = None
+    workdir: str | None = None
+
+
+class ChatMessageBody(BaseModel):
+    text: str
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.post("/api/chat", status_code=201)
+def create_chat(body: CreateChatBody) -> dict:
+    try:
+        return chat_manager.create_session(
+            backend=body.backend,
+            model=body.model,
+            workdir=body.workdir,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/chat/{chat_id}")
+def get_chat(chat_id: str) -> dict:
+    try:
+        return chat_manager.history(chat_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="対話セッションが見つかりません") from exc
+
+
+@app.post("/api/chat/{chat_id}/messages")
+async def send_chat_message(chat_id: str, body: ChatMessageBody) -> dict:
+    try:
+        return await chat_manager.send_message(chat_id, body.text)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="対話セッションが見つかりません") from exc
+    except ChatBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ChatTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (AgentRuntimeError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/api/config")

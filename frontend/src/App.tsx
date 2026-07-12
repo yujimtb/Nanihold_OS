@@ -1,10 +1,13 @@
 import {
   ArrowLeft,
   ArrowUpRight,
+  Bot,
   CircleStop,
+  CornerDownLeft,
   FileText,
   History,
   LoaderCircle,
+  MessageCircle,
   Network,
   OctagonAlert,
   Pause,
@@ -19,7 +22,17 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { api } from "./api";
-import type { AppConfig, RunDetail, RunStatus, RunSummary, TimelineItem, Topology, TopologyNode } from "./types";
+import type {
+  AppConfig,
+  ChatMessage,
+  ChatSession,
+  RunDetail,
+  RunStatus,
+  RunSummary,
+  TimelineItem,
+  Topology,
+  TopologyNode,
+} from "./types";
 
 const STATUS_LABELS: Record<RunStatus, string> = {
   queued: "準備中",
@@ -41,6 +54,7 @@ function formatDate(value: string) {
 }
 
 function App() {
+  const [view, setView] = useState<"home" | "chat" | "run">("home");
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [selected, setSelected] = useState<RunDetail | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -62,6 +76,7 @@ function App() {
     setError("");
     try {
       setSelected(await api.getRun(runId));
+      setView("run");
     } catch (err) {
       setError((err as Error).message);
     }
@@ -88,6 +103,7 @@ function App() {
 
   const handleCreated = (detail: RunDetail) => {
     setSelected(detail);
+    setView("run");
     setRuns((current) => [detail, ...current.filter((run) => run.run_id !== detail.run_id)]);
   };
 
@@ -95,6 +111,7 @@ function App() {
     if (!window.confirm("このRunのログ、添付、結果をすべて削除しますか？")) return;
     await api.delete(runId);
     setSelected(null);
+    setView("home");
     await refreshRuns();
   };
 
@@ -105,10 +122,18 @@ function App() {
   return (
     <div className="shell">
       <header className="topbar">
-        <button className="brand" onClick={() => setSelected(null)}>
+        <button className="brand" onClick={() => { setSelected(null); setView("home"); }}>
           <span className="brand-mark">N</span>
           <span>Nanihold OS</span>
         </button>
+        <nav className="topbar-nav" aria-label="メインナビゲーション">
+          <button className={`nav-tab ${view === "home" ? "active" : ""}`} onClick={() => { setSelected(null); setView("home"); }}>
+            ダッシュボード
+          </button>
+          <button className={`nav-tab ${view === "chat" ? "active" : ""}`} onClick={() => setView("chat")}>
+            <MessageCircle size={15} /> 対話
+          </button>
+        </nav>
         <div className="model-badge">
           <span className={`model-dot ${config?.demo_mode ? "demo" : ""}`} />
           {config?.model}
@@ -123,7 +148,9 @@ function App() {
         </div>
       )}
 
-      {selected ? (
+      {view === "chat" ? (
+        <ChatView runs={runs} onRunCreated={handleCreated} onOpenRun={openRun} />
+      ) : selected && view === "run" ? (
         <RunView
           run={selected}
           onBack={() => {
@@ -262,6 +289,7 @@ function RunView({
   onChange: (run: RunDetail) => void;
   onDelete: () => void;
 }) {
+  const [activeTab, setActiveTab] = useState<"result" | "organization">("result");
   const [instruction, setInstruction] = useState("");
   const [busy, setBusy] = useState(false);
   const active = ["queued", "running", "interrupting"].includes(run.status);
@@ -298,6 +326,15 @@ function RunView({
         <span className="progress-number">{run.progress}%</span>
         <div className="progress-track"><span style={{ width: `${run.progress}%` }} /></div>
       </section>
+
+      <div className="view-tabs" role="tablist" aria-label="Run表示切り替え">
+        <button className={activeTab === "result" ? "active" : ""} onClick={() => setActiveTab("result")}>
+          <FileText size={15} /> 実行結果
+        </button>
+        <button className={activeTab === "organization" ? "active" : ""} onClick={() => setActiveTab("organization")}>
+          <Network size={15} /> 組織図
+        </button>
+      </div>
 
       {active && (
         <section className="intervention-panel">
@@ -356,8 +393,9 @@ function RunView({
         </section>
       )}
 
-      <OrganizationView runId={run.run_id} active={active} />
-
+      {activeTab === "organization" ? (
+        <OrganizationView runId={run.run_id} active={active} />
+      ) : (
       <div className="run-content">
         <section className="result-column">
           <div className="content-heading">
@@ -409,12 +447,223 @@ function RunView({
           <Timeline items={run.timeline} />
         </section>
       </div>
+      )}
 
       {!active && (
         <div className="danger-zone">
           <button onClick={onDelete}><Trash2 size={16} /> このRunを削除</button>
         </div>
       )}
+    </main>
+  );
+}
+
+function ChatView({
+  runs,
+  onRunCreated,
+  onOpenRun,
+}: {
+  runs: RunSummary[];
+  onRunCreated: (detail: RunDetail) => void;
+  onOpenRun: (runId: string) => void;
+}) {
+  const [session, setSession] = useState<ChatSession | null>(null);
+  const [backend, setBackend] = useState<"claude-code" | "codex">("claude-code");
+  const [model, setModel] = useState("");
+  const [text, setText] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [bridgeBusy, setBridgeBusy] = useState("");
+  const [targetRunId, setTargetRunId] = useState("");
+  const [error, setError] = useState("");
+  const activeRuns = runs.filter((run) => ["queued", "running", "interrupting", "waiting_for_user"].includes(run.status));
+
+  useEffect(() => {
+    if (!targetRunId || !activeRuns.some((run) => run.run_id === targetRunId)) {
+      setTargetRunId(activeRuns[0]?.run_id || "");
+    }
+  }, [activeRuns, targetRunId]);
+
+  const createSession = async (nextBackend = backend) => {
+    setCreating(true);
+    setError("");
+    try {
+      const next = await api.createChat(nextBackend, model);
+      localStorage.setItem("nanihold.chat_id", next.chat_id);
+      setSession(next);
+      setBackend(next.backend);
+      setModel(next.model || "");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    const restore = async () => {
+      setLoading(true);
+      const savedId = localStorage.getItem("nanihold.chat_id");
+      try {
+        if (!savedId) {
+          const next = await api.createChat("claude-code");
+          if (!cancelled) {
+            localStorage.setItem("nanihold.chat_id", next.chat_id);
+            setSession(next);
+          }
+        } else {
+          const next = await api.getChat(savedId);
+          if (!cancelled) {
+            setSession(next);
+            setBackend(next.backend);
+            setModel(next.model || "");
+          }
+        }
+      } catch (err) {
+        if (!cancelled) setError((err as Error).message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    restore();
+    return () => { cancelled = true; };
+  }, []);
+
+  const send = async () => {
+    if (!session || !text.trim() || sending) return;
+    const prompt = text.trim();
+    setText("");
+    setSending(true);
+    setError("");
+    const optimistic: ChatMessage = {
+      message_id: `local-${Date.now()}`,
+      role: "user",
+      text: prompt,
+      tokens: 0,
+      tokens_in: 0,
+      tokens_out: 0,
+      tokens_cache_read: 0,
+      latency_ms: 0,
+      created_at: new Date().toISOString(),
+    };
+    setSession((current) => current ? { ...current, messages: [...current.messages, optimistic] } : current);
+    try {
+      await api.sendChatMessage(session.chat_id, prompt);
+      setSession(await api.getChat(session.chat_id));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const bridgeAsRun = async (message: ChatMessage) => {
+    setBridgeBusy(message.message_id);
+    setError("");
+    try {
+      onRunCreated(await api.createRun(message.text));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBridgeBusy("");
+    }
+  };
+
+  const bridgeAsInstruction = async (message: ChatMessage) => {
+    if (!targetRunId) return;
+    setBridgeBusy(message.message_id);
+    setError("");
+    try {
+      await api.instruct(targetRunId, message.text);
+      onOpenRun(targetRunId);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBridgeBusy("");
+    }
+  };
+
+  return (
+    <main className="chat-page">
+      <section className="chat-header">
+        <div>
+          <p className="eyebrow">SELF-HOSTING CONSOLE</p>
+          <h1><MessageCircle size={27} /> Naniholdと対話する</h1>
+          <p>Claude Code / Codex と会話しながら、このリポジトリを調べて開発できます。</p>
+        </div>
+        <div className="chat-session-controls">
+          <label>Backend
+            <select value={backend} onChange={(event) => setBackend(event.target.value as "claude-code" | "codex")} disabled={creating || sending}>
+              <option value="claude-code">Claude Code</option>
+              <option value="codex">Codex</option>
+            </select>
+          </label>
+          <label>Model
+            <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="既定モデル" disabled={creating || sending} />
+          </label>
+          <button className="secondary-button" onClick={() => createSession()} disabled={creating || sending}>
+            <Plus size={16} /> 新しい対話
+          </button>
+        </div>
+      </section>
+
+      {error && <div className="chat-error">{error}</div>}
+      <section className="chat-panel">
+        <div className="chat-panel-top">
+          <div className="chat-runtime"><span className="model-dot" /> {session?.backend || backend} <span>·</span> {session?.model || "既定モデル"}</div>
+          <div className="chat-total">累計 {session?.total_tokens.toLocaleString() || "0"} tokens</div>
+        </div>
+        <div className="chat-messages">
+          {loading ? (
+            <div className="chat-empty"><LoaderCircle className="spin" size={20} /> 対話セッションを復元しています</div>
+          ) : session?.messages.length ? session.messages.map((message) => (
+            <article className={`chat-message ${message.role}`} key={message.message_id}>
+              <div className="chat-avatar">{message.role === "assistant" ? <Bot size={16} /> : <CornerDownLeft size={16} />}</div>
+              <div className="chat-bubble-wrap">
+                <div className="chat-bubble">
+                  {message.role === "assistant" ? <ReactMarkdown>{message.text}</ReactMarkdown> : <p>{message.text}</p>}
+                </div>
+                <div className="chat-message-meta">
+                  {message.role === "assistant" && <span>{message.tokens.toLocaleString()} tokens · {(message.latency_ms / 1000).toFixed(1)}s</span>}
+                  <button disabled={Boolean(bridgeBusy) || creating} onClick={() => bridgeAsRun(message)}>このメッセージをRunとして実行</button>
+                  {activeRuns.length > 0 && <button disabled={Boolean(bridgeBusy) || creating} onClick={() => bridgeAsInstruction(message)}>実行中Runへ指示として送る</button>}
+                </div>
+              </div>
+            </article>
+          )) : (
+            <div className="chat-empty"><MessageCircle size={24} /> ここからNaniholdの開発を始められます。</div>
+          )}
+          {sending && <div className="chat-thinking"><LoaderCircle className="spin" size={17} /> Claudeが応答を作成中…</div>}
+        </div>
+        {activeRuns.length > 0 && (
+          <div className="chat-bridge-bar">
+            <span>指示を届けるRun</span>
+            <select value={targetRunId} onChange={(event) => setTargetRunId(event.target.value)}>
+              {activeRuns.map((run) => <option key={run.run_id} value={run.run_id}>{run.title}</option>)}
+            </select>
+          </div>
+        )}
+        <div className="chat-composer">
+          <textarea
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                send();
+              }
+            }}
+            placeholder="Naniholdに依頼する内容を入力…（Enterで送信、Shift+Enterで改行）"
+            rows={4}
+            disabled={loading || sending || !session}
+          />
+          <button className="primary-button" onClick={send} disabled={loading || sending || !session || !text.trim()}>
+            {sending ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />} 送信
+          </button>
+        </div>
+      </section>
     </main>
   );
 }

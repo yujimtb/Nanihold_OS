@@ -31,3 +31,25 @@ npm run dev -- --host 127.0.0.1
 - **Algedonic / 合議 / Human review**: 人間からの緊急信号、合議意見、レビュー回答を入力する。
 - **停止**: 現在の処理を中止する。
 - 完了後は Markdown の最終回答と JSON の処理ログを Run 単位でダウンロードできる。
+
+## 対話コンソール
+
+トップバーの「対話」では、Nanihold のリポジトリを作業ディレクトリとして Claude Code または
+Codex と会話できる。チャットIDごとに履歴とCLIの `session_ref` を
+`runs/web/chat/<chat_id>.jsonl` へ保存するため、Webアプリ再起動後も同じ対話を継続できる。
+同一セッションへの送信は直列化され、応答待ちの間の多重送信は HTTP 409 になる。
+
+各メッセージには次の開発ブリッジがある。
+
+- **このメッセージをRunとして実行**: `POST /api/runs` に本文を `goal` として投入する。
+- **実行中Runへ指示として送る**: 選択したRunの `POST /api/runs/{run_id}/instructions` に本文を届ける。
+
+主要APIは以下のとおり。
+
+| API | 用途 |
+|---|---|
+| `POST /api/chat` | `backend` (`claude-code` / `codex`)、任意の `model` と `workdir` でセッション作成 |
+| `POST /api/chat/{chat_id}/messages` | `text` をAgentRuntimeへ送り、応答本文・tokens・latencyを返す |
+| `GET /api/chat/{chat_id}` | メッセージ列、累計tokens、backend/model、session_refを返す |
+
+CLI呼び出しのチャットタイムアウトは既定300秒で、`ChatManager(timeout_seconds=...)` から変更できる。

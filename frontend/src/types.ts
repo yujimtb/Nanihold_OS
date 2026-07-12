@@ -68,6 +68,43 @@ export interface AppConfig {
   single_run: boolean;
 }
 
+export type ChatRole = "user" | "assistant";
+
+export interface ChatMessage {
+  message_id: string;
+  role: ChatRole;
+  text: string;
+  tokens: number;
+  tokens_in: number;
+  tokens_out: number;
+  tokens_cache_read: number;
+  latency_ms: number;
+  created_at: string;
+}
+
+export interface ChatSession {
+  chat_id: string;
+  backend: "claude-code" | "codex";
+  model: string | null;
+  workdir: string;
+  session_ref: string | null;
+  messages: ChatMessage[];
+  total_tokens: number;
+}
+
+export interface ChatResponse {
+  chat_id: string;
+  text: string;
+  tokens: number;
+  latency: number;
+  latency_ms: number;
+  tokens_in: number;
+  tokens_out: number;
+  tokens_cache_read: number;
+  session_ref: string | null;
+  message: ChatMessage;
+}
+
 export type NodeStatus = "CREATED" | "RUNNING" | "IDLE" | "SUSPENDED" | "WAITING" | "COMPLETED" | "TERMINATED" | "FAILED";
 
 export interface TopologyNode {

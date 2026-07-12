@@ -1,4 +1,4 @@
-import type { AppConfig, RunDetail, RunSummary, Topology } from "./types";
+import type { AppConfig, ChatResponse, ChatSession, RunDetail, RunSummary, Topology } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
@@ -14,6 +14,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   config: () => request<AppConfig>("/api/config"),
+  createChat: (backend: "claude-code" | "codex", model?: string) =>
+    request<ChatSession>("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ backend, model: model?.trim() || null }),
+    }),
+  getChat: (chatId: string) => request<ChatSession>(`/api/chat/${chatId}`),
+  sendChatMessage: (chatId: string, text: string) =>
+    request<ChatResponse>(`/api/chat/${chatId}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    }),
   listRuns: () => request<RunSummary[]>("/api/runs"),
   getRun: (runId: string) => request<RunDetail>(`/api/runs/${runId}`),
   createRun: (goal: string) => request<RunDetail>("/api/runs", {

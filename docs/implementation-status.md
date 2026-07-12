@@ -30,6 +30,7 @@
 | Run Budget / quota recovery | `[budget]` / `[budget.roles]` を Authority と NodeRunState に注入し、AgentResult の input/output/cache-read token と wall clock を累算・呼出前強制する。quota 枯渇時は Node を休眠し、reset 時刻に保留 Message を再投入して自動復帰する。resume 失敗時の物理再試行は論理呼び出し内に閉じ、成功結果への課金とイベント発行を各1回にする。Quota/Algedonic の suspend は共通 lifecycle 操作を使う。 |
 | Wave 5 REST / 外部指示 | JSON の Run 投入、Node 宛追加指示、Human Algedonic、Consortium statement、topology、budget API を FastAPI に実装。`vsm instruct` は `127.0.0.1:8000` の instruction API を呼ぶ。追加指示は `instruction_received` と Human→Node の `INSTRUCTION` Message の両方で記録・配送される。 |
 | ライブ組織図 | `events.jsonl` の Node lifecycle、`agent_attached`、`tool_invoked`、`llm_invocation`、`budget_consumed` 等だけから役割、親子、backend/model、状態、活動、指示元、予算を再構成する。React UI はポーリングし、Node の休眠・再開・停止、追加指示、Algedonic、Consortium/Human review 応答を提供する。 |
+| 対話コンソール | FastAPI の `/api/chat`、`/messages`、履歴APIが AgentRuntime の Claude Code / Codex をチャットセッションとして公開する。`runs/web/chat/*.jsonl` に履歴と `session_ref` を追記し、再起動後の `--resume` を可能にする。React の日本語「対話」タブからRun投入・実行中Runへの指示を1クリックで行える。 |
 
 ### まだ full runtime policy として有効化していないもの
 
