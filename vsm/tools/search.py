@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from vsm.ids import generate_uuid
-from vsm.memory import SearchScope, TaskSummary
+from vsm.memory.model import SearchScope, TaskSummary
 from vsm.tools.model import ToolEffect, ToolInvocation
 
 if TYPE_CHECKING:
@@ -93,6 +93,22 @@ class TaskSummaryIndex:
             if len(results) >= limit:
                 break
         return results
+
+    def list_for_nodes(
+        self,
+        *,
+        run_id: str,
+        node_ids: set[str],
+    ) -> list[IndexedTaskSummary]:
+        """Return summaries for the selected nodes in deterministic order."""
+        return sorted(
+            (
+                entry
+                for entry in self._read_entries()
+                if entry.run_id == run_id and entry.node_id in node_ids
+            ),
+            key=lambda entry: (entry.node_id, entry.summary_id),
+        )
 
     def _read_entries(self) -> list[IndexedTaskSummary]:
         if not self.path.exists():

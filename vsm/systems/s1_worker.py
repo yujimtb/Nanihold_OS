@@ -64,13 +64,16 @@ Validates Requirements
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import TYPE_CHECKING, Any
 
 from vsm.ids import generate_uuid
+from vsm.memory import SearchScope, TaskSummary
 from vsm.messaging.channels import ChannelId
 from vsm.messaging.message import Message
 from vsm.roles import SystemRole
 from vsm.systems.base import System
+from vsm.tools.search import IndexedTaskSummary
 
 if TYPE_CHECKING:
     # 型注釈のみで使い、実行時の循環 import を避ける。
@@ -255,10 +258,7 @@ class S1Worker(System):
         sub_agent = self._sub_agents[0]
         try:
             response = await sub_agent.respond(
-                prompt=(
-                    f"S1 [{self.specialization}] execute: "
-                    f"{payload.get('assignment', {})}"
-                ),
+                prompt=f"役割: S1 ({self.specialization})\n今回の指示: {payload.get('assignment', {})}",
             )
             result_text = response.text or "completed"
             success = True
@@ -279,6 +279,34 @@ class S1Worker(System):
         # ``result: dict[str, Any]`` を要求するため、success/text を
         # 含む dict として正規化する。
         result_payload: dict[str, Any] = {"success": success, "text": result_text}
+        summary_id = generate_uuid()
+        summary = _task_summary_from_result(
+            success=success,
+            result_text=result_text,
+            assignment=payload.get("assignment", {}),
+        )
+        self._platform.task_summary_index.add(
+            IndexedTaskSummary(
+                summary_id=summary_id,
+                run_id=self._platform.run_id,
+                node_id=self.system_id,
+                summary=summary,
+                scope=SearchScope.DIRECT_CHILD_SUMMARIES,
+            )
+        )
+        node = self._platform.nodes[self.system_id]
+        node.summary_refs.append(summary_id)
+        await self._eventlog.append(
+            "summary_generated",
+            {
+                "summary_id": summary_id,
+                "node_id": self.system_id,
+                "goal_achieved": summary.goal_achieved,
+                "approach": summary.approach,
+            },
+            node_id=self.system_id,
+            actor_id=self.system_id,
+        )
         await self._eventlog.append(
             "s1_completion",
             {
@@ -387,3 +415,30 @@ class S1Worker(System):
         if not instances:
             return None
         return instances[0].system_id
+
+
+def _task_summary_from_result(
+    *,
+    success: bool,
+    result_text: str,
+    assignment: Any,
+) -> TaskSummary:
+    """S1 応答を決定論的な短い TaskSummary に変換する。"""
+    lines = [line.strip() for line in result_text.splitlines() if line.strip()]
+    approach = (lines[0] if lines else ("完了" if success else "実行失敗"))[:240]
+    questions = tuple(line[:240] for line in lines if line.endswith(("?", "？")))
+    preconditions = json.dumps(
+        assignment,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )[:400]
+    return TaskSummary(
+        goal_achieved=success,
+        approach=approach,
+        preconditions=preconditions,
+        dead_ends=() if success else (approach,),
+        open_questions=questions,
+        reusability_hints=(approach,) if success else (),
+    )

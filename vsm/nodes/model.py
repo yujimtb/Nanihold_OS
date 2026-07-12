@@ -74,5 +74,6 @@ class NodeRunState:
     status: NodeStatus = NodeStatus.CREATED
     budget: dict[str, float] = field(default_factory=dict)
     cost_consumed: dict[str, float] = field(default_factory=dict)
+    session_refs: dict[str, str] = field(default_factory=dict)
     context_view_ref: str | None = None
     output_ref: str | None = None

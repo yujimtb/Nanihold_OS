@@ -235,6 +235,17 @@ class Platform:
         self.authorities: dict[str, ParentAuthority] = {}
         self.tool_invocations: dict[str, ToolInvocation] = {}
 
+        from vsm.memory.builder import ContextViewBuilder
+        from vsm.tools.search import TaskSummaryIndex
+
+        self.task_summary_index = TaskSummaryIndex(run_dir / "memory" / "task-summaries.jsonl")
+        self.context_view_builder = ContextViewBuilder(
+            nodes=self.nodes,
+            events_path=run_dir / _EVENTS_FILENAME,
+            summary_index=self.task_summary_index,
+            run_dir=run_dir,
+        )
+
         # 動的 S1 生成回数のカウンタ。``s1_dynamic_max`` (REQ 13.6) と
         # ``s1_max`` (REQ 1.3) の双方を :meth:`spawn_s1` が確認する。
         # ``current`` ではなく **総生成数** をカウントする (REQ 13.6 が
@@ -554,10 +565,17 @@ class Platform:
             status=NodeStatus.CREATED,
         )
         self.nodes[node.id] = node
-        self.node_run_states[(self.run_id, node.id)] = NodeRunState(
+        run_state = NodeRunState(
             run_id=self.run_id,
             node_id=node.id,
             status=NodeStatus.CREATED,
+        )
+        self.node_run_states[(self.run_id, node.id)] = run_state
+        system.bind_node_context(
+            run_id=self.run_id,
+            run_state=run_state,
+            context_builder=self.context_view_builder,
+            resume_within_run=self.run_config.session.resume_within_run,
         )
         if node.parent_id and node.parent_id in self.nodes:
             self.nodes[node.parent_id].child_ids.append(node.id)
@@ -709,6 +727,11 @@ class Platform:
                     node_id=node.id,
                     actor_id=node.id,
                 )
+
+        # CLI セッションは Event_Log から再構築可能な Run 内キャッシュであり、
+        # Run 境界を越えて保持しない。
+        for run_state in self.node_run_states.values():
+            run_state.session_refs.clear()
 
         # 2. EventLogWriter の停止。これより後の ``append`` 呼び出しは
         # 失敗するが、System が全て停止しているので呼ばれることは無い。
