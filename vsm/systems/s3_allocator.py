@@ -351,6 +351,10 @@ class S3Allocator(System):
             ``s1_assignment_sent`` payload の ``assignment`` フィールドに
             そのまま転写される dict。
         """
+        reserve_writer = getattr(self._platform, "reserve_s1_writer", None)
+        if reserve_writer is not None:
+            reserve_writer(s1)
+
         # S1_Worker の ``current_assignments`` (list) に work_item_id を
         # 追加して、次回以降の :meth:`S1Pool.find_idle` で idle 判定に
         # 反映させる。属性が無い場合は静かにスキップする (S1_Worker 未

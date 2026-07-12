@@ -92,6 +92,7 @@ class SubAgent:
     _run_state: "NodeRunState | None" = None
     _context_builder: "ContextViewBuilder | None" = None
     _resume_within_run: bool = False
+    _workdir: Path | None = None
 
     async def respond(
         self,
@@ -161,11 +162,22 @@ class SubAgent:
         saved_session_ref: str | None = None
         if self._resume_within_run and self._run_state is not None:
             saved_session_ref = self._run_state.session_refs.get(runtime.backend_name)
+        requested_workdir = ctx.get("workdir", self._workdir)
+        if requested_workdir is None:
+            raise RuntimeError(
+                f"SubAgent {self.sub_agent_id} の AgentRequest.workdir が未設定です"
+            )
+        requested_workdir = Path(requested_workdir).resolve(strict=False)
+        if self._workdir is not None and requested_workdir != self._workdir:
+            raise RuntimeError(
+                "SubAgent の workdir は Run が束縛した作業ディレクトリから変更できません: "
+                f"expected={self._workdir}, received={requested_workdir}"
+            )
         request = AgentRequest(
             prompt=prompt,
             context_view=None if saved_session_ref is not None else full_context_view,
             session_ref=saved_session_ref,
-            workdir=(Path(ctx["workdir"]) if ctx.get("workdir") is not None else None),
+            workdir=requested_workdir,
             model=model,
             timeout_seconds=timeout,
         )
@@ -405,6 +417,20 @@ class System(ABC):
         self._instruction_task: asyncio.Task[None] | None = None
         self._instruction_queue: asyncio.Queue[Message] | None = None
         self._runtime_control: AgentRuntimeControl | None = None
+        eventlog_path = getattr(eventlog, "_path", None)
+        self._workdir: Path | None = (
+            Path(eventlog_path).parent.resolve(strict=False)
+            if isinstance(eventlog_path, Path)
+            else None
+        )
+
+    def bind_workdir(self, workdir: Path) -> None:
+        """Run が所有する作業ディレクトリを全 SubAgent に束縛する。"""
+
+        resolved = workdir.resolve(strict=False)
+        self._workdir = resolved
+        for sub_agent in self._sub_agents:
+            sub_agent._workdir = resolved
 
     def bind_runtime_control(self, control: AgentRuntimeControl) -> None:
         """既存および今後登録する SubAgent を Run 制御へ接続する。"""
@@ -545,6 +571,7 @@ class System(ABC):
             _eventlog=self._eventlog,
             _clock=self._clock,
             _runtime_control=self._runtime_control,
+            _workdir=self._workdir,
         )
         self._sub_agents.append(sub_agent)
         return sub_agent
