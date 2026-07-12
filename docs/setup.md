@@ -203,10 +203,31 @@ S1_WORKER = "codex"
 
 [session]
 resume_within_run = true
+
+[budget]
+run_tokens = 2000000
+run_wall_clock_seconds = 7200
+
+[budget.roles]
+S1_WORKER = { tokens = 500000, wall_clock_seconds = 1800 }
+
+[quota]
+suspend_on_exhausted = true
+fallback_resume_minutes = 60
+weekly_fallback_resume_minutes = 360
 ```
 
 空文字を割り当てたロールには AgentRuntime を注入しない。未認識のバックエンドや不正な
 設定値は起動時エラーとなり、別バックエンドへの暗黙の切り替えは行わない。
+
+`[budget]` は Run 全体のトークン合計（input + output + cache read）と AgentRuntime
+呼び出し時間を制限する。`[budget.roles]` に指定したロールは個別 envelope を使い、未指定
+ロールは Run envelope を使う。既消費量が上限以上の呼び出しは実行前に拒否され、
+`budget_exceeded` と `escalation_requested` が記録される。
+
+quota 枯渇を返したバックエンドの Node は `SUSPENDED` になり、`quota_reset_at`、または
+時刻不明時の `fallback_resume_minutes` に自動復帰する。休眠中および枯渇検知時に処理中だった
+Message は Node 別キューに保持され、復帰後に再投入される。
 
 ### LiteLLM を明示的に使う場合
 

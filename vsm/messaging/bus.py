@@ -102,6 +102,31 @@ class MessageBus:
         # matches the PoC scale (REQ 1.3 caps S1 count at 1024 and
         # representative scenarios produce O(10²) messages).
         self._queues: dict[tuple[str, ChannelId], asyncio.Queue[Message]] = {}
+        self._suspended_receivers: set[str] = set()
+        self._pending: dict[str, list[Message]] = {}
+        self._pending_ids: set[str] = set()
+
+    def suspend_receiver(self, receiver_id: str) -> None:
+        self._suspended_receivers.add(receiver_id)
+
+    def defer(self, msg: Message) -> None:
+        if msg.message_id in self._pending_ids:
+            return
+        self._pending.setdefault(msg.receiver_id, []).append(msg)
+        self._pending_ids.add(msg.message_id)
+
+    def resume_receiver(self, receiver_id: str) -> int:
+        self._suspended_receivers.discard(receiver_id)
+        pending = self._pending.pop(receiver_id, [])
+        for msg in pending:
+            queue = self._queues.get((receiver_id, msg.channel))
+            if queue is None:
+                raise RuntimeError(
+                    f"pending message receiver is not subscribed: {receiver_id}/{msg.channel.value}"
+                )
+            queue.put_nowait(msg)
+            self._pending_ids.discard(msg.message_id)
+        return len(pending)
 
     # ------------------------------------------------------------------
     # Subscription
@@ -254,7 +279,10 @@ class MessageBus:
         # Step 3 — enqueue without yielding the loop. ``put_nowait``
         # avoids creating a task scheduler hop and surfaces back-pressure
         # immediately if a future bounded-queue policy is introduced.
-        queue.put_nowait(msg)
+        if msg.receiver_id in self._suspended_receivers:
+            self.defer(msg)
+        else:
+            queue.put_nowait(msg)
 
         # Step 4 — REQ 2.9: append the delivery record. ``payload`` is the
         # System-defined dict; the Event_Log writer validates it against

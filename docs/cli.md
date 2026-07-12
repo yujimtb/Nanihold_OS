@@ -16,9 +16,9 @@ PowerShell の例。`cmd.exe` では `.\vsm.ps1` の代わりに `vsm.cmd`、Doc
 |---|---|
 | `.\vsm.ps1 submit "<description>"` | タスクを投入し、新しい Run を起動する。実行中の進捗は stderr に表示され、完了時の stdout は `run_id=...` / `task_id=...` の2行だけになる。 |
 | `.\vsm.ps1 submit "<description>" --file path\to\file.txt` | UTF-8 の補足ファイル付きでタスクを投入する。`--file` は複数指定できる。 |
-| `.\vsm.ps1 runs` | `runs\` 配下の Run を新しい順に一覧表示する。短縮 run_id、開始時刻、導出状態、イベント数、タスク概要を確認できる。 |
+| `.\vsm.ps1 runs` | `runs\` 配下の Run を新しい順に一覧表示する。短縮 run_id、開始時刻、導出状態、イベント数、Run 合計トークン、AgentRuntime 実行時間、タスク概要を確認できる。 |
 | `.\vsm.ps1 runs --full-id` | 詳細確認に使うフル run_id 付きで Run 一覧を表示する。 |
-| `.\vsm.ps1 status <run_id>` | `events.jsonl` から Task / System の状態サマリを再構成して表示する。`s1_completion` などの既存イベントから完了状態を導出する。 |
+| `.\vsm.ps1 status <run_id>` | `events.jsonl` から Task / System の状態と Node 別トークン（input/output/cache read）・AgentRuntime 実行時間を再構成して表示する。 |
 | `.\vsm.ps1 tail <run_id>` | Run の `events.jsonl` に追従して新着イベントを JSONL で表示する。 |
 | `.\vsm.ps1 tail <run_id> --system <system_id>` | system_id / sender / receiver の一致でイベントを絞り込む。 |
 | `.\vsm.ps1 tail <run_id> --channel S4-S5` | channel の一致でイベントを絞り込む。 |
@@ -162,7 +162,7 @@ vsm\
 ├── messaging\               # Message_Bus + ChannelId
 ├── nodes\                   # Node / NodeRunState / lifecycle
 ├── roles\                   # SystemRole / RoleSpec
-├── runtime\                 # Platform / topology / Execution
+├── runtime\                 # Platform / topology / Execution / QuotaMonitor
 ├── systems\                 # S1〜S5 + S3* 実装
 ├── telemetry\               # Event_Log と OpenTelemetry の相関値
 └── tools\                   # ToolEffect / ToolInvocation / facade

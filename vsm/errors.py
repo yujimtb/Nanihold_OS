@@ -149,6 +149,14 @@ class LLMProviderError(LLMError):
         super().__init__(f"LLM provider error [{code}]: {message}")
 
 
+class BudgetExceededError(LLMError):
+    """AgentRuntime 呼び出し前に Node または Run 予算が尽きていた。"""
+
+
+class QuotaExhaustedError(LLMError):
+    """AgentRuntime の quota 枯渇により Node が休眠へ移行した。"""
+
+
 # ---------------------------------------------------------------------------
 # Event_Log
 # ---------------------------------------------------------------------------
@@ -224,6 +232,8 @@ __all__ = [
     "LLMError",
     "LLMTimeoutError",
     "LLMProviderError",
+    "BudgetExceededError",
+    "QuotaExhaustedError",
     "EventLogError",
     "EventLogAppendError",
     "SystemInstantiationError",

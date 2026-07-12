@@ -155,6 +155,46 @@ def test_status_with_systems(
     assert "Sub_Agents: 2" in result.stdout
 
 
+def test_status_shows_budget_consumption_by_node(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    run_id = "run-budget"
+    events_path = tmp_path / "runs" / run_id / "events.jsonl"
+    _write_events_file(
+        events_path,
+        [
+            {
+                "ts": "2025-01-01T00:00:00.000Z",
+                "run_id": run_id,
+                "event_type": "system_instantiated",
+                "seq": 0,
+                "payload": {"system_id": "node-1", "role": "S1_WORKER", "sub_agent_count": 1},
+            },
+            {
+                "ts": "2025-01-01T00:00:00.001Z",
+                "run_id": run_id,
+                "event_type": "budget_consumed",
+                "seq": 1,
+                "payload": {
+                    "node_id": "node-1",
+                    "tokens_in": 10,
+                    "tokens_out": 4,
+                    "tokens_cache_read": 2,
+                    "wall_clock_ms": 1250,
+                },
+            },
+        ],
+    )
+
+    result = runner.invoke(app, ["status", run_id])
+
+    assert result.exit_code == 0
+    assert "Budget consumption by Node:" in result.stdout
+    assert "tokens: 16 (in 10 / out 4 / cache 2)" in result.stdout
+    assert "wall: 1.250s" in result.stdout
+
+
 def test_status_missing_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

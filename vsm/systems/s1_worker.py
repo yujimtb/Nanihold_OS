@@ -67,6 +67,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 from vsm.ids import generate_uuid
+from vsm.errors import QuotaExhaustedError
 from vsm.messaging.channels import ChannelId
 from vsm.messaging.message import Message
 from vsm.roles import SystemRole
@@ -259,9 +260,14 @@ class S1Worker(System):
                     f"S1 [{self.specialization}] execute: "
                     f"{payload.get('assignment', {})}"
                 ),
+                context={"pending_message": msg},
             )
             result_text = response.text or "completed"
             success = True
+        except QuotaExhaustedError:
+            # QuotaMonitor が同じ Message を保留済み。復帰後の再投入まで
+            # assignment を完了扱いにせず、current_assignments も保持する。
+            return
         except Exception as exc:
             # LLMTimeoutError / LLMProviderError 等は基底 Sub_Agent.respond
             # が既に Event_Log に append 済み (REQ 3.5 / 3.6)。S1 としては

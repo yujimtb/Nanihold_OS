@@ -55,6 +55,7 @@ from vsm.config import RunConfig
 from vsm.eventlog.writer import EventLogWriter
 from vsm.ids import generate_uuid
 from vsm.agents.runtime import AgentRuntimeProtocol
+from vsm.errors import QuotaExhaustedError
 from vsm.messaging.bus import MessageBus
 from vsm.messaging.channels import ChannelId
 from vsm.messaging.message import Message, SendResult
@@ -266,12 +267,17 @@ class S5Policy(System):
             f"Assessment: {assessment_payload}"
         )
         try:
-            response = await sub_agent.respond(prompt)
+            response = await sub_agent.respond(
+                prompt, context={"pending_message": msg}
+            )
             # PoC では応答全体を directive として採用し、follow-up は
             # 固定文言とする。schema は ``directive`` に min_length=1
             # を要求するため、応答が空文字列なら fallback を使う。
             directive_text = response.text or "execute"
             followup_text = "monitor for changes"
+        except QuotaExhaustedError:
+            # assessment は QuotaMonitor が保留済みで、復帰後に再配送される。
+            return
         except Exception:
             # ``Sub_Agent.respond`` 内で ``llm_timeout`` / ``llm_error``
             # は既に append 済み。ここでは run loop を停止させずに

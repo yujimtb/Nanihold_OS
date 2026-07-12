@@ -11,6 +11,7 @@ import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Protocol
 
 from vsm.agents.runtime import (
     AgentRequest,
@@ -32,6 +33,14 @@ __all__ = ["SubAgent", "System"]
 # upper bound is enforced here on every ``register_sub_agent`` call so that
 # a misconfigured Run cannot allocate a 65th Sub_Agent at runtime.
 _SUB_AGENT_MAX: int = 64
+
+
+class AgentRuntimeControl(Protocol):
+    async def before_agent_invoke(self, node_id: str) -> None: ...
+
+    async def after_agent_invoke(
+        self, node_id: str, result: AgentResult, pending_message: Any | None
+    ) -> None: ...
 
 
 @dataclass
@@ -73,6 +82,7 @@ class SubAgent:
     _runtime: AgentRuntimeProtocol | None
     _eventlog: EventLogWriter
     _clock: Clock
+    _runtime_control: AgentRuntimeControl | None = None
 
     async def respond(
         self,
@@ -142,6 +152,9 @@ class SubAgent:
             model=model,
             timeout_seconds=timeout,
         )
+
+        if self._runtime_control is not None:
+            await self._runtime_control.before_agent_invoke(self.system_id)
 
         # REQ 3.5 の elapsed_ms 計測は壁時計ではなく monotonic clock を
         # 使う。``FakeClock.monotonic`` は ``advance()`` でのみ進むため、
@@ -244,6 +257,11 @@ class SubAgent:
             )
             raise
 
+        if self._runtime_control is not None:
+            await self._runtime_control.after_agent_invoke(
+                self.system_id, response, ctx.get("pending_message")
+            )
+
         # REQ 3.3: 成功経路。``llm_invocation`` payload は AgentResult の
         # フィールドを忠実に転写する (design.md §Event_Log §payload 表)。
         # caller が SLA を観測しやすいよう、append は ``await`` で同期
@@ -341,6 +359,14 @@ class System(ABC):
         # ``run()`` を保持する asyncio Task。``start()`` で生成され、
         # ``shutdown()`` で cancel + await される。
         self._task: asyncio.Task[None] | None = None
+        self._runtime_control: AgentRuntimeControl | None = None
+
+    def bind_runtime_control(self, control: AgentRuntimeControl) -> None:
+        """既存および今後登録する SubAgent を Run 制御へ接続する。"""
+
+        self._runtime_control = control
+        for sub_agent in self._sub_agents:
+            sub_agent._runtime_control = control
 
     @property
     def sub_agents(self) -> list[SubAgent]:
@@ -408,6 +434,7 @@ class System(ABC):
             _runtime=self._runtime,
             _eventlog=self._eventlog,
             _clock=self._clock,
+            _runtime_control=self._runtime_control,
         )
         self._sub_agents.append(sub_agent)
         return sub_agent

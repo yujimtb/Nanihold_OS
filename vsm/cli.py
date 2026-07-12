@@ -440,7 +440,27 @@ class _RunSummary:
     active: bool
     event_count: int
     task_description: str
+    tokens_consumed: int
+    wall_clock_ms: int
     sort_mtime: float
+
+
+def _budget_totals(events: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    totals: dict[str, dict[str, int]] = {}
+    for evt in events:
+        if evt.get("event_type") != "budget_consumed":
+            continue
+        payload = evt.get("payload", {}) or {}
+        node_id = str(payload.get("node_id") or evt.get("node_id") or "unknown")
+        item = totals.setdefault(
+            node_id,
+            {"tokens_in": 0, "tokens_out": 0, "tokens_cache_read": 0, "wall_clock_ms": 0},
+        )
+        for key in item:
+            value = payload.get(key, 0)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                item[key] += int(value)
+    return totals
 
 
 def _summarise_run_dir(run_dir: Path) -> _RunSummary:
@@ -453,6 +473,7 @@ def _summarise_run_dir(run_dir: Path) -> _RunSummary:
             payload = evt.get("payload", {}) or {}
             task_description = _short_text(payload.get("description"), 80)
             break
+    budgets = _budget_totals(events)
     return _RunSummary(
         run_id=run_dir.name,
         short_run_id=_short_id(run_dir.name),
@@ -461,6 +482,11 @@ def _summarise_run_dir(run_dir: Path) -> _RunSummary:
         active=(run_dir / "RUNNING").exists(),
         event_count=len(events),
         task_description=task_description,
+        tokens_consumed=sum(
+            item["tokens_in"] + item["tokens_out"] + item["tokens_cache_read"]
+            for item in budgets.values()
+        ),
+        wall_clock_ms=sum(item["wall_clock_ms"] for item in budgets.values()),
         sort_mtime=events_path.stat().st_mtime,
     )
 
@@ -881,6 +907,24 @@ def status(
             f"Sub_Agents: {sub_agent_count}"
         )
 
+    typer.echo("")
+    typer.echo("Budget consumption by Node:")
+    budgets = _budget_totals(events)
+    if not budgets:
+        typer.echo("  none")
+    roles_by_node = {
+        str((evt.get("payload", {}) or {}).get("system_id")): (evt.get("payload", {}) or {}).get("role", "UNKNOWN")
+        for evt in events
+        if evt.get("event_type") == "system_instantiated"
+    }
+    for node_id, consumed in sorted(budgets.items()):
+        total = consumed["tokens_in"] + consumed["tokens_out"] + consumed["tokens_cache_read"]
+        typer.echo(
+            f"  - {roles_by_node.get(node_id, 'UNKNOWN'):<17} id: {_short_id(node_id)}  "
+            f"tokens: {total} (in {consumed['tokens_in']} / out {consumed['tokens_out']} / "
+            f"cache {consumed['tokens_cache_read']})  wall: {consumed['wall_clock_ms'] / 1000:.3f}s"
+        )
+
 
 # ---------------------------------------------------------------------------
 # runs
@@ -954,6 +998,8 @@ def list_runs(
                 summary.started_at,
                 state,
                 str(summary.event_count),
+                str(summary.tokens_consumed),
+                f"{summary.wall_clock_ms / 1000:.3f}s",
                 summary.task_description,
             )
         )
@@ -962,20 +1008,26 @@ def list_runs(
     started_width = max(len("STARTED"), *(len(row[1]) for row in rows))
     state_width = max(len("STATE"), *(len(row[2]) for row in rows))
     events_width = max(len("EVENTS"), *(len(row[3]) for row in rows))
+    tokens_width = max(len("TOKENS"), *(len(row[4]) for row in rows))
+    wall_width = max(len("WALL"), *(len(row[5]) for row in rows))
     typer.echo("Run list (newest first)")
     typer.echo(
         f"{'RUN ID':<{id_width}}  "
         f"{'STARTED':<{started_width}}  "
         f"{'STATE':<{state_width}}  "
         f"{'EVENTS':>{events_width}}  "
+        f"{'TOKENS':>{tokens_width}}  "
+        f"{'WALL':>{wall_width}}  "
         "TASK"
     )
-    for display_id, started_at, state, event_count, task_description in rows:
+    for display_id, started_at, state, event_count, tokens, wall, task_description in rows:
         typer.echo(
             f"{display_id:<{id_width}}  "
             f"{started_at:<{started_width}}  "
             f"{state:<{state_width}}  "
             f"{event_count:>{events_width}}  "
+            f"{tokens:>{tokens_width}}  "
+            f"{wall:>{wall_width}}  "
             f"{task_description}"
         )
     if skipped_count:

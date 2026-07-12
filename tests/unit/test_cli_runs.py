@@ -106,6 +106,36 @@ def test_runs_marks_active_and_ignores_non_run_dirs(tmp_path, monkeypatch) -> No
     assert "ignored 1 directory without events.jsonl" in result.stdout
 
 
+def test_runs_shows_run_budget_totals(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    run_id = "run-budget-1234567890abcdef"
+    events = [
+        _task_event(run_id, 0, "budget task"),
+        {
+            "ts": "2025-01-01T00:00:00.001Z",
+            "run_id": run_id,
+            "event_type": "budget_consumed",
+            "seq": 1,
+            "payload": {
+                "node_id": "node-1",
+                "tokens_in": 10,
+                "tokens_out": 4,
+                "tokens_cache_read": 2,
+                "wall_clock_ms": 1250,
+            },
+        },
+    ]
+    _write_events_file(tmp_path / "runs" / run_id / "events.jsonl", events)
+
+    result = runner.invoke(app, ["runs", "--full-id"])
+
+    assert result.exit_code == 0
+    assert "TOKENS" in result.stdout
+    assert "WALL" in result.stdout
+    assert "16" in result.stdout
+    assert "1.250s" in result.stdout
+
+
 def test_runs_limit_and_short_id(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     runs_dir = tmp_path / "runs"

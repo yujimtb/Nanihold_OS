@@ -543,14 +543,22 @@ Spec を差し替える場合は `spec_revised` または `agent_attached` event
 
 ```text
 Budget:
-  token
-  wall_clock_time
-  external_api_cost
-  human_time
+  tokens_in
+  tokens_out
+  tokens_cache_read
+  wall_clock_ms
+  node_running_ms
 ```
 
-Tool 呼び出しのたびに NodeRunState の budget から減算する。超過時は Tool を拒否し、必要に応じて
-`request_escalation` を発行する。すべての消費は `budget_consumed` event として記録する。
+`[budget]` の Run envelope と `[budget.roles]` のロール別 envelope を
+`ParentAuthority.budget_envelope` / `NodeRunState.budget` に注入する。AgentRuntime の応答ごとに
+3種のトークン、応答 latency、Node の RUNNING 経過時間を `NodeRunState.cost_consumed` と
+`budget_consumed` event に累算する。既消費量が上限以上なら次の AgentRuntime 呼び出しを拒否し、
+`budget_exceeded` と `request_escalation` を発行する。
+
+quota 枯渇時は Node を `SUSPENDED` にし、reset 時刻（不明時は設定した間隔）に自動復帰する。
+MessageBus は当該 Node の処理中 Message と休眠中に到着した Message を保留し、`quota_resumed`
+発行時に同じ購読キューへ再投入する。QuotaMonitor の timer は Platform shutdown で全て cancel する。
 
 ---
 

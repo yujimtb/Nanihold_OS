@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING, Any
 
 from vsm.clock import Clock
 from vsm.config import RunConfig
-from vsm.errors import LLMError, LLMProviderError, LLMTimeoutError
+from vsm.errors import LLMError, LLMProviderError, LLMTimeoutError, QuotaExhaustedError
 from vsm.eventlog.writer import EventLogWriter
 from vsm.ids import generate_uuid
 from vsm.agents.runtime import AgentRuntimeProtocol
@@ -255,6 +255,7 @@ class S4Scanner(System):
                         await self._produce_and_deliver(
                             task_context={"followup_request": followup},
                             recipient_id=item.sender_id,
+                            pending_message=item,
                         )
                     elif isinstance(item, dict):
                         # 初回 Task: lifecycle が登録した最初の S5 インスタンス
@@ -291,6 +292,7 @@ class S4Scanner(System):
         *,
         task_context: dict[str, Any],
         recipient_id: str,
+        pending_message: Message | None = None,
     ) -> None:
         """Invoke Sub_Agents, build the assessment, and deliver to S5.
 
@@ -337,7 +339,10 @@ class S4Scanner(System):
             )
             try:
                 response = await asyncio.wait_for(
-                    sub_agent.respond(prompt=prompt),
+                    sub_agent.respond(
+                        prompt=prompt,
+                        context={"pending_message": pending_message},
+                    ),
                     timeout=_SUB_AGENT_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
@@ -360,6 +365,8 @@ class S4Scanner(System):
                 )
                 # REQ 5.5: 残りの Sub_Agent で続行する。
                 continue
+            except QuotaExhaustedError:
+                return
             except (LLMTimeoutError, LLMProviderError, LLMError) as exc:
                 # 60 秒タイムアウト / プロバイダーエラーは ``SubAgent.respond``
                 # 側で既に ``llm_timeout`` / ``llm_error`` を append 済み

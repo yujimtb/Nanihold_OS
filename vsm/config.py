@@ -49,6 +49,8 @@ __all__ = [
     "AgentBackendConfig",
     "AgentsConfig",
     "SessionConfig",
+    "BudgetConfig",
+    "QuotaConfig",
     "RunConfig",
     "load_config",
     "LITELLM_PROVIDER_ENV",
@@ -324,6 +326,80 @@ class SessionConfig:
     resume_within_run: bool = True
 
 
+@dataclass(frozen=True)
+class BudgetConfig:
+    """Run 全体とロール別の AgentRuntime 予算。"""
+
+    run_tokens: int = 2_000_000
+    run_wall_clock_seconds: float = 7_200.0
+    roles: Mapping[SystemRole, Mapping[str, float]] = field(
+        default_factory=lambda: {
+            SystemRole.S1_WORKER: {
+                "tokens": 500_000.0,
+                "wall_clock_seconds": 1_800.0,
+            }
+        }
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.run_tokens, int) or isinstance(self.run_tokens, bool) or self.run_tokens <= 0:
+            raise ConfigError(missing_roles=[], detail="budget.run_tokens must be a positive integer")
+        if (
+            not isinstance(self.run_wall_clock_seconds, (int, float))
+            or isinstance(self.run_wall_clock_seconds, bool)
+            or self.run_wall_clock_seconds <= 0
+        ):
+            raise ConfigError(
+                missing_roles=[], detail="budget.run_wall_clock_seconds must be positive"
+            )
+        normalised: dict[SystemRole, dict[str, float]] = {}
+        for role, envelope in self.roles.items():
+            if not isinstance(role, SystemRole) or not isinstance(envelope, Mapping):
+                raise ConfigError(missing_roles=[], detail="budget.roles must map SystemRole to a table")
+            if set(envelope) != {"tokens", "wall_clock_seconds"}:
+                raise ConfigError(
+                    missing_roles=[role.value],
+                    detail=f"budget.roles.{role.value} must define tokens and wall_clock_seconds",
+                )
+            values = {key: value for key, value in envelope.items()}
+            for key, value in values.items():
+                if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+                    raise ConfigError(
+                        missing_roles=[role.value],
+                        detail=f"budget.roles.{role.value}.{key} must be positive",
+                    )
+            normalised[role] = {key: float(value) for key, value in values.items()}
+        object.__setattr__(self, "roles", normalised)
+
+    def envelope_for(self, role: SystemRole) -> dict[str, float]:
+        return dict(
+            self.roles.get(
+                role,
+                {
+                    "tokens": float(self.run_tokens),
+                    "wall_clock_seconds": float(self.run_wall_clock_seconds),
+                },
+            )
+        )
+
+
+@dataclass(frozen=True)
+class QuotaConfig:
+    """サブスクリプション quota 枯渇時の休眠・復帰設定。"""
+
+    suspend_on_exhausted: bool = True
+    fallback_resume_minutes: float = 60.0
+    weekly_fallback_resume_minutes: float = 360.0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.suspend_on_exhausted, bool):
+            raise ConfigError(missing_roles=[], detail="quota.suspend_on_exhausted must be a boolean")
+        for name in ("fallback_resume_minutes", "weekly_fallback_resume_minutes"):
+            value = getattr(self, name)
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+                raise ConfigError(missing_roles=[], detail=f"quota.{name} must be positive")
+
+
 def _validate_sub_agent_count(role: SystemRole, count: int) -> None:
     """Validate a Sub_Agent count for a single role.
 
@@ -419,6 +495,8 @@ class RunConfig:
     s1_dynamic_max: int = S1_DYNAMIC_MAX
     agents: AgentsConfig = field(default_factory=AgentsConfig)
     session: SessionConfig = field(default_factory=SessionConfig)
+    budget: BudgetConfig = field(default_factory=BudgetConfig)
+    quota: QuotaConfig = field(default_factory=QuotaConfig)
 
     def __post_init__(self) -> None:
         if not isinstance(self.agents, AgentsConfig):
@@ -429,6 +507,10 @@ class RunConfig:
             raise ConfigError(
                 missing_roles=[], detail="RunConfig.session must be a SessionConfig"
             )
+        if not isinstance(self.budget, BudgetConfig):
+            raise ConfigError(missing_roles=[], detail="RunConfig.budget must be a BudgetConfig")
+        if not isinstance(self.quota, QuotaConfig):
+            raise ConfigError(missing_roles=[], detail="RunConfig.quota must be a QuotaConfig")
         # Materialise the mapping into a plain dict so that callers can
         # not mutate the configuration after construction. The frozen
         # dataclass would still allow mutation through the original
@@ -625,6 +707,8 @@ def _extract_run_section(
     *,
     agents: AgentsConfig,
     session: SessionConfig,
+    budget: BudgetConfig,
+    quota: QuotaConfig,
 ) -> RunConfig:
     """Build a :class:`RunConfig` from the optional ``[run]`` TOML section.
 
@@ -637,7 +721,7 @@ def _extract_run_section(
     """
     section = raw.get("run")
     if section is None:
-        return RunConfig(agents=agents, session=session)
+        return RunConfig(agents=agents, session=session, budget=budget, quota=quota)
     if not isinstance(section, Mapping):
         raise ConfigError(
             missing_roles=[],
@@ -688,6 +772,8 @@ def _extract_run_section(
         s1_dynamic_max=s1_dynamic_max,
         agents=agents,
         session=session,
+        budget=budget,
+        quota=quota,
     )
 
 
@@ -840,6 +926,53 @@ def _extract_session_section(raw: Mapping[str, Any], path: Path) -> SessionConfi
     return SessionConfig(resume_within_run=value)
 
 
+def _extract_budget_section(raw: Mapping[str, Any], path: Path) -> BudgetConfig:
+    section = raw.get("budget")
+    if section is None:
+        return BudgetConfig()
+    if not isinstance(section, Mapping):
+        raise ConfigError(missing_roles=[], detail=f"[budget] section in {path} must be a table")
+    unknown = set(section) - {"run_tokens", "run_wall_clock_seconds", "roles"}
+    if unknown:
+        raise ConfigError(missing_roles=[], detail=f"unknown [budget] fields: {sorted(unknown)}")
+    defaults = BudgetConfig()
+    raw_roles = section.get("roles", defaults.roles)
+    if not isinstance(raw_roles, Mapping):
+        raise ConfigError(missing_roles=[], detail=f"[budget.roles] in {path} must be a table")
+    roles_by_name = {role.value: role for role in SystemRole}
+    roles: dict[SystemRole, Mapping[str, float]] = {}
+    for name, envelope in raw_roles.items():
+        role = roles_by_name.get(name) if isinstance(name, str) else name
+        if role not in roles_by_name.values():
+            raise ConfigError(missing_roles=[], detail=f"unknown [budget.roles] role: {name!r}")
+        roles[role] = envelope
+    return BudgetConfig(
+        run_tokens=section.get("run_tokens", defaults.run_tokens),
+        run_wall_clock_seconds=section.get(
+            "run_wall_clock_seconds", defaults.run_wall_clock_seconds
+        ),
+        roles=roles,
+    )
+
+
+def _extract_quota_section(raw: Mapping[str, Any], path: Path) -> QuotaConfig:
+    section = raw.get("quota")
+    if section is None:
+        return QuotaConfig()
+    if not isinstance(section, Mapping):
+        raise ConfigError(missing_roles=[], detail=f"[quota] section in {path} must be a table")
+    allowed = {
+        "suspend_on_exhausted",
+        "fallback_resume_minutes",
+        "weekly_fallback_resume_minutes",
+    }
+    unknown = set(section) - allowed
+    if unknown:
+        raise ConfigError(missing_roles=[], detail=f"unknown [quota] fields: {sorted(unknown)}")
+    defaults = QuotaConfig()
+    return QuotaConfig(**{name: section.get(name, getattr(defaults, name)) for name in allowed})
+
+
 def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
     """Load :class:`LLMConfig` and :class:`RunConfig` from disk + environment.
 
@@ -902,7 +1035,11 @@ def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
     file_provider, overrides = _extract_llm_section(raw, toml_path)
     agents = _extract_agents_section(raw, toml_path)
     session = _extract_session_section(raw, toml_path)
-    run_config = _extract_run_section(raw, toml_path, agents=agents, session=session)
+    budget = _extract_budget_section(raw, toml_path)
+    quota = _extract_quota_section(raw, toml_path)
+    run_config = _extract_run_section(
+        raw, toml_path, agents=agents, session=session, budget=budget, quota=quota
+    )
     llm_config = LLMConfig(
         provider_from_env=env_provider,
         provider_from_file=file_provider,

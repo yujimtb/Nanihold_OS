@@ -87,19 +87,29 @@ from vsm.agents.backends import (
     FakeAgentRuntime,
     LiteLLMRuntimeAdapter,
 )
-from vsm.agents.runtime import AgentRuntimeProtocol
+from vsm.agents.runtime import AgentResult, AgentRuntimeProtocol
 from vsm.authority import ParentAuthority
 from vsm.clock import Clock, SystemClock
 from vsm.config import LLMConfig, RunConfig
-from vsm.errors import ConfigError, RunDirectoryError, SystemInstantiationError
+from vsm.errors import (
+    BudgetExceededError,
+    ConfigError,
+    QuotaExhaustedError,
+    RunDirectoryError,
+    SystemInstantiationError,
+)
 from vsm.eventlog.writer import EventLogWriter
 from vsm.ids import generate_run_id, generate_uuid
 from vsm.llm.types import LLMProviderProtocol
 from vsm.messaging.bus import MessageBus
 from vsm.messaging.channels import ChannelId
+from vsm.messaging.message import Message
 from vsm.nodes import DifferentiationLevel, Node, NodeRunState, NodeSource, NodeStatus
 from vsm.roles import MANDATORY_ROLES, RoleSpec, SystemRole
+from vsm.runtime.quota import QuotaMonitor
 from vsm.tools import (
+    EscalationFacade,
+    EscalationRequest,
     SpawnChildFacade,
     SpawnChildRequest,
     SpawnChildResult,
@@ -234,6 +244,24 @@ class Platform:
         self.node_run_states: dict[tuple[str, str], NodeRunState] = {}
         self.authorities: dict[str, ParentAuthority] = {}
         self.tool_invocations: dict[str, ToolInvocation] = {}
+        self.run_cost_consumed: dict[str, float] = {
+            "tokens_in": 0.0,
+            "tokens_out": 0.0,
+            "tokens_cache_read": 0.0,
+            "tokens_total": 0.0,
+            "wall_clock_ms": 0.0,
+        }
+        self._node_started_at: dict[str, float] = {}
+        self._escalations = EscalationFacade()
+        self.quota_monitor = QuotaMonitor(
+            eventlog=eventlog,
+            bus=bus,
+            clock=clock,
+            nodes=self.nodes,
+            node_run_states=self.node_run_states,
+            run_id=run_id,
+            fallback_resume_minutes=run_config.quota.fallback_resume_minutes,
+        )
 
         # 動的 S1 生成回数のカウンタ。``s1_dynamic_max`` (REQ 13.6) と
         # ``s1_max`` (REQ 1.3) の双方を :meth:`spawn_s1` が確認する。
@@ -558,7 +586,17 @@ class Platform:
             run_id=self.run_id,
             node_id=node.id,
             status=NodeStatus.CREATED,
+            budget=self.run_config.budget.envelope_for(role),
+            cost_consumed={
+                "tokens_in": 0.0,
+                "tokens_out": 0.0,
+                "tokens_cache_read": 0.0,
+                "tokens_total": 0.0,
+                "wall_clock_ms": 0.0,
+                "node_running_ms": 0.0,
+            },
         )
+        system.bind_runtime_control(self)
         if node.parent_id and node.parent_id in self.nodes:
             self.nodes[node.parent_id].child_ids.append(node.id)
 
@@ -584,6 +622,7 @@ class Platform:
             may_differentiate_to=DifferentiationLevel.FULL,
             max_depth=4,
             max_spawn_count=self.run_config.s1_dynamic_max,
+            budget_envelope=self.run_config.budget.envelope_for(role),
             allowed_tool_classes=frozenset(
                 {
                     ToolEffect.PURE_READ,
@@ -635,6 +674,118 @@ class Platform:
             return s3[0].system_id if s3 else None
         return None
 
+    async def before_agent_invoke(self, node_id: str) -> None:
+        """AgentRuntime 呼び出し前に Node/Run の既消費量を強制する。"""
+
+        node = self.nodes[node_id]
+        state = self.node_run_states[(self.run_id, node_id)]
+        if state.status is NodeStatus.SUSPENDED:
+            raise QuotaExhaustedError(f"node {node_id} is suspended by quota")
+
+        node_tokens = state.cost_consumed["tokens_total"]
+        node_wall_ms = state.cost_consumed["wall_clock_ms"]
+        run_tokens = self.run_cost_consumed["tokens_total"]
+        run_wall_ms = self.run_cost_consumed["wall_clock_ms"]
+        reasons: list[str] = []
+        if node_tokens >= state.budget["tokens"]:
+            reasons.append("node_tokens")
+        if node_wall_ms >= state.budget["wall_clock_seconds"] * 1000:
+            reasons.append("node_wall_clock")
+        if run_tokens >= self.run_config.budget.run_tokens:
+            reasons.append("run_tokens")
+        if run_wall_ms >= self.run_config.budget.run_wall_clock_seconds * 1000:
+            reasons.append("run_wall_clock")
+        if not reasons:
+            return
+
+        reason = ",".join(reasons)
+        await self.eventlog.append(
+            "budget_exceeded",
+            {
+                "node_id": node_id,
+                "reasons": reasons,
+                "node_consumed": dict(state.cost_consumed),
+                "node_budget": dict(state.budget),
+                "run_consumed": dict(self.run_cost_consumed),
+                "run_budget": {
+                    "tokens": self.run_config.budget.run_tokens,
+                    "wall_clock_seconds": self.run_config.budget.run_wall_clock_seconds,
+                },
+            },
+            node_id=node_id,
+            actor_id=node_id,
+        )
+        invocation = self._escalations.request_escalation(
+            EscalationRequest(
+                escalation_key=f"budget:{self.run_id}:{node_id}:{reason}",
+                reason="budget_exceeded",
+                blocking_issue=reason,
+                requested_by=node_id,
+                target_authority=node.parent_id or node_id,
+            )
+        )
+        self.tool_invocations[invocation.invocation_id] = invocation
+        await self.eventlog.append(
+            "escalation_requested",
+            dict(invocation.payload),
+            node_id=node_id,
+            actor_id=node_id,
+        )
+        raise BudgetExceededError(f"budget exceeded for node {node_id}: {reason}")
+
+    async def after_agent_invoke(
+        self,
+        node_id: str,
+        result: AgentResult,
+        pending_message: object | None,
+    ) -> None:
+        """AgentResult の利用量を累算し、quota 枯渇を休眠へ変換する。"""
+
+        state = self.node_run_states[(self.run_id, node_id)]
+        amounts = {
+            "tokens_in": float(result.tokens_in),
+            "tokens_out": float(result.tokens_out),
+            "tokens_cache_read": float(result.tokens_cache_read),
+            "tokens_total": float(
+                result.tokens_in + result.tokens_out + result.tokens_cache_read
+            ),
+            "wall_clock_ms": float(result.latency_ms),
+        }
+        for key, amount in amounts.items():
+            state.cost_consumed[key] += amount
+            self.run_cost_consumed[key] += amount
+        running_ms = max(
+            0,
+            int(
+                (self.clock.monotonic() - self._node_started_at.get(node_id, self.clock.monotonic()))
+                * 1000
+            ),
+        )
+        state.cost_consumed["node_running_ms"] = float(running_ms)
+        await self.eventlog.append(
+            "budget_consumed",
+            {
+                "node_id": node_id,
+                "tokens_in": result.tokens_in,
+                "tokens_out": result.tokens_out,
+                "tokens_cache_read": result.tokens_cache_read,
+                "wall_clock_ms": result.latency_ms,
+                "node_running_ms": running_ms,
+                "cumulative": dict(state.cost_consumed),
+                "run_cumulative": dict(self.run_cost_consumed),
+            },
+            node_id=node_id,
+            actor_id=node_id,
+        )
+        if result.quota_exhausted and self.run_config.quota.suspend_on_exhausted:
+            message = pending_message if isinstance(pending_message, Message) else None
+            reset_at = await self.quota_monitor.suspend(
+                node_id, result.quota_reset_at, message
+            )
+            raise QuotaExhaustedError(
+                f"quota exhausted for node {node_id}; reset_at={reset_at.isoformat()}"
+            )
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -659,6 +810,7 @@ class Platform:
                 if node is not None and node.status is NodeStatus.CREATED:
                     node.status = NodeStatus.RUNNING
                     self.node_run_states[(self.run_id, node.id)].status = NodeStatus.RUNNING
+                    self._node_started_at[node.id] = self.clock.monotonic()
                     await self.eventlog.append(
                         "node_started",
                         {"node_id": node.id, "status": NodeStatus.RUNNING.value},
@@ -682,6 +834,8 @@ class Platform:
         / 権限不足 / レース等の状況で本シャットダウンを失敗させる
         必要は無く、Run dir の他のファイルから状態は復元できる。
         """
+        await self.quota_monitor.shutdown()
+
         # 1. Systems の cancel + await。``shutdown`` はサブクラスがオーバ
         # ライドしてもよい (S3*_Auditor の timer task など) ので、基底
         # ``System.shutdown`` を経由する。
@@ -923,6 +1077,7 @@ class Platform:
         if node is not None:
             node.status = NodeStatus.RUNNING
             self.node_run_states[(self.run_id, node.id)].status = NodeStatus.RUNNING
+            self._node_started_at[node.id] = self.clock.monotonic()
             await self.eventlog.append(
                 "node_started",
                 {"node_id": node.id, "status": NodeStatus.RUNNING.value},
