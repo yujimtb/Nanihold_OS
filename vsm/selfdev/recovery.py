@@ -16,6 +16,11 @@ try:  # Linux/WSL は設計上 fcntl lock を使う。
 except ImportError:  # pragma: no cover - Windows import safety
     fcntl = None  # type: ignore[assignment]
 
+try:  # Windows ホスト(実CLI配備先)は msvcrt の region lock で同等の排他を取る。
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX import safety
+    msvcrt = None  # type: ignore[assignment]
+
 
 class RecoveryError(RuntimeError):
     """Event Log または immutable artifact の復元に失敗した。"""
@@ -29,14 +34,18 @@ class ControllerLease:
         self._handle: Any | None = None
 
     def acquire(self) -> None:
-        if fcntl is None:
-            raise RuntimeError("selfdev controller は fcntl lock が必要です")
+        if fcntl is None and msvcrt is None:
+            raise RuntimeError("selfdev controller は OS のファイルロック(fcntl/msvcrt)が必要です")
         if self._handle is not None:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         handle = self.path.open("a+", encoding="utf-8")
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         except (BlockingIOError, OSError) as exc:
             handle.close()
             raise RuntimeError(f"controller.lock を取得できません: {self.path}") from exc
@@ -47,6 +56,12 @@ class ControllerLease:
             return
         if fcntl is not None:
             fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+        elif msvcrt is not None:
+            try:
+                self._handle.seek(0)
+                msvcrt.locking(self._handle.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
         self._handle.close()
         self._handle = None
 
