@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from vsm.agents.runtime import AgentRuntimeError
 from vsm.config import load_config
+from vsm.runtime.lifecycle import describe_role_runtimes
 from vsm.web.chat import ChatBusyError, ChatManager, ChatTimeoutError
 from vsm.web.manager import RunManager
 
@@ -127,34 +128,10 @@ async def send_chat_message(chat_id: str, body: ChatMessageBody) -> dict:
 @app.get("/api/config")
 def config() -> dict:
     llm_config, run_config = load_config(None)
-    configured_model = llm_config.provider_from_env or llm_config.provider_from_file
-    configured_models = {
-        backend.model
-        for role in run_config.agents.roles
-        if (backend_name := run_config.agents.backend_for(role)) is not None
-        for backend in (run_config.agents.backends[backend_name],)
-        if backend.model
-    }
-    if configured_model:
-        model_label = configured_model
-    elif configured_models:
-        model_label = " / ".join(sorted(configured_models))
-    else:
-        model_label = " / ".join(
-            sorted(
-                {
-                    run_config.agents.backend_for(role)
-                    for role in run_config.agents.roles
-                    if run_config.agents.backend_for(role) is not None
-                }
-            )
-        )
+    runtimes = describe_role_runtimes(run_config=run_config, llm_config=llm_config)
     return {
-        "model": model_label,
-        "demo_mode": any(
-            run_config.agents.backend_for(role) == "fake"
-            for role in run_config.agents.roles
-        ),
+        "runtimes": runtimes,
+        "demo_mode": any(runtime["backend"] == "fake" for runtime in runtimes),
         "single_run": True,
     }
 

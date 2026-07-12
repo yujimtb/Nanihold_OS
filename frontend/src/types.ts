@@ -68,7 +68,11 @@ export interface RunDetail extends RunSummary {
 }
 
 export interface AppConfig {
-  model: string;
+  runtimes: Array<{
+    role: string;
+    backend: string;
+    model: string;
+  }>;
   demo_mode: boolean;
   single_run: boolean;
 }

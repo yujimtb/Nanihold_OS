@@ -53,6 +53,57 @@ const STATUS_LABELS: Record<RunStatus, string> = {
   failed: "失敗",
 };
 
+const ACTIVE_RUN_STATUSES: RunStatus[] = [
+  "queued",
+  "running",
+  "interrupting",
+  "waiting_for_user",
+];
+
+function isRunActive(run: Pick<RunSummary, "status">) {
+  return ACTIVE_RUN_STATUSES.includes(run.status);
+}
+
+function shortRole(role: string) {
+  const match = role.match(/^S([1-5])/);
+  return match ? `S${match[1]}` : role;
+}
+
+function shortBackend(backend: string) {
+  if (backend === "claude-code") return "claude";
+  if (backend === "deterministic") return "決定論";
+  return backend;
+}
+
+function shortModel(model: string) {
+  if (!model) return "既定";
+  return model.split("/").at(-1) || model;
+}
+
+function runtimeDescriptor(runtime: AppConfig["runtimes"][number]) {
+  return `${shortBackend(runtime.backend)}·${shortModel(runtime.model)}`;
+}
+
+function runtimeSummary(runtimes: AppConfig["runtimes"]) {
+  if (runtimes.length === 0) return "ランタイム未設定";
+  const primary = runtimes.find((runtime) => runtime.role === "S1_WORKER") || runtimes[0];
+  const otherDescriptors = [...new Set(
+    runtimes
+      .filter((runtime) => runtime.role !== primary.role)
+      .map(runtimeDescriptor)
+      .filter((descriptor) => descriptor !== runtimeDescriptor(primary)),
+  )];
+  return otherDescriptors.length
+    ? `${shortRole(primary.role)} ${runtimeDescriptor(primary)} / 他 ${otherDescriptors.join(" / ")}`
+    : `${shortRole(primary.role)} ${runtimeDescriptor(primary)}`;
+}
+
+function runtimeTooltip(runtimes: AppConfig["runtimes"]) {
+  return runtimes
+    .map((runtime) => `${runtime.role}: ${runtime.backend}${runtime.model ? ` / ${runtime.model}` : " / 既定モデル"}`)
+    .join("\n");
+}
+
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("ja-JP", {
     month: "short",
@@ -92,7 +143,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!selected || !["queued", "running", "interrupting", "waiting_for_user"].includes(selected.status)) return;
+    if (!selected || !isRunActive(selected)) return;
     const source = new EventSource(api.streamUrl(selected.run_id));
     source.addEventListener("run", (event) => {
       const detail = JSON.parse((event as MessageEvent).data) as RunDetail;
@@ -143,10 +194,14 @@ function App() {
             <MessageCircle size={15} /> 対話
           </button>
         </nav>
-        <div className="model-badge">
+        <div
+          className={`model-badge ${config?.demo_mode ? "is-demo" : ""}`}
+          title={config ? runtimeTooltip(config.runtimes) : "ランタイム設定を取得しています"}
+          aria-label={config ? runtimeTooltip(config.runtimes) : "ランタイム設定を取得しています"}
+        >
           <span className={`model-dot ${config?.demo_mode ? "demo" : ""}`} />
-          {config?.model}
-          {config?.demo_mode && <span className="muted">demo</span>}
+          <span className="model-runtime-summary">{config ? runtimeSummary(config.runtimes) : "ランタイムを確認中"}</span>
+          {config?.demo_mode && <span className="runtime-warning">fake</span>}
         </div>
       </header>
 
@@ -191,7 +246,17 @@ function Home({
 }) {
   const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const activeRun = runs.find((run) => ["queued", "running", "interrupting", "waiting_for_user"].includes(run.status));
+  const [selectedRunId, setSelectedRunId] = useState("");
+  const composerRef = useRef<HTMLDivElement>(null);
+  const activeRun = runs.find(isRunActive);
+  const preferredRunId = activeRun?.run_id || runs[0]?.run_id || "";
+  const selectedRun = runs.find((run) => run.run_id === selectedRunId) || null;
+
+  useEffect(() => {
+    if (!selectedRunId || !runs.some((run) => run.run_id === selectedRunId)) {
+      setSelectedRunId(preferredRunId);
+    }
+  }, [preferredRunId, runs, selectedRunId]);
 
   const submit = async () => {
     if (!description.trim() || submitting) return;
@@ -210,17 +275,57 @@ function Home({
   };
 
   return (
-    <main>
-      <section className="hero">
-        <div className="hero-copy">
-          <p className="eyebrow">LOCAL VSM WORKSPACE</p>
-          <h1>考える仕事を、<br />見えるかたちで進める。</h1>
-          <p className="lede">
-            依頼を入力すると、環境分析から方針決定、実行、監査までを
-            複数の役割が引き継ぎます。進行中も、あなたの判断を差し込めます。
-          </p>
+    <main className="home-page">
+      <section className="home-intro">
+        <div>
+          <p className="eyebrow">LIVE VSM WORKSPACE</p>
+          <h1>組織が、いま何をしているか。</h1>
+          <p className="lede">Runごとの組織図を入口に、進行中の判断と役割のつながりを見渡します。</p>
         </div>
+        <div className="run-selector-wrap">
+          <label className="run-selector-label" htmlFor="home-run-selector">表示するRun</label>
+          <div className="run-selector">
+            <select
+              id="home-run-selector"
+              value={selectedRunId}
+              onChange={(event) => setSelectedRunId(event.target.value)}
+              disabled={runs.length === 0}
+            >
+              {runs.length === 0 ? (
+                <option value="">Runはまだありません</option>
+              ) : runs.map((run) => (
+                <option key={run.run_id} value={run.run_id}>
+                  {isRunActive(run) ? "● " : ""}{run.title}
+                </option>
+              ))}
+            </select>
+            {selectedRun && <button className="secondary-button" onClick={() => onOpen(selectedRun.run_id)}>詳細を見る</button>}
+          </div>
+        </div>
+      </section>
 
+      {selectedRun ? (
+        <div className="home-topology">
+          <OrganizationView runId={selectedRun.run_id} active={isRunActive(selectedRun)} />
+        </div>
+      ) : (
+        <section className="home-topology-empty">
+          <Network size={30} />
+          <p className="eyebrow">ORGANIZATION TOPOLOGY</p>
+          <h2>Runを始めると、ここに組織図が現れます。</h2>
+          <p>環境監視、方針、調整、実行、監査のつながりをライブで確認できます。</p>
+          <button className="primary-button" onClick={() => composerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}>
+            <Play size={17} /> Runを開始
+          </button>
+        </section>
+      )}
+
+      <section className="home-start-section" ref={composerRef}>
+        <div className="home-start-copy">
+          <p className="eyebrow">START A RUN</p>
+          <h2>新しいRunを始める</h2>
+          <p>依頼を入力すると、環境分析から方針決定、実行、監査までを複数の役割が引き継ぎます。</p>
+        </div>
         <div className="composer">
           {config?.demo_mode && (
             <div className="demo-note">
@@ -275,7 +380,7 @@ function Home({
                   <span>{run.current_stage}</span>
                   <span>G{run.generation}</span>
                 </div>
-                {["queued", "running", "interrupting"].includes(run.status) && (
+                {isRunActive(run) && (
                   <div className="mini-progress"><span style={{ width: `${run.progress}%` }} /></div>
                 )}
               </button>
@@ -702,6 +807,13 @@ function OrganizationView({ runId, active }: { runId: string; active: boolean })
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const dragStart = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+
+  useEffect(() => {
+    setTopology(null);
+    setSelectedNode("");
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, [runId]);
 
   const refresh = useCallback(async () => {
     try {

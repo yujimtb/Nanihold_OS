@@ -41,7 +41,10 @@ button { color: inherit; }
 }
 .brand { display: flex; align-items: center; gap: 12px; border: 0; background: none; cursor: pointer; font-weight: 650; letter-spacing: -.02em; }
 .brand-mark { width: 30px; height: 30px; display: grid; place-items: center; background: var(--ink); color: var(--paper); border-radius: 8px; font-family: Georgia, serif; }
-.model-badge { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 100px; padding: 7px 11px; }
+.model-badge { min-width: 0; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 100px; padding: 7px 11px; }
+.model-badge.is-demo { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 38%, var(--line)); }
+.model-runtime-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-warning { color: var(--orange); font-size: 10px; font-weight: 700; letter-spacing: .05em; }
 .topbar-nav { display: flex; align-items: center; gap: 4px; margin-left: auto; margin-right: 24px; }
 .nav-tab { display: inline-flex; align-items: center; gap: 6px; border: 0; border-radius: 9px; background: transparent; color: var(--muted); padding: 9px 12px; font-size: 12px; cursor: pointer; }
 .nav-tab:hover, .nav-tab.active { color: var(--accent); background: var(--accent-soft); }
@@ -49,6 +52,24 @@ button { color: inherit; }
 .model-dot.demo { background: var(--orange); }
 .muted { opacity: .65; }
 main { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
+.home-page { padding: 54px 0 90px; }
+.home-intro { display: flex; align-items: end; justify-content: space-between; gap: 36px; padding-bottom: 30px; }
+.home-intro h1 { margin: 0; font: 500 clamp(36px, 5vw, 60px)/1.12 Georgia, "Yu Mincho", serif; letter-spacing: -.045em; }
+.home-intro .lede { margin: 17px 0 0; }
+.run-selector-wrap { flex: 0 0 min(100%, 390px); }
+.run-selector-label { display: block; margin-bottom: 7px; color: var(--muted); font-size: 10px; letter-spacing: .08em; }
+.run-selector { display: flex; gap: 8px; }
+.run-selector select { min-width: 0; flex: 1; border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px; outline: 0; background: var(--paper); color: var(--ink); font-size: 12px; }
+.run-selector .secondary-button { flex: 0 0 auto; padding: 10px 13px; font-size: 11px; }
+.home-topology .organization-panel { margin-top: 0; }
+.home-topology-empty { min-height: 360px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 11px; padding: 42px; border: 1px dashed var(--line); border-radius: 24px; background: color-mix(in srgb, var(--paper) 92%, var(--accent) 8%); color: var(--muted); text-align: center; }
+.home-topology-empty > svg { color: var(--accent); }
+.home-topology-empty .eyebrow { margin: 2px 0 0; }
+.home-topology-empty h2 { max-width: 620px; margin: 0; color: var(--ink); font: 500 clamp(25px, 3vw, 34px)/1.25 Georgia, "Yu Mincho", serif; }
+.home-topology-empty p:not(.eyebrow) { max-width: 540px; margin: 0 0 7px; font-size: 13px; line-height: 1.7; }
+.home-start-section { display: grid; grid-template-columns: .72fr 1.28fr; gap: clamp(30px, 7vw, 90px); align-items: center; padding: 70px 0; border-bottom: 1px solid var(--line); }
+.home-start-copy h2 { margin: 0; font: 500 clamp(28px, 3vw, 40px)/1.2 Georgia, "Yu Mincho", serif; letter-spacing: -.035em; }
+.home-start-copy p:not(.eyebrow) { max-width: 390px; margin: 17px 0 0; color: var(--muted); font-size: 13px; line-height: 1.8; }
 .hero { min-height: 620px; display: grid; grid-template-columns: .9fr 1.1fr; gap: clamp(44px, 8vw, 120px); align-items: center; padding: 80px 0 70px; }
 .eyebrow { font-size: 11px; font-weight: 700; letter-spacing: .16em; color: var(--muted); margin: 0 0 12px; }
 .hero h1 { font-family: Georgia, "Yu Mincho", serif; font-size: clamp(42px, 5.4vw, 74px); line-height: 1.12; letter-spacing: -.045em; margin: 0; font-weight: 500; }
@@ -221,6 +242,9 @@ main { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 860px) {
+  .home-intro { align-items: start; flex-direction: column; }
+  .run-selector-wrap { width: min(100%, 520px); flex-basis: auto; }
+  .home-start-section { grid-template-columns: 1fr; gap: 25px; }
   .hero { grid-template-columns: 1fr; min-height: auto; padding-top: 60px; }
   .run-grid { grid-template-columns: 1fr 1fr; }
   .run-content { grid-template-columns: 1fr; }
@@ -237,6 +261,11 @@ main { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
 @media (max-width: 600px) {
   .topbar { padding: 0 18px; }
   .model-badge { max-width: 160px; overflow: hidden; white-space: nowrap; }
+  .home-page { padding-top: 36px; }
+  .home-intro h1 { font-size: 39px; }
+  .home-topology-empty { min-height: 320px; padding: 30px 20px; }
+  .run-selector { align-items: stretch; flex-direction: column; }
+  .run-selector .secondary-button { align-self: flex-end; }
   main { width: min(100% - 28px, 1180px); }
   .hero { padding: 45px 0; }
   .hero h1 { font-size: 43px; }
