@@ -22,7 +22,14 @@ from vsm.selfdev.consortium_adapter import (
     HumanTimeoutPolicy,
     SelfDevConsortiumAdapter,
 )
-from vsm.selfdev.controller import ImplementationResult, SelfDevController
+from vsm.selfdev.controller import (
+    BackendInvocationTimeout,
+    ImplementationResult,
+    SelfDevController,
+    _RuntimeImplementationRunner,
+)
+from vsm.selfdev.service import SelfDevService
+from vsm.selfdev.state_machine import ProposalPhase
 from vsm.selfdev.git import candidate_diff_sha256, git_output
 from vsm.selfdev.models import (
     AcceptanceCriterion,
@@ -90,6 +97,19 @@ class _Implementation:
         self.calls.append((manifest.attempt, resume))
         (worktree / "candidate.txt").write_text("implemented\n", encoding="utf-8")
         return ImplementationResult(tokens=12, active_wall_clock_seconds=1)
+
+
+class _EmptyTimeoutImplementation:
+    async def run(self, *, manifest, worktree: Path, resume: bool):
+        (worktree / "candidate.txt").write_text("candidate before timeout\n", encoding="utf-8")
+        raise TimeoutError()
+
+
+class _BackendTimeoutRuntime:
+    timeout_seconds = 900.0
+
+    async def invoke(self, request: AgentRequest):
+        raise TimeoutError()
 
 
 class _Gates:
@@ -365,6 +385,138 @@ async def test_wave3_repair_is_limited_to_one_attempt_and_aborts(tmp_path: Path)
         assert (tmp_path / "runs" / "selfdev" / "proposals" / proposal.id / "artifacts" / "candidate.patch").exists()
     finally:
         await controller.stop()
+
+
+@pytest.mark.asyncio
+async def test_empty_timeout_reason_is_preserved_in_tool_failure_and_abort(tmp_path: Path) -> None:
+    repository, _ = _repository(tmp_path)
+    store = SelfDevEventStore(tmp_path / "runs" / "selfdev", clock=FakeClock())
+    controller = SelfDevController(
+        repository=repository,
+        store=store,
+        writer_runtime=RunRuntime(role="S1_WORKER", backend="fake", model="fake", reasoning_effort="standard"),
+        implementation_runner=_EmptyTimeoutImplementation(),
+        gate_runner=_Gates(),
+        audit_runner=S3StarAuditRunner(runtime=_audit_runtime(), clock=FakeClock()),
+        consortium_runtimes=_consortium_runtimes(),
+        timeout_policy=HumanTimeoutPolicy(
+            timeout_seconds={"low": 1, "normal": 1, "protected": 1},
+            timeout_action={"low": "proceed", "normal": "abort", "protected": "abort"},
+        ),
+        worktree_root=tmp_path / "worktrees",
+        base_ref="main",
+        clock=FakeClock(),
+        implementation_timeout_margin_seconds=0,
+    )
+    await controller.start()
+    try:
+        proposal = _manifest(proposal_id=f"proposal-{'f' * 32}")
+        await controller.submit_proposal(proposal)
+        for _ in range(4):
+            await controller.step()
+            if controller._projection(proposal.id).aggregate.is_terminal:
+                break
+
+        assert controller._projection(proposal.id).aggregate.phase is ProposalPhase.ABORTED
+        events = controller._events(proposal.id)
+        failed = next(event for event in events if event.event_type == "tool_failed")
+        aborted = next(
+            event
+            for event in events
+            if event.event_type == "proposal_state_changed"
+            and event.payload["to_state"] == "ABORTED"
+        )
+        assert failed.payload["reason"] == "TimeoutError (implementation run)"
+        assert aborted.payload["reason"] == "TimeoutError (implementation run)"
+        assert any(event.event_type == "algedonic_raised" for event in events)
+        assert (
+            tmp_path / "runs" / "selfdev" / "proposals" / proposal.id / "artifacts" / "candidate.patch"
+        ).exists()
+    finally:
+        await controller.stop()
+
+
+@pytest.mark.asyncio
+async def test_proposal_failure_does_not_kill_controller_and_next_proposal_runs(tmp_path: Path) -> None:
+    repository, _ = _repository(tmp_path)
+    store = SelfDevEventStore(tmp_path / "runs" / "selfdev", clock=FakeClock())
+    controller = SelfDevController(
+        repository=repository,
+        store=store,
+        writer_runtime=RunRuntime(role="S1_WORKER", backend="fake", model="fake", reasoning_effort="standard"),
+        implementation_runner=_EmptyTimeoutImplementation(),
+        gate_runner=_Gates(),
+        audit_runner=S3StarAuditRunner(runtime=_audit_runtime(), clock=FakeClock()),
+        consortium_runtimes=_consortium_runtimes(),
+        timeout_policy=HumanTimeoutPolicy(
+            timeout_seconds={"low": 1, "normal": 1, "protected": 1},
+            timeout_action={"low": "proceed", "normal": "abort", "protected": "abort"},
+        ),
+        worktree_root=tmp_path / "worktrees",
+        base_ref="main",
+        clock=FakeClock(),
+        implementation_timeout_margin_seconds=0,
+    )
+    service = SelfDevService(controller, idle_seconds=0.001)
+    await service.start()
+    try:
+        first = _manifest(proposal_id=f"proposal-{'1' * 32}")
+        await controller.submit_proposal(first)
+        for _ in range(200):
+            if controller._projection(first.id).aggregate.is_terminal:
+                break
+            await asyncio.sleep(0.001)
+        assert controller._projection(first.id).aggregate.phase is ProposalPhase.ABORTED
+        assert service.healthy
+        assert service.fatal is None
+
+        second = _manifest(proposal_id=f"proposal-{'2' * 32}")
+        await controller.submit_proposal(second)
+        for _ in range(200):
+            if controller._projection(second.id).aggregate.is_terminal:
+                break
+            await asyncio.sleep(0.001)
+        assert controller._projection(second.id).aggregate.phase is ProposalPhase.ABORTED
+        assert service.healthy
+        assert service.fatal is None
+    finally:
+        await service.stop()
+
+
+def test_implementation_timeout_is_derived_from_proposal_budget_and_margin(tmp_path: Path) -> None:
+    repository, _ = _repository(tmp_path)
+    store = SelfDevEventStore(tmp_path / "runs" / "selfdev", clock=FakeClock())
+    controller = SelfDevController(
+        repository=repository,
+        store=store,
+        writer_runtime=RunRuntime(role="S1_WORKER", backend="fake", model="fake", reasoning_effort="standard"),
+        implementation_runner=_Implementation(),
+        gate_runner=_Gates(),
+        audit_runner=S3StarAuditRunner(runtime=_audit_runtime(), clock=FakeClock()),
+        consortium_runtimes=_consortium_runtimes(),
+        timeout_policy=HumanTimeoutPolicy(
+            timeout_seconds={"low": 1, "normal": 1, "protected": 1},
+            timeout_action={"low": "proceed", "normal": "abort", "protected": "abort"},
+        ),
+        worktree_root=tmp_path / "worktrees",
+        base_ref="main",
+        clock=FakeClock(),
+        implementation_timeout_margin_seconds=17.5,
+    )
+    proposal = _manifest(proposal_id=f"proposal-{'3' * 32}").model_copy(
+        update={"budget_estimate": BudgetEstimate(tokens=100, active_wall_clock_seconds=1800)}
+    )
+    assert controller.implementation_timeout_seconds(proposal) == 1817.5
+
+
+@pytest.mark.asyncio
+async def test_backend_timeout_is_labeled_as_single_invocation_timer(tmp_path: Path) -> None:
+    with pytest.raises(BackendInvocationTimeout, match="900 seconds"):
+        await _RuntimeImplementationRunner(_BackendTimeoutRuntime()).run(
+            manifest=object(),  # type: ignore[arg-type]
+            worktree=tmp_path,
+            resume=False,
+        )
 
 
 @pytest.mark.asyncio

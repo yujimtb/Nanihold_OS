@@ -97,6 +97,9 @@ def build_selfdev_service(
         worktree_root=store_root / "worktrees",
         base_ref="main",
         clock=None,
+        implementation_timeout_margin_seconds=(
+            run_config.selfdev.implementation_timeout_margin_seconds
+        ),
     )
     return SelfDevService(controller)
 

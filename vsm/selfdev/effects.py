@@ -7,6 +7,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Literal
 
+from vsm.selfdev.reasons import exception_reason
 from vsm.selfdev.store import SelfDevEventStore
 
 EffectKind = Literal["workspace", "run", "gate", "commit", "cleanup", "audit", "report"]
@@ -112,7 +113,14 @@ class EffectJournal:
                     "effect_id": effect_id,
                     "effect_kind": effect_kind,
                     "error_type": type(exc).__name__,
-                    "reason": str(exc) or type(exc).__name__,
+                    "reason": exception_reason(
+                        exc,
+                        context=(
+                            "implementation run"
+                            if effect_kind == "run"
+                            else f"{effect_kind} effect"
+                        ),
+                    ),
                 },
                 proposal_id=proposal_id,
                 actor_type="controller",

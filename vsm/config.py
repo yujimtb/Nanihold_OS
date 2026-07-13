@@ -466,6 +466,7 @@ class SelfDevConfig:
     enabled: bool = False
     repository: Path = field(default_factory=lambda: Path.cwd())
     forbidden_paths: tuple[str, ...] = DEFAULT_SELFDEV_FORBIDDEN_PATHS
+    implementation_timeout_margin_seconds: float = 300.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
@@ -477,6 +478,15 @@ class SelfDevConfig:
         if any(not isinstance(value, str) or not value.strip() for value in self.forbidden_paths):
             raise ConfigError(
                 missing_roles=[], detail="selfdev.forbidden_paths must contain non-empty strings"
+            )
+        if (
+            not isinstance(self.implementation_timeout_margin_seconds, (int, float))
+            or isinstance(self.implementation_timeout_margin_seconds, bool)
+            or self.implementation_timeout_margin_seconds < 0
+        ):
+            raise ConfigError(
+                missing_roles=[],
+                detail="selfdev.implementation_timeout_margin_seconds must be non-negative",
             )
         object.__setattr__(self, "repository", self.repository.resolve(strict=False))
         object.__setattr__(self, "forbidden_paths", tuple(self.forbidden_paths))
@@ -1189,7 +1199,12 @@ def _extract_selfdev_section(raw: Mapping[str, Any], path: Path) -> SelfDevConfi
         return defaults
     if not isinstance(section, Mapping):
         raise ConfigError(missing_roles=[], detail=f"[selfdev] section in {path} must be a table")
-    allowed = {"enabled", "repository", "forbidden_paths"}
+    allowed = {
+        "enabled",
+        "repository",
+        "forbidden_paths",
+        "implementation_timeout_margin_seconds",
+    }
     unknown = set(section) - allowed
     if unknown:
         raise ConfigError(missing_roles=[], detail=f"unknown [selfdev] fields: {sorted(unknown)}")
@@ -1215,10 +1230,24 @@ def _extract_selfdev_section(raw: Mapping[str, Any], path: Path) -> SelfDevConfi
         raise ConfigError(
             missing_roles=[], detail="[selfdev] forbidden_paths must be an array of non-empty strings"
         )
+    timeout_margin = section.get(
+        "implementation_timeout_margin_seconds",
+        defaults.implementation_timeout_margin_seconds,
+    )
+    if (
+        not isinstance(timeout_margin, (int, float))
+        or isinstance(timeout_margin, bool)
+        or timeout_margin < 0
+    ):
+        raise ConfigError(
+            missing_roles=[],
+            detail="[selfdev] implementation_timeout_margin_seconds must be non-negative",
+        )
     return SelfDevConfig(
         enabled=enabled,
         repository=repository,
         forbidden_paths=tuple(raw_forbidden),
+        implementation_timeout_margin_seconds=float(timeout_margin),
     )
 
 

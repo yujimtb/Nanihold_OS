@@ -322,3 +322,20 @@ class TestLoadConfig:
         assert llm_config.provider_from_env is None
         assert llm_config.provider_from_file == "anthropic/claude-3-5-sonnet"
         assert llm_config.resolve_model() == "anthropic/claude-3-5-sonnet"
+
+    def test_load_config_reads_selfdev_implementation_timeout_margin(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.delenv(LITELLM_PROVIDER_ENV, raising=False)
+        toml_path: Path = tmp_path / "vsm.toml"
+        toml_path.write_text(
+            '[selfdev]\n'
+            'enabled = true\n'
+            'repository = "."\n'
+            'implementation_timeout_margin_seconds = 42.5\n',
+            encoding="utf-8",
+        )
+
+        _llm_config, run_config = load_config(toml_path)
+
+        assert run_config.selfdev.implementation_timeout_margin_seconds == 42.5

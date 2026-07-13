@@ -33,6 +33,7 @@ from vsm.selfdev.models import (
     proposal_to_run_manifest,
 )
 from vsm.selfdev.recovery import ControllerLease, ControllerRecovery
+from vsm.selfdev.reasons import exception_reason, nonempty_reason
 from vsm.selfdev.state_machine import PauseKind, ProposalPhase, ProposalStateMachine
 from vsm.selfdev.store import SelfDevEventStore
 from vsm.selfdev.workspace import ProposalWorkspace, WorkspaceStatus
@@ -67,6 +68,26 @@ class ImplementationResult:
     session_ref: str | None = None
 
 
+class ImplementationRunTimeout(TimeoutError):
+    """Proposal の implementation Run 全体の wall-clock timer が発火した。"""
+
+    def __init__(self, timeout_seconds: float) -> None:
+        self.timeout_seconds = timeout_seconds
+        super().__init__(
+            f"implementation run timer ({timeout_seconds:g} seconds) expired"
+        )
+
+
+class BackendInvocationTimeout(TimeoutError):
+    """Agent backend 単発呼び出し自身の timer が発火した。"""
+
+    def __init__(self, timeout_seconds: float) -> None:
+        self.timeout_seconds = timeout_seconds
+        super().__init__(
+            f"backend invocation timer ({timeout_seconds:g} seconds) expired"
+        )
+
+
 class ImplementationRunner(Protocol):
     async def run(self, *, manifest: RunManifest, worktree: Path, resume: bool) -> Any: ...
 
@@ -84,18 +105,21 @@ class _RuntimeImplementationRunner:
         self.runtime = runtime
 
     async def run(self, *, manifest: RunManifest, worktree: Path, resume: bool) -> ImplementationResult:
-        result = await self.runtime.invoke(
-            AgentRequest(
-                prompt=(
-                    "Implement the Proposal in this isolated self-development worktree. "
-                    "Do not run git stage/commit/push/merge."
-                ),
-                workdir=worktree,
-                # selfdev の implementation Run も毎回新規セッションで開始する。
-                # 実 runtime は lifetime session 属性を持たず、resume 用の参照を保持しない。
-                session_ref=None,
+        try:
+            result = await self.runtime.invoke(
+                AgentRequest(
+                    prompt=(
+                        "Implement the Proposal in this isolated self-development worktree. "
+                        "Do not run git stage/commit/push/merge."
+                    ),
+                    workdir=worktree,
+                    # selfdev の implementation Run も毎回新規セッションで開始する。
+                    # 実 runtime は lifetime session 属性を持たず、resume 用の参照を保持しない。
+                    session_ref=None,
+                )
             )
-        )
+        except asyncio.TimeoutError as exc:
+            raise BackendInvocationTimeout(self.runtime.timeout_seconds) from exc
         if result.quota_exhausted:
             if result.quota_reset_at is None or result.quota_kind == "unknown":
                 raise ControllerError("quota exhausted だが reset_at/quota_kind がありません")
@@ -129,6 +153,7 @@ class SelfDevController:
         worktree_root: Path,
         base_ref: str = "main",
         clock: Clock | None = None,
+        implementation_timeout_margin_seconds: float = 300.0,
     ) -> None:
         self.repository = repository.resolve(strict=False)
         self.store = store
@@ -140,6 +165,13 @@ class SelfDevController:
         self.worktree_root = worktree_root.resolve(strict=False)
         self.base_ref = base_ref
         self.clock = clock or SystemClock()
+        if (
+            not isinstance(implementation_timeout_margin_seconds, (int, float))
+            or isinstance(implementation_timeout_margin_seconds, bool)
+            or implementation_timeout_margin_seconds < 0
+        ):
+            raise ValueError("implementation_timeout_margin_seconds は0以上でなければなりません")
+        self.implementation_timeout_margin_seconds = float(implementation_timeout_margin_seconds)
         self.lease = ControllerLease(self.layout.lock_path)
         self.recovery = ControllerRecovery(store)
         self.effects = EffectJournal(store)
@@ -296,7 +328,7 @@ class SelfDevController:
                 "from_state": projection.aggregate.phase.value,
                 "to_state": target.value,
                 "reason_code": reason_code,
-                "reason": reason,
+                "reason": nonempty_reason(reason, context="proposal state transition"),
                 "related_run_id": related_run_id,
                 "decision_event_id": decision_event_id,
                 "artifact_refs": artifact_refs,
@@ -310,11 +342,17 @@ class SelfDevController:
         payload.setdefault("proposal_id", proposal_id)
         return await self.store.append(event_type, payload, proposal_id=proposal_id, actor_type=actor_type)
 
-    async def _pause_for_recovery(self, proposal_id: str, effects: tuple[tuple[str, str], ...]) -> None:
+    async def _pause_for_recovery(
+        self,
+        proposal_id: str,
+        effects: tuple[tuple[str, str], ...],
+        *,
+        reason: str = "effect in doubt; external fact verification is required",
+    ) -> None:
         notification = await self._append_generic(
             "algedonic_human_notification",
             proposal_id,
-            {"reason": "effect in doubt; external fact verification is required", "effects": [list(item) for item in effects]},
+            {"reason": nonempty_reason(reason, context="recovery pause"), "effects": [list(item) for item in effects]},
         )
         await self.store.append(
             "proposal_pause_changed",
@@ -332,6 +370,19 @@ class SelfDevController:
             },
             proposal_id=proposal_id,
         )
+
+    def implementation_timeout_seconds(self, proposal: ProposalManifest) -> float:
+        """Proposal budget から implementation Run の外側 timer を導出する。"""
+
+        timeout_seconds = (
+            float(proposal.budget_estimate.active_wall_clock_seconds)
+            + self.implementation_timeout_margin_seconds
+        )
+        if timeout_seconds <= 0:
+            raise ControllerError(
+                "implementation Run の timeout は active wall-clock budget または余裕を必要とします"
+            )
+        return timeout_seconds
 
     def _decision(self, proposal_id: str, review_kind: str) -> tuple[Any, ConsortiumDecision] | None:
         decisions = [
@@ -411,7 +462,12 @@ class SelfDevController:
                 await self._abort(proposal.id, "human timeout", reason_code="human_timeout")
                 return
             except ConsortiumAdapterError as exc:
-                await self._abort(proposal.id, str(exc), reason_code="aborted")
+                await self._abort(
+                    proposal.id,
+                    exc,
+                    reason_code="aborted",
+                    reason_context="initial consortium review",
+                )
                 return
             if decision.dossier_sha256 != dossier_sha:
                 raise ControllerError("Consortium dossier hash が artifact と一致しません")
@@ -577,7 +633,7 @@ class SelfDevController:
                 related_run_id=manifest.run_id,
             )
         except Exception as exc:
-            await self._abort(proposal.id, str(exc), reason_code="aborted")
+            await self._abort(proposal.id, exc, reason_code="aborted", reason_context="workspace setup")
 
     async def _invoke_implementation(self, manifest: RunManifest, worktree: Path, *, resume: bool) -> Any:
         runner = self.implementation_runner
@@ -587,6 +643,33 @@ class SelfDevController:
             value = runner(manifest=manifest, worktree=worktree, resume=resume)  # type: ignore[operator]
         return await value if inspect.isawaitable(value) else value
 
+    async def _invoke_implementation_with_timeout(
+        self,
+        manifest: RunManifest,
+        worktree: Path,
+        *,
+        resume: bool,
+        timeout_seconds: float,
+    ) -> Any:
+        """単発 backend timer と別の implementation Run 全体 timer。"""
+
+        task = asyncio.create_task(
+            self._invoke_implementation(manifest, worktree, resume=resume),
+            name=f"selfdev-implementation-{manifest.run_id}",
+        )
+        try:
+            done, pending = await asyncio.wait({task}, timeout=timeout_seconds)
+            if pending:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                raise ImplementationRunTimeout(timeout_seconds)
+            return task.result()
+        except BaseException:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            raise
+
     async def _handle_workspace_ready(self, proposal: ProposalManifest) -> None:
         projection = self._projection(proposal.id)
         run_id = projection.aggregate.active_run_id
@@ -595,12 +678,23 @@ class SelfDevController:
         manifest = self._load_run_manifest(proposal.id, run_id)
         workspace = self._workspace(manifest, proposal.id)
         try:
+            implementation_timeout = self.implementation_timeout_seconds(proposal)
             _, result = await self.effects.run(
                 proposal_id=proposal.id,
                 effect_id=f"run:{run_id}",
                 effect_kind="run",
-                input_value={"run_id": run_id, "attempt": manifest.attempt, "resume": False},
-                operation=lambda: self._invoke_implementation(manifest, workspace.acquire(), resume=False),
+                input_value={
+                    "run_id": run_id,
+                    "attempt": manifest.attempt,
+                    "resume": False,
+                    "implementation_run_timeout_seconds": implementation_timeout,
+                },
+                operation=lambda: self._invoke_implementation_with_timeout(
+                    manifest,
+                    workspace.acquire(),
+                    resume=False,
+                    timeout_seconds=implementation_timeout,
+                ),
             )
             if isinstance(result, EffectInDoubt):
                 raise result
@@ -625,9 +719,19 @@ class SelfDevController:
                 related_run_id=run_id,
             )
         except QuotaWait as exc:
-            await self.quota_wait(proposal.id, pool_id=exc.pool_id, reset_at=exc.reset_at, reason=str(exc))
+            await self.quota_wait(
+                proposal.id,
+                pool_id=exc.pool_id,
+                reset_at=exc.reset_at,
+                reason=exception_reason(exc, context="implementation run quota wait"),
+            )
         except Exception as exc:
-            await self._abort(proposal.id, str(exc), reason_code="aborted")
+            await self._abort(
+                proposal.id,
+                exc,
+                reason_code="aborted",
+                reason_context="implementation run",
+            )
 
     async def _invoke_gate(self, manifest: RunManifest, worktree: Path, output_dir: Path) -> Any:
         runner = self.gate_runner
@@ -725,15 +829,18 @@ class SelfDevController:
             elif report.status == "fail" and attempt == 1:
                 await self._transition(proposal.id, ProposalPhase.GATES_FAILED, reason_code="gates_failed", reason="Gate が失敗しました。repair 枠を保持します", related_run_id=run_id, artifact_refs=(f"gates/attempt-{attempt}/gate_report.json",))
             elif report.status == "fail":
-                await self._append_generic("algedonic_raised", proposal.id, {"kind": "pain", "reason": "repair 後も Gate が失敗しました", "gate_event_id": gate_event.event_id})
-                await self._append_generic("algedonic_human_notification", proposal.id, {"reason": "repair exhausted", "gate_event_id": gate_event.event_id})
                 await self._abort(proposal.id, "repair 後も Gate が失敗しました", reason_code="repair_exhausted")
             else:
                 await self._abort(proposal.id, "Gate execution error", reason_code="aborted")
         except QuotaWait as exc:
-            await self.quota_wait(proposal.id, pool_id=exc.pool_id, reset_at=exc.reset_at, reason=str(exc))
+            await self.quota_wait(
+                proposal.id,
+                pool_id=exc.pool_id,
+                reset_at=exc.reset_at,
+                reason=exception_reason(exc, context="gate run quota wait"),
+            )
         except Exception as exc:
-            await self._abort(proposal.id, str(exc), reason_code="aborted")
+            await self._abort(proposal.id, exc, reason_code="aborted", reason_context="gate run")
 
     async def _handle_gates_failed(self, proposal: ProposalManifest) -> None:
         projection = self._projection(proposal.id)
@@ -755,18 +862,34 @@ class SelfDevController:
                 manifest, _ = await self._link_run(proposal, attempt=2, parent_run_id=parent_run_id)
             workspace = self._workspace(manifest, proposal.id)
             if self.effects.completed(proposal.id, f"run:{manifest.run_id}") is None:
+                implementation_timeout = self.implementation_timeout_seconds(proposal)
                 await self.effects.run(
                     proposal_id=proposal.id,
                     effect_id=f"run:{manifest.run_id}",
                     effect_kind="run",
-                    input_value={"run_id": manifest.run_id, "parent_run_id": parent_run_id, "attempt": 2},
-                    operation=lambda: self._invoke_implementation(manifest, workspace.acquire(), resume=False),
+                    input_value={
+                        "run_id": manifest.run_id,
+                        "parent_run_id": parent_run_id,
+                        "attempt": 2,
+                        "implementation_run_timeout_seconds": implementation_timeout,
+                    },
+                    operation=lambda: self._invoke_implementation_with_timeout(
+                        manifest,
+                        workspace.acquire(),
+                        resume=False,
+                        timeout_seconds=implementation_timeout,
+                    ),
                 )
             await self._transition(proposal.id, ProposalPhase.GATES_RUNNING, reason_code="repair_completed", reason="1回限りの repair Run が完了しました", related_run_id=manifest.run_id)
         except QuotaWait as exc:
-            await self.quota_wait(proposal.id, pool_id=exc.pool_id, reset_at=exc.reset_at, reason=str(exc))
+            await self.quota_wait(
+                proposal.id,
+                pool_id=exc.pool_id,
+                reset_at=exc.reset_at,
+                reason=exception_reason(exc, context="repair run quota wait"),
+            )
         except Exception as exc:
-            await self._abort(proposal.id, str(exc), reason_code="aborted")
+            await self._abort(proposal.id, exc, reason_code="aborted", reason_context="repair run")
 
     def _load_run_manifest(self, proposal_id: str, run_id: str) -> RunManifest:
         return RunManifest.load(self._proposal_dir(proposal_id) / "runs" / run_id)
@@ -812,7 +935,7 @@ class SelfDevController:
             self._last_results[proposal.id] = candidate
             await self._transition(proposal.id, ProposalPhase.AUDIT, reason_code="audit_started", reason="candidate commit を S3★独立監査へ提出します", related_run_id=run_id)
         except Exception as exc:
-            await self._abort(proposal.id, str(exc), reason_code="aborted")
+            await self._abort(proposal.id, exc, reason_code="aborted", reason_context="candidate commit")
 
     def _load_audit_report(self, proposal_id: str) -> AuditReport:
         path = self.layout.audit_dir(proposal_id) / "audit_report.json"
@@ -894,7 +1017,7 @@ class SelfDevController:
                 )
             await self._transition(proposal.id, ProposalPhase.FINAL_CONSORTIUM, reason_code="audit_completed", reason=f"S3★監査 verdict={audit.verdict}", related_run_id=run_id)
         except Exception as exc:
-            await self._abort(proposal.id, str(exc), reason_code="audit_failed")
+            await self._abort(proposal.id, exc, reason_code="audit_failed", reason_context="audit run")
 
     def _final_dossier(self, proposal: ProposalManifest, initial: ConsortiumDecision, gate: GateReport, audit: AuditReport, candidate: CandidateCommit) -> dict[str, Any]:
         return {
@@ -980,7 +1103,7 @@ class SelfDevController:
             await self._cleanup_workspace(proposal.id, phase=ProposalPhase.MERGE_READY)
             await self._transition(proposal.id, ProposalPhase.MERGE_READY, reason_code="final_approved", reason=final.reason, decision_event_id=event.event_id, artifact_refs=("pr-description.md",))
         except Exception as exc:
-            await self._abort(proposal.id, str(exc), reason_code="aborted")
+            await self._abort(proposal.id, exc, reason_code="aborted", reason_context="final consortium")
 
     async def _cleanup_workspace(self, proposal_id: str, *, phase: ProposalPhase) -> None:
         projection = self._projection(proposal_id)
@@ -1003,16 +1126,52 @@ class SelfDevController:
         if value[0] or (self._proposal_dir(proposal_id) / "artifacts" / "candidate.patch").exists():
             await self._record_artifact(proposal_id, "candidate_patch", self._proposal_dir(proposal_id) / "artifacts" / "candidate.patch", relative="artifacts/candidate.patch")
 
-    async def _abort(self, proposal_id: str, reason: str, *, reason_code: str) -> None:
+    async def _abort(
+        self,
+        proposal_id: str,
+        reason: str | BaseException,
+        *,
+        reason_code: str,
+        reason_context: str = "proposal abort",
+    ) -> None:
         projection = self._projection(proposal_id)
         if projection.aggregate.is_terminal:
             return
+        normalized_reason = nonempty_reason(reason, context=reason_context)
+        await self._append_generic(
+            "algedonic_raised",
+            proposal_id,
+            {
+                "kind": "pain",
+                "reason": normalized_reason,
+                "reason_code": reason_code,
+                "source": "selfdev-controller",
+            },
+        )
+        await self._append_generic(
+            "algedonic_human_notification",
+            proposal_id,
+            {
+                "reason": normalized_reason,
+                "reason_code": reason_code,
+                "source": "selfdev-controller",
+            },
+        )
         try:
             await self._cleanup_workspace(proposal_id, phase=ProposalPhase.ABORTED)
         except Exception as exc:
-            await self._pause_for_recovery(proposal_id, (("cleanup", "terminal"),))
-            raise ControllerError(f"abort cleanup に失敗したため Proposal を保持しました: {exc}") from exc
-        await self._transition(proposal_id, ProposalPhase.ABORTED, reason_code=reason_code if reason_code in {"aborted", "repair_exhausted", "audit_failed", "human_timeout"} else "aborted", reason=reason)
+            await self._pause_for_recovery(
+                proposal_id,
+                (("cleanup", "terminal"),),
+                reason=exception_reason(exc, context="abort cleanup"),
+            )
+            return
+        await self._transition(
+            proposal_id,
+            ProposalPhase.ABORTED,
+            reason_code=reason_code if reason_code in {"aborted", "repair_exhausted", "audit_failed", "human_timeout"} else "aborted",
+            reason=normalized_reason,
+        )
 
     async def quota_wait(self, proposal_id: str, *, pool_id: str, reset_at: datetime, reason: str) -> None:
         self._require_started()
@@ -1031,7 +1190,7 @@ class SelfDevController:
                 "pool_id": pool_id,
                 "reset_at": format_iso_ms(reset_at),
                 "source_event_id": source.event_id,
-                "reason": reason,
+                "reason": nonempty_reason(reason, context="quota wait"),
             },
             proposal_id=proposal_id,
         )
@@ -1062,7 +1221,8 @@ class SelfDevController:
 
     async def suspend(self, proposal_id: str, *, reason: str) -> None:
         self._require_started()
-        source = await self._append_generic("algedonic_human_notification", proposal_id, {"reason": reason})
+        normalized_reason = nonempty_reason(reason, context="suspend")
+        source = await self._append_generic("algedonic_human_notification", proposal_id, {"reason": normalized_reason})
         await self.store.append(
             "proposal_pause_changed",
             {
@@ -1075,7 +1235,7 @@ class SelfDevController:
                 "pool_id": None,
                 "reset_at": None,
                 "source_event_id": source.event_id,
-                "reason": reason,
+                "reason": normalized_reason,
             },
             proposal_id=proposal_id,
         )
@@ -1129,6 +1289,21 @@ class SelfDevController:
             decision_event_id=event.event_id,
         )
 
+    async def _contain_proposal_failure(
+        self,
+        proposal_id: str,
+        phase: ProposalPhase,
+        exc: Exception,
+    ) -> None:
+        """Proposal処理の失敗をABORT+algedonicへ封じ込める。"""
+
+        await self._abort(
+            proposal_id,
+            exc,
+            reason_code="aborted",
+            reason_context=f"{phase.value} proposal processing",
+        )
+
     async def step(self, proposal_id: str | None = None) -> bool:
         self._require_started()
         active_id = proposal_id
@@ -1146,33 +1321,36 @@ class SelfDevController:
             raise ControllerPaused(f"Proposal は pause 中です: {active_id}")
         proposal = self._manifest(active_id)
         phase = projection.aggregate.phase
-        if phase is ProposalPhase.PROPOSED:
-            await self._transition(active_id, ProposalPhase.CONSORTIUM_REVIEW, reason_code="review_started", reason="initial Consortium review を開始しました")
-        elif phase is ProposalPhase.CONSORTIUM_REVIEW:
-            await self._run_initial_review(proposal)
-        elif phase is ProposalPhase.NEEDS_HUMAN:
-            await self._handle_needs_human(proposal)
-            return self._projection(active_id).aggregate.phase is not ProposalPhase.NEEDS_HUMAN
-        elif phase is ProposalPhase.APPROVED:
-            await self._handle_approved(proposal)
-        elif phase is ProposalPhase.WORKSPACE_READY:
-            await self._handle_workspace_ready(proposal)
-        elif phase is ProposalPhase.IMPLEMENTING:
-            await self._transition(active_id, ProposalPhase.GATES_RUNNING, reason_code="implementation_completed", reason="implementation Run の成果物を gate に渡します")
-        elif phase is ProposalPhase.GATES_RUNNING:
-            await self._handle_gates_running(proposal)
-        elif phase is ProposalPhase.GATES_FAILED:
-            await self._handle_gates_failed(proposal)
-        elif phase is ProposalPhase.GATES_PASSED:
-            await self._handle_gates_passed(proposal)
-        elif phase is ProposalPhase.AUDIT:
-            await self._handle_audit(proposal)
-        elif phase is ProposalPhase.FINAL_CONSORTIUM:
-            await self._handle_final_consortium(proposal)
-        elif phase is ProposalPhase.MERGE_READY:
-            return False
-        else:
-            raise ControllerError(f"未処理の Proposal phase です: {phase.value}")
+        try:
+            if phase is ProposalPhase.PROPOSED:
+                await self._transition(active_id, ProposalPhase.CONSORTIUM_REVIEW, reason_code="review_started", reason="initial Consortium review を開始しました")
+            elif phase is ProposalPhase.CONSORTIUM_REVIEW:
+                await self._run_initial_review(proposal)
+            elif phase is ProposalPhase.NEEDS_HUMAN:
+                await self._handle_needs_human(proposal)
+                return self._projection(active_id).aggregate.phase is not ProposalPhase.NEEDS_HUMAN
+            elif phase is ProposalPhase.APPROVED:
+                await self._handle_approved(proposal)
+            elif phase is ProposalPhase.WORKSPACE_READY:
+                await self._handle_workspace_ready(proposal)
+            elif phase is ProposalPhase.IMPLEMENTING:
+                await self._transition(active_id, ProposalPhase.GATES_RUNNING, reason_code="implementation_completed", reason="implementation Run の成果物を gate に渡します")
+            elif phase is ProposalPhase.GATES_RUNNING:
+                await self._handle_gates_running(proposal)
+            elif phase is ProposalPhase.GATES_FAILED:
+                await self._handle_gates_failed(proposal)
+            elif phase is ProposalPhase.GATES_PASSED:
+                await self._handle_gates_passed(proposal)
+            elif phase is ProposalPhase.AUDIT:
+                await self._handle_audit(proposal)
+            elif phase is ProposalPhase.FINAL_CONSORTIUM:
+                await self._handle_final_consortium(proposal)
+            elif phase is ProposalPhase.MERGE_READY:
+                return False
+            else:
+                raise ControllerError(f"未処理の Proposal phase です: {phase.value}")
+        except Exception as exc:
+            await self._contain_proposal_failure(active_id, phase, exc)
         return True
 
     async def run_once(self) -> bool:
@@ -1191,6 +1369,8 @@ class SelfDevController:
 __all__ = [
     "ControllerError",
     "ControllerPaused",
+    "BackendInvocationTimeout",
+    "ImplementationRunTimeout",
     "ImplementationResult",
     "QuotaWait",
     "SelfDevController",

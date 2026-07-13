@@ -1214,6 +1214,20 @@ MERGE_READY/DONE/ARCHIVED件数
 | terminal cleanup | patch保存失敗 | worktree保持 | SUSPEND + Human通知 |
 | terminal cleanup | worktree remove失敗 | terminal維持、reconcile継続 | `tool_failed`。branchは削除しない |
 
+## 5.1 implementation Run のタイマーと障害隔離
+
+implementation/repair Run の外側 wall-clock timer は、ProposalManifest の
+`budget_estimate.active_wall_clock_seconds` に `SelfDevConfig.implementation_timeout_margin_seconds`
+を加えた値から導出する。Agent backend が持つ単発呼び出しの `timeout_seconds` は別のタイマーであり、
+発火時の reason は `backend invocation timer (<秒> seconds)`、Run 全体の timer は
+`implementation run timer (<秒> seconds)` として区別する。空の例外文字列でも例外型名と文脈を記録し、
+strict schema の `reason` を空にしない。
+
+Proposal処理中の通常例外は当該Proposalの ABORT と algedonic notification に収束させ、常駐controller
+taskへ伝播させない。Event Log の破損、durable append失敗、lease喪失などcontroller自身が継続不能な
+整合性破壊だけを controller fatal とする。ABORT前にworkspaceが存在する場合は、§5の規則どおり
+`candidate.patch`、workspace監査情報、実行効果の失敗イベントを保存する。
+
 ---
 
 # 6. API / CLI / WebUI

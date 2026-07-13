@@ -30,6 +30,11 @@ loopback REST API を経由し、Event Log へ直接 fallback しません。
 実行中 Run には `vsm instruct <run_id> "<指示>" [--node <id>]` で外部エージェントからも
 指示できます。最近の Run は `vsm runs` で一覧できます。
 
+Selfdev の implementation Run は、ProposalManifest の `active_wall_clock_seconds` と
+`[selfdev].implementation_timeout_margin_seconds` から全体制限時間を導出します。Agent backend の
+単発 `timeout_seconds` とは別タイマーとして記録し、タイムアウト後もworkspaceの `candidate.patch`
+と実行効果ログを成果物として保持します。
+
 ### VSM システム構成
 
 VSM は一方向のパイプラインではありません。**長期稼働を前提とし、外界との相互作用からタスクを

@@ -22,6 +22,7 @@ from vsm.nodes import Node
 from vsm.roles import SystemRole
 from vsm.selfdev.artifacts import write_raw_response
 from vsm.selfdev.models import ConsortiumDecision, ProposalManifest
+from vsm.selfdev.reasons import exception_reason
 from vsm.selfdev.store import SelfDevEventStore
 
 _ORDER: tuple[SystemRole, ...] = (
@@ -535,13 +536,14 @@ class SelfDevConsortiumAdapter:
         except (HumanTimeout, ConsortiumAdapterError):
             raise
         except Exception as exc:
+            reason = exception_reason(exc, context=f"{review_kind} consortium review")
             await self.store.append(
                 "consortium_aborted",
-                {"consortium_id": consortium_id, "proposal_id": proposal.id, "reason": str(exc) or type(exc).__name__},
+                {"consortium_id": consortium_id, "proposal_id": proposal.id, "reason": reason},
                 proposal_id=proposal.id,
                 actor_type="controller",
             )
-            raise ConsortiumAdapterError(str(exc) or type(exc).__name__) from exc
+            raise ConsortiumAdapterError(reason) from exc
 
     async def respond_human(
         self, *, proposal_id: str, consortium_id: str, decision: str, response: str
