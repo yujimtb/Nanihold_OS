@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from vsm.selfdev.artifacts import SelfDevArtifactLayout, sha256_file
 from vsm.selfdev.models import ProposalManifest
-from vsm.selfdev.state_machine import TERMINAL_PHASES
+from vsm.selfdev.state_machine import ProposalPhase, TERMINAL_PHASES
 from vsm.selfdev.store import SelfDevEventStore
 
 try:  # Linux/WSL は設計上 fcntl lock を使う。
@@ -74,10 +74,24 @@ class ControllerLease:
 
 
 @dataclass(frozen=True, slots=True)
+class RecoveryIntegrityFailure:
+    """Proposal 単位で検出した immutable integrity failure。"""
+
+    proposal_id: str
+    phase: ProposalPhase
+    disposition: Literal["isolated", "needs_human"]
+    failure_kind: str
+    artifact_ref: str | None
+    reason: str
+    recorded: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class RecoverySnapshot:
     projections: dict[str, Any]
     active_proposal_id: str | None
     in_doubt_effects: tuple[tuple[str, str], ...]
+    integrity_failures: tuple[RecoveryIntegrityFailure, ...] = ()
 
 
 class ControllerRecovery:
@@ -86,6 +100,16 @@ class ControllerRecovery:
     def __init__(self, store: SelfDevEventStore) -> None:
         self.store = store
         self.layout: SelfDevArtifactLayout = store.layout
+        self._last_snapshot: RecoverySnapshot | None = None
+
+    @property
+    def last_snapshot(self) -> RecoverySnapshot | None:
+        return self._last_snapshot
+
+    @staticmethod
+    def _disposition(phase: ProposalPhase | str) -> Literal["isolated", "needs_human"]:
+        phase = ProposalPhase(phase)
+        return "isolated" if phase in TERMINAL_PHASES else "needs_human"
 
     def reconcile(self) -> RecoverySnapshot:
         try:
@@ -102,29 +126,107 @@ class ControllerRecovery:
         if len(active) > 1:
             raise RecoveryError("非terminal Proposal は同時に1件だけ許可されます")
 
+        recorded: dict[str, RecoveryIntegrityFailure] = {}
+        for event in events:
+            if event.event_type != "proposal_integrity_failed":
+                continue
+            payload = event.payload
+            recorded[payload["proposal_id"]] = RecoveryIntegrityFailure(
+                proposal_id=payload["proposal_id"],
+                phase=ProposalPhase(payload["phase"]),
+                disposition=payload["disposition"],
+                failure_kind=payload["failure_kind"],
+                artifact_ref=payload.get("artifact_ref"),
+                reason=payload["reason"],
+                recorded=True,
+            )
+
+        failures: dict[str, RecoveryIntegrityFailure] = dict(recorded)
+
+        def add_failure(
+            proposal_id: str,
+            phase: Any,
+            failure_kind: str,
+            reason: str,
+            artifact_ref: str | None = None,
+        ) -> None:
+            if proposal_id in failures:
+                return
+            failures[proposal_id] = RecoveryIntegrityFailure(
+                proposal_id=proposal_id,
+                phase=phase,
+                disposition=self._disposition(phase),
+                failure_kind=failure_kind,
+                artifact_ref=artifact_ref,
+                reason=reason,
+            )
+
         for proposal_id, projection in projections.items():
+            if proposal_id in recorded:
+                continue
             manifest_path = self.layout.proposal_manifest_path(proposal_id)
             if not manifest_path.exists():
-                raise RecoveryError(f"ProposalManifest がありません: {proposal_id}")
+                add_failure(
+                    proposal_id,
+                    projection.aggregate.phase,
+                    "proposal_manifest_missing",
+                    f"ProposalManifest がありません: {proposal_id}",
+                )
+                continue
             try:
                 manifest = ProposalManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
             except Exception as exc:
-                raise RecoveryError(f"ProposalManifest が不正です: {manifest_path}") from exc
+                add_failure(
+                    proposal_id,
+                    projection.aggregate.phase,
+                    "proposal_manifest_invalid",
+                    f"ProposalManifest が不正です: {manifest_path}: {exc}",
+                )
+                continue
             if manifest.id != proposal_id:
-                raise RecoveryError(f"ProposalManifest の id が不一致です: {proposal_id}")
+                add_failure(
+                    proposal_id,
+                    projection.aggregate.phase,
+                    "proposal_manifest_id_mismatch",
+                    f"ProposalManifest の id が不一致です: {proposal_id}",
+                )
+                continue
             expected = manifest.sha256()
             if sha256_file(manifest_path) != expected:
-                raise RecoveryError(f"ProposalManifest の hash が不一致です: {manifest_path}")
+                add_failure(
+                    proposal_id,
+                    projection.aggregate.phase,
+                    "proposal_manifest_hash_mismatch",
+                    f"ProposalManifest の hash が不一致です: {manifest_path}",
+                )
 
         for event in events:
             if event.event_type != "artifact_created":
                 continue
             proposal_id = str(event.payload["proposal_id"])
+            if proposal_id in failures:
+                continue
+            projection = projections.get(proposal_id)
+            if projection is None:
+                continue
             path = self.layout.proposal_dir(proposal_id) / str(event.payload["ref"])
             if not path.is_file():
-                raise RecoveryError(f"immutable artifact がありません: {path}")
+                add_failure(
+                    proposal_id,
+                    projection.aggregate.phase,
+                    "artifact_missing",
+                    f"immutable artifact がありません: {path}",
+                    str(event.payload["ref"]),
+                )
+                continue
             if sha256_file(path) != event.payload["sha256"]:
-                raise RecoveryError(f"immutable artifact の hash が不一致です: {path}")
+                add_failure(
+                    proposal_id,
+                    projection.aggregate.phase,
+                    "artifact_hash_mismatch",
+                    f"immutable artifact の hash が不一致です: {path}",
+                    str(event.payload["ref"]),
+                )
 
         starts: dict[tuple[str, str], bool] = {}
         completed: set[tuple[str, str]] = set()
@@ -140,11 +242,20 @@ class ControllerRecovery:
             elif event.event_type == "tool_completed":
                 completed.add(key)
         in_doubt = tuple(sorted(key for key in starts if key not in completed))
-        return RecoverySnapshot(
+        snapshot = RecoverySnapshot(
             projections=projections,
             active_proposal_id=active[0].proposal_id if active else None,
             in_doubt_effects=in_doubt,
+            integrity_failures=tuple(sorted(failures.values(), key=lambda item: item.proposal_id)),
         )
+        self._last_snapshot = snapshot
+        return snapshot
 
 
-__all__ = ["ControllerLease", "ControllerRecovery", "RecoveryError", "RecoverySnapshot"]
+__all__ = [
+    "ControllerLease",
+    "ControllerRecovery",
+    "RecoveryError",
+    "RecoveryIntegrityFailure",
+    "RecoverySnapshot",
+]

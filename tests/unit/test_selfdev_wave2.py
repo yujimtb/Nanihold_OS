@@ -173,6 +173,7 @@ def test_proposal_workspace_snapshots_audit_and_cleans_only_on_terminal(
     workspace = ProposalWorkspace(manifest=manifest, run_dir=tmp_path / "runs" / "implementation")
 
     assert workspace.create() == manifest.worktree_path
+    descriptor_before_lifecycle = workspace.descriptor_path.read_bytes()
     (manifest.worktree_path / "src" / "module.py").write_text(
         "VALUE = 2\n", encoding="utf-8"
     )
@@ -185,6 +186,7 @@ def test_proposal_workspace_snapshots_audit_and_cleans_only_on_terminal(
     audit = json.loads((artifact_dir / "workspace-audit.json").read_text(encoding="utf-8"))
 
     assert workspace.status is WorkspaceStatus.SNAPSHOTTED
+    assert workspace.descriptor_path.read_bytes() == descriptor_before_lifecycle
     assert manifest.worktree_path.exists()
     assert patch_path == artifact_dir / "candidate.patch"
     assert "VALUE = 2" in patch_path.read_text(encoding="utf-8")
@@ -200,6 +202,8 @@ def test_proposal_workspace_snapshots_audit_and_cleans_only_on_terminal(
     workspace.finalize(terminal=True)
 
     assert workspace.status is WorkspaceStatus.CLOSED
+    assert workspace.descriptor_path.read_bytes() == descriptor_before_lifecycle
+    assert json.loads((workspace.run_dir / "workspace-state.json").read_text(encoding="utf-8"))["status"] == "closed"
     assert not manifest.worktree_path.exists()
     assert all(item.path != manifest.worktree_path for item in list_worktrees(repository))
 

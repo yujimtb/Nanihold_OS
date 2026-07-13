@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -98,10 +98,9 @@ class WorkspaceDescriptor:
             raise WorkspaceError(f"workspace descriptor が不正です: {path}: {exc}") from exc
 
 
-def _write_descriptor(path: Path, descriptor: WorkspaceDescriptor) -> None:
+def _atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    data = (json.dumps(descriptor.to_dict(), ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
     try:
         with temporary.open("wb") as handle:
             handle.write(data)
@@ -111,6 +110,25 @@ def _write_descriptor(path: Path, descriptor: WorkspaceDescriptor) -> None:
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+def _write_descriptor(path: Path, descriptor: WorkspaceDescriptor) -> None:
+    """workspace.json を初回だけ作成する。status は別の状態ファイルで管理する。"""
+
+    data = (json.dumps(descriptor.to_dict(), ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
+    _atomic_write(path, data)
+
+
+def _write_status(path: Path, status: WorkspaceStatus) -> None:
+    """write-once descriptor と分離した mutable な lifecycle state を保存する。"""
+
+    data = json.dumps(
+        {"schema_version": 1, "status": status.value},
+        ensure_ascii=False,
+        sort_keys=True,
+        indent=2,
+    ).encode() + b"\n"
+    _atomic_write(path, data)
 
 
 def _untracked_patch(worktree: Path, relative: str) -> str:
@@ -151,6 +169,7 @@ class ProposalWorkspace:
         self.manifest = manifest
         self.run_dir = run_dir.resolve(strict=False)
         self.descriptor_path = self.run_dir / "workspace.json"
+        self.state_path = self.run_dir / "workspace-state.json"
         self._descriptor: WorkspaceDescriptor | None = None
 
     @property
@@ -162,8 +181,20 @@ class ProposalWorkspace:
         if self._descriptor is None:
             if not self.descriptor_path.exists():
                 raise WorkspaceError("workspace descriptor がありません")
-            self._descriptor = WorkspaceDescriptor.load(self.descriptor_path)
+            base = WorkspaceDescriptor.load(self.descriptor_path)
+            self._descriptor = replace(base, status=self._load_status())
         return self._descriptor
+
+    def _load_status(self) -> WorkspaceStatus:
+        if not self.state_path.exists():
+            raise WorkspaceError(f"workspace state がありません: {self.state_path}")
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+                raise ValueError("schema_version は1固定です")
+            return WorkspaceStatus(str(payload["status"]))
+        except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise WorkspaceError(f"workspace state が不正です: {self.state_path}: {exc}") from exc
 
     @property
     def status(self) -> WorkspaceStatus:
@@ -174,7 +205,7 @@ class ProposalWorkspace:
         for field in ("proposal_id", "repository", "base_sha", "branch", "worktree_path"):
             if getattr(descriptor, field) != getattr(expected, field):
                 raise WorkspaceError(f"workspace descriptor の {field} が manifest と不一致です")
-        if descriptor.status is WorkspaceStatus.CLOSED:
+        if self._load_status() is WorkspaceStatus.CLOSED:
             raise WorkspaceError("closed workspace は再利用できません")
 
     def _registry_entry(self) -> GitWorktreeInfo | None:
@@ -207,6 +238,8 @@ class ProposalWorkspace:
     def create(self) -> Path:
         if self.descriptor_path.exists():
             return self.adopt_existing()
+        if self.state_path.exists():
+            raise WorkspaceError("workspace descriptor がないのに workspace state があります")
         existing_path = self._registry_entry()
         branch_ref = f"refs/heads/{self.manifest.branch}"
         branch_exists = subprocess.run(
@@ -223,6 +256,7 @@ class ProposalWorkspace:
         )
         self._descriptor = WorkspaceDescriptor.from_manifest(self.manifest, status=WorkspaceStatus.READY)
         _write_descriptor(self.descriptor_path, self._descriptor)
+        _write_status(self.state_path, WorkspaceStatus.READY)
         return self.worktree_path
 
     def adopt_existing(self) -> Path:
@@ -231,7 +265,8 @@ class ProposalWorkspace:
             self._assert_descriptor_matches(descriptor)
         entry = self._assert_registry(allow_descendant=True)
         del entry
-        self._descriptor = descriptor or WorkspaceDescriptor.from_manifest(self.manifest, status=WorkspaceStatus.READY)
+        base = descriptor or WorkspaceDescriptor.from_manifest(self.manifest, status=WorkspaceStatus.READY)
+        self._descriptor = replace(base, status=self._load_status())
         if descriptor is None:
             _write_descriptor(self.descriptor_path, self._descriptor)
         return self.worktree_path
@@ -241,8 +276,8 @@ class ProposalWorkspace:
             self.create()
         else:
             self.adopt_existing()
-        self._descriptor = WorkspaceDescriptor.from_manifest(self.manifest, status=WorkspaceStatus.IN_USE)
-        _write_descriptor(self.descriptor_path, self._descriptor)
+        self._descriptor = replace(self.descriptor, status=WorkspaceStatus.IN_USE)
+        _write_status(self.state_path, WorkspaceStatus.IN_USE)
         return self.worktree_path
 
     def snapshot(self) -> Path:
@@ -269,8 +304,8 @@ class ProposalWorkspace:
         (artifact_dir / "workspace-audit.json").write_text(
             json.dumps(audit, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-        self._descriptor = WorkspaceDescriptor.from_manifest(self.manifest, status=WorkspaceStatus.SNAPSHOTTED)
-        _write_descriptor(self.descriptor_path, self._descriptor)
+        self._descriptor = replace(self.descriptor, status=WorkspaceStatus.SNAPSHOTTED)
+        _write_status(self.state_path, WorkspaceStatus.SNAPSHOTTED)
         return patch_path
 
     def commit_candidate(self, *, gate_report: Any) -> CandidateCommit:
@@ -295,8 +330,8 @@ class ProposalWorkspace:
         except Exception:
             # patch は既に保存済みなので、削除失敗時も workspace を再concile できる。
             raise
-        self._descriptor = WorkspaceDescriptor.from_manifest(self.manifest, status=WorkspaceStatus.CLOSED)
-        _write_descriptor(self.descriptor_path, self._descriptor)
+        self._descriptor = replace(self.descriptor, status=WorkspaceStatus.CLOSED)
+        _write_status(self.state_path, WorkspaceStatus.CLOSED)
         return patch_path
 
 

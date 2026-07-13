@@ -82,6 +82,29 @@ class ProposalRunLinkedPayload(SelfDevPayload):
             raise ValueError("repair 以外の Run は attempt=1 かつ parent_run_id=null が必要です")
 
 
+class ProposalIntegrityFailedPayload(SelfDevPayload):
+    """Proposal 単位の immutable integrity failure を durable に記録する。"""
+
+    proposal_id: str = Field(pattern=r"^proposal-[0-9a-f]{32}$")
+    phase: ProposalPhase
+    disposition: Literal["isolated", "needs_human"]
+    failure_kind: Literal[
+        "proposal_manifest_missing",
+        "proposal_manifest_invalid",
+        "proposal_manifest_id_mismatch",
+        "proposal_manifest_hash_mismatch",
+        "artifact_missing",
+        "artifact_hash_mismatch",
+    ]
+    artifact_ref: str | None = None
+    reason: str = Field(min_length=1)
+
+    @field_validator("artifact_ref")
+    @classmethod
+    def _artifact_ref(cls, value: str | None) -> str | None:
+        return _relative_ref(value) if value is not None else None
+
+
 class ConsortiumDecidedV2Payload(SelfDevPayload):
     consortium_id: str = Field(min_length=1)
     proposal_id: str = Field(pattern=r"^proposal-[0-9a-f]{32}$")
@@ -201,12 +224,14 @@ SELFDEV_EVENT_TYPES: tuple[str, ...] = (
     "proposal_state_changed",
     "proposal_pause_changed",
     "proposal_run_linked",
+    "proposal_integrity_failed",
 )
 
 SELFDEV_PAYLOAD_MODELS: dict[tuple[str, int], type[BaseModel]] = {
     ("proposal_state_changed", 1): ProposalStateChangedPayload,
     ("proposal_pause_changed", 1): ProposalPauseChangedPayload,
     ("proposal_run_linked", 1): ProposalRunLinkedPayload,
+    ("proposal_integrity_failed", 1): ProposalIntegrityFailedPayload,
     ("artifact_created", 2): ArtifactCreatedPayload,
     ("audit_report_sent", 2): AuditReportSentV1Payload,
     ("consortium_decided", 2): ConsortiumDecidedV2Payload,
@@ -227,6 +252,7 @@ __all__ = [
     "HumanReviewRespondedV2Payload",
     "ProposalPauseChangedPayload",
     "ProposalRunLinkedPayload",
+    "ProposalIntegrityFailedPayload",
     "ProposalStateChangedPayload",
     "ToolCompletedV2Payload",
     "ToolFailedV2Payload",

@@ -172,6 +172,7 @@ runs/selfdev/
 │  ├─ proposal.json
 │  ├─ projection.json        # 再生成可能なcache
 │  ├─ workspace.json
+│  ├─ workspace-state.json   # workspace lifecycle の mutable state
 │  ├─ artifacts/
 │  ├─ gates/
 │  ├─ audit/
@@ -610,6 +611,8 @@ workspace descriptor:
 }
 ```
 
+`workspace.json` は workspace create 時に一度だけ書き込む immutable artifact であり、`artifact_created(ref=workspace.json)` の hash 正本とする。`ready / in_use / snapshotted / closed` の lifecycle status は `workspace-state.json` に分離して atomic write する。cleanup や再起動復元で `workspace.json` を再書込みしてはならない。
+
 再起動時のadoptは、path・registered branch・base・Proposal IDがすべて一致した場合だけ許可する。それ以外はcollisionとしてfail-fast。
 
 ## 2.4 gate_report.json v2
@@ -1018,7 +1021,7 @@ FastAPI lifespan起動時に1つだけcontroller taskを開始する。
 3. controller EventLogを全行検証。
 4. seq/stream versionを復元。
 5. Proposal projectionを再構築。
-6. immutable manifest/artifactのhash検証。
+6. immutable manifest/artifactのhash検証。Proposal単位の不整合は下記の隔離規則で処理する。
 7. 非terminal Proposalが最大1件であることを確認。
 8. linked RunManifestとrun logを検証。
 9. git worktree registry・workspace descriptor・branch・baseを照合。
@@ -1026,6 +1029,8 @@ FastAPI lifespan起動時に1つだけcontroller taskを開始する。
 11. active Runがあれば同じ`run_id`で`resume=True`。
 12. Human deadline、quota reset、daily reportの次timerを復元。
 13. event-driven loop開始。
+
+Proposalのmanifest/artifactだけが不整合な場合は controller 全体を停止しない。terminal (`ABORTED` / `REJECTED` / `REJECTED_FINAL` / `DONE` / `ARCHIVED`) は artifacts を変更せず `proposal_integrity_failed(disposition=isolated)` を Event Log に一度だけ記録し、projection から除外する。active Proposal は `proposal_integrity_failed(disposition=needs_human)` を記録し、projection の phase を `NEEDS_HUMAN` 相当にして自動処理を停止する。どちらも `/api/selfdev/health` の `integrity_failed_count` と詳細に反映する。Event Log の欠損・torn・seq/stream逆行・未知schemaなど store 全体の破損だけは従来どおり起動拒否とする。
 
 state別reconcile:
 

@@ -177,6 +177,7 @@ class SelfDevController:
         self.effects = EffectJournal(store)
         self._started = False
         self._fatal: Exception | None = None
+        self._recovery_snapshot = None
         self._last_results: dict[str, Any] = {}
         self._protected_approvals: dict[str, dict[str, str]] = {}
         self._budget_actual: dict[str, Any] = {}
@@ -198,8 +199,16 @@ class SelfDevController:
             await self.store.start()
             self.lease.acquire()
             snapshot = self.recovery.reconcile()
+            await self._record_integrity_failures(snapshot)
+            snapshot = self.recovery.reconcile()
+            self._recovery_snapshot = snapshot
             self._started = True
-            if snapshot.in_doubt_effects and snapshot.active_proposal_id is not None:
+            integrity_ids = {item.proposal_id for item in snapshot.integrity_failures}
+            if (
+                snapshot.in_doubt_effects
+                and snapshot.active_proposal_id is not None
+                and snapshot.active_proposal_id not in integrity_ids
+            ):
                 await self._pause_for_recovery(snapshot.active_proposal_id, snapshot.in_doubt_effects)
         except Exception:
             self.lease.release()
@@ -218,6 +227,29 @@ class SelfDevController:
             raise ControllerError("SelfDevController.start() 前に操作できません")
         if self._fatal is not None:
             raise ControllerError(f"controller は degraded 停止中です: {self._fatal}")
+
+    @property
+    def integrity_failures(self) -> tuple[Any, ...]:
+        snapshot = self._recovery_snapshot or self.recovery.last_snapshot
+        return snapshot.integrity_failures if snapshot is not None else ()
+
+    async def _record_integrity_failures(self, snapshot: Any) -> None:
+        for failure in snapshot.integrity_failures:
+            if failure.recorded:
+                continue
+            await self.store.append(
+                "proposal_integrity_failed",
+                {
+                    "proposal_id": failure.proposal_id,
+                    "phase": failure.phase.value,
+                    "disposition": failure.disposition,
+                    "failure_kind": failure.failure_kind,
+                    "artifact_ref": failure.artifact_ref,
+                    "reason": failure.reason,
+                },
+                proposal_id=failure.proposal_id,
+                actor_type="controller",
+            )
 
     def _projection(self, proposal_id: str):
         projection = self.store.projection(proposal_id)
@@ -1316,6 +1348,8 @@ class SelfDevController:
             active_id = active[0].proposal_id
         projection = self._projection(active_id)
         if projection.aggregate.is_terminal:
+            return False
+        if projection.integrity_failed:
             return False
         if projection.aggregate.is_paused:
             raise ControllerPaused(f"Proposal は pause 中です: {active_id}")

@@ -18,6 +18,9 @@ class ProposalProjection:
     transition_event_ids: tuple[str, ...] = ()
     run_links: tuple[dict[str, Any], ...] = ()
     last_seq: int = -1
+    integrity_failed: bool = False
+    isolated: bool = False
+    integrity_reason: str | None = None
 
     def apply(self, event: Event | dict[str, Any]) -> "ProposalProjection":
         envelope = event if isinstance(event, Event) else Event.model_validate(event)
@@ -50,6 +53,19 @@ class ProposalProjection:
                 machine.transition(target, allow_while_paused=target is ProposalPhase.ABORTED)
                 aggregate = machine.aggregate
             transition_ids = (*transition_ids, envelope.event_id)
+        elif envelope.event_type == "proposal_integrity_failed":
+            if self.integrity_failed:
+                raise ValueError("Proposal integrity failure が二重に記録されています")
+            if ProposalPhase(payload["phase"]) is not aggregate.phase:
+                raise ValueError("proposal_integrity_failed の phase が projection と一致しません")
+            if payload["disposition"] == "needs_human":
+                if aggregate.is_terminal:
+                    raise ValueError("terminal Proposal は needs_human 隔離にできません")
+                aggregate = replace(
+                    aggregate,
+                    phase=ProposalPhase.NEEDS_HUMAN,
+                    state_version=aggregate.state_version + 1,
+                )
         elif envelope.event_type == "proposal_pause_changed":
             if payload["action"] == "added":
                 reset_at = payload.get("reset_at")
@@ -91,6 +107,17 @@ class ProposalProjection:
             transition_event_ids=transition_ids,
             run_links=run_links,
             last_seq=envelope.seq,
+            integrity_failed=self.integrity_failed or envelope.event_type == "proposal_integrity_failed",
+            isolated=self.isolated
+            or (
+                envelope.event_type == "proposal_integrity_failed"
+                and payload["disposition"] == "isolated"
+            ),
+            integrity_reason=(
+                str(payload["reason"])
+                if envelope.event_type == "proposal_integrity_failed"
+                else self.integrity_reason
+            ),
         )
 
 
@@ -105,15 +132,23 @@ def replay_proposal_events(events: Iterable[Event | dict[str, Any]], proposal_id
 
 def replay_projections(events: Iterable[Event | dict[str, Any]]) -> dict[str, ProposalProjection]:
     projections: dict[str, ProposalProjection] = {}
+    isolated_ids: set[str] = set()
     for event in sorted(events, key=lambda item: item.seq if isinstance(item, Event) else item["seq"]):
         payload = event.payload if isinstance(event, Event) else event["payload"]
         proposal_id = payload.get("proposal_id")
         if not proposal_id:
             continue
+        if proposal_id in isolated_ids:
+            continue
         projection = projections.get(proposal_id)
         if projection is None:
             projection = ProposalProjection(proposal_id, ProposalAggregate())
-        projections[proposal_id] = projection.apply(event)
+        updated = projection.apply(event)
+        if updated.isolated:
+            isolated_ids.add(proposal_id)
+            projections.pop(proposal_id, None)
+        else:
+            projections[proposal_id] = updated
     return projections
 
 

@@ -459,6 +459,22 @@ def get_artifact(proposal_id: str, name: str, request: Request) -> FileResponse:
 
 @router.get("/health")
 def selfdev_health(request: Request) -> dict[str, Any]:
+    def integrity_health(controller: Any) -> dict[str, Any]:
+        failures = tuple(getattr(controller, "integrity_failures", ()) or ()) if controller is not None else ()
+        return {
+            "integrity_failed_count": len(failures),
+            "integrity_failures": [
+                {
+                    "proposal_id": item.proposal_id,
+                    "disposition": item.disposition,
+                    "failure_kind": item.failure_kind,
+                    "artifact_ref": item.artifact_ref,
+                    "reason": item.reason,
+                }
+                for item in failures
+            ],
+        }
+
     service = getattr(request.app.state, "selfdev_service", None)
     if service is None:
         import sys
@@ -473,6 +489,7 @@ def selfdev_health(request: Request) -> dict[str, Any]:
             "lease": "unavailable",
             "reconcile": "failed" if startup_error else "unavailable",
             "fatal": str(startup_error) if startup_error else None,
+            **integrity_health(None),
         }
     controller = getattr(service, "controller", None)
     fatal = getattr(service, "fatal", None)
@@ -484,6 +501,7 @@ def selfdev_health(request: Request) -> dict[str, Any]:
         "lease": lease,
         "reconcile": "ok" if healthy else "unknown",
         "fatal": str(fatal) if fatal else None,
+        **integrity_health(controller),
     }
 
 

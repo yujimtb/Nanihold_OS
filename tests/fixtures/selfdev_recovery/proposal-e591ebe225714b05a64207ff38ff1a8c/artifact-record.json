@@ -1,0 +1,7 @@
+{
+  "artifact_ref": "workspace.json",
+  "artifact_created_event_seq": 31,
+  "proposal_id": "proposal-e591ebe225714b05a64207ff38ff1a8c",
+  "registered_sha256": "49375148d05fca2552dee709ec795d15ef5c8f5e17559f0a9d3dea1536bc0cc0",
+  "source": "runs/selfdev/controller/events.jsonl"
+}
