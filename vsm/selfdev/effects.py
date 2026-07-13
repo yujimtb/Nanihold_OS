@@ -30,6 +30,17 @@ class EffectCompletion:
     recovered: bool
 
 
+@dataclass(frozen=True, slots=True)
+class EffectInDoubtRecord:
+    """人間裁定が必要な effect journal の開始記録。"""
+
+    effect_id: str
+    effect_kind: str
+    input_sha256: str
+    invoked_at: str
+    invocation_event_id: str
+
+
 class EffectInDoubt(RuntimeError):
     """副作用の開始だけが残り、再実行の安全性を証明できない。"""
 
@@ -48,6 +59,44 @@ class EffectJournal:
             and event.payload.get("effect_id") == effect_id
             and event.event_type in {"tool_invoked", "tool_completed", "tool_failed"}
         )
+
+    def in_doubt(self, proposal_id: str) -> tuple[EffectInDoubtRecord, ...]:
+        """完了/失敗の durable 記録がない開始効果だけを返す。"""
+
+        grouped: dict[str, list[Any]] = {}
+        for event in self.store.read_events():
+            if event.payload.get("proposal_id") != proposal_id:
+                continue
+            if event.event_type in {"tool_invoked", "tool_completed", "tool_failed"}:
+                effect_id = event.payload.get("effect_id")
+                if effect_id:
+                    grouped.setdefault(str(effect_id), []).append(event)
+
+        records: list[EffectInDoubtRecord] = []
+        for effect_id, events in grouped.items():
+            invoked = [event for event in events if event.event_type == "tool_invoked"]
+            terminal = [
+                event
+                for event in events
+                if event.event_type in {"tool_completed", "tool_failed"}
+            ]
+            if len(invoked) > 1:
+                raise ValueError(f"effect_id が二重開始されています: {effect_id}")
+            if len(terminal) > 1:
+                raise ValueError(f"effect_id が二重終端されています: {effect_id}")
+            if not invoked or terminal:
+                continue
+            event = invoked[0]
+            records.append(
+                EffectInDoubtRecord(
+                    effect_id=effect_id,
+                    effect_kind=str(event.payload["effect_kind"]),
+                    input_sha256=str(event.payload["input_sha256"]),
+                    invoked_at=str(event.ts),
+                    invocation_event_id=str(event.event_id),
+                )
+            )
+        return tuple(sorted(records, key=lambda item: (item.invoked_at, item.effect_id)))
 
     def completed(self, proposal_id: str, effect_id: str) -> EffectCompletion | None:
         completions = [item for item in self._records(proposal_id, effect_id) if "result_sha256" in item]
@@ -138,6 +187,7 @@ class EffectJournal:
                 "result_sha256": result_sha256,
                 "artifact_refs": artifact_refs,
                 "recovered": False,
+                "recovery_reason": None,
             },
             proposal_id=proposal_id,
             actor_type="controller",
@@ -153,6 +203,9 @@ class EffectJournal:
         effect_kind: EffectKind,
         result: Any,
         artifact_refs: tuple[str, ...] = (),
+        recovery_reason: str | None = None,
+        actor_type: str = "controller",
+        actor_id: str | None = None,
     ) -> EffectCompletion:
         """外部事実を検証済みの場合だけ、再実行せず完了を追記する。"""
 
@@ -171,12 +224,46 @@ class EffectJournal:
                 "result_sha256": digest,
                 "artifact_refs": artifact_refs,
                 "recovered": True,
+                "recovery_reason": recovery_reason,
             },
             proposal_id=proposal_id,
-            actor_type="controller",
+            actor_type=actor_type,
+            actor_id=actor_id,
             schema_version=2,
         )
         return EffectCompletion(effect_id, effect_kind, digest, artifact_refs, True)
 
+    async def record_failed_decision(
+        self,
+        *,
+        proposal_id: str,
+        effect_id: str,
+        reason: str,
+    ) -> None:
+        """外部効果が存在しないという Human 裁定を journal に固定する。"""
 
-__all__ = ["EffectCompletion", "EffectInDoubt", "EffectJournal"]
+        records = self._records(proposal_id, effect_id)
+        if not any("input_sha256" in item for item in records):
+            raise EffectInDoubt(f"未開始 effect は failed 裁定できません: {effect_id}")
+        if self.completed(proposal_id, effect_id) is not None:
+            raise ValueError(f"effect は既に完了しています: {effect_id}")
+        if any("error_type" in item for item in records):
+            raise ValueError(f"effect は既に失敗終端しています: {effect_id}")
+        await self.store.append(
+            "tool_failed",
+            {
+                "proposal_id": proposal_id,
+                "effect_id": effect_id,
+                "effect_kind": str(next(item["effect_kind"] for item in records if "input_sha256" in item)),
+                "error_type": "HumanEffectDecision",
+                "reason": reason,
+                "disposition": "human_decision",
+            },
+            proposal_id=proposal_id,
+            actor_type="human",
+            actor_id="human",
+            schema_version=2,
+        )
+
+
+__all__ = ["EffectCompletion", "EffectInDoubt", "EffectInDoubtRecord", "EffectJournal"]

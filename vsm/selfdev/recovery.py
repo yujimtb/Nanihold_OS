@@ -232,7 +232,7 @@ class ControllerRecovery:
                 )
 
         starts: dict[tuple[str, str], bool] = {}
-        completed: set[tuple[str, str]] = set()
+        terminal: set[tuple[str, str]] = set()
         for event in events:
             payload = event.payload
             proposal_id = payload.get("proposal_id")
@@ -242,9 +242,9 @@ class ControllerRecovery:
             key = (str(proposal_id), str(effect_id))
             if event.event_type == "tool_invoked":
                 starts[key] = True
-            elif event.event_type == "tool_completed":
-                completed.add(key)
-        in_doubt = tuple(sorted(key for key in starts if key not in completed))
+            elif event.event_type in {"tool_completed", "tool_failed"}:
+                terminal.add(key)
+        in_doubt = tuple(sorted(key for key in starts if key not in terminal))
         snapshot = RecoverySnapshot(
             projections=projections,
             active_proposal_id=active[0].proposal_id if active else None,

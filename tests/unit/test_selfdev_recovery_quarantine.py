@@ -25,6 +25,22 @@ FIXTURE_ROOT = Path(__file__).parents[1] / "fixtures" / "selfdev_recovery"
 PROPOSAL_FIXTURE = FIXTURE_ROOT / PROPOSAL_ID
 
 
+class _StaticService:
+    def __init__(self, controller: SelfDevController) -> None:
+        self.controller = controller
+        self.fatal = None
+
+    @property
+    def healthy(self) -> bool:
+        return self.controller._started
+
+    async def start(self) -> None:
+        await self.controller.start()
+
+    async def stop(self) -> None:
+        await self.controller.stop()
+
+
 def _controller(root: Path, store: SelfDevEventStore) -> SelfDevController:
     return SelfDevController(
         repository=root,
@@ -83,13 +99,26 @@ async def _append_state(
     )
 
 
-async def _seed(root: Path, *, terminal: bool, with_stale_waiter: bool = False) -> str:
+async def _seed(
+    root: Path,
+    *,
+    terminal: bool,
+    with_stale_waiter: bool = False,
+    in_doubt_effects: int = 0,
+    recovery_pauses: int = 0,
+    clean_integrity: bool = False,
+) -> str:
     _copy_real_proposal(root)
     store = SelfDevEventStore(root, clock=FakeClock())
     await store.start()
     try:
         proposal_path = root / "proposals" / PROPOSAL_ID / "proposal.json"
         registered = json.loads((PROPOSAL_FIXTURE / "artifact-record.json").read_text(encoding="utf-8"))
+        workspace_registered_sha = (
+            hashlib.sha256((root / "proposals" / PROPOSAL_ID / registered["artifact_ref"]).read_bytes()).hexdigest()
+            if clean_integrity
+            else registered["registered_sha256"]
+        )
         await _append_state(store, from_state=None, to_state=ProposalPhase.PROPOSED.value)
         await store.append(
             "artifact_created",
@@ -123,11 +152,51 @@ async def _seed(root: Path, *, terminal: bool, with_stale_waiter: bool = False) 
                 "proposal_id": PROPOSAL_ID,
                 "artifact_kind": "workspace_descriptor",
                 "ref": registered["artifact_ref"],
-                "sha256": registered["registered_sha256"],
+                "sha256": workspace_registered_sha,
             },
             proposal_id=PROPOSAL_ID,
             schema_version=2,
         )
+        effect_ids = [f"run:recovery-{index}" for index in range(in_doubt_effects)]
+        for index, effect_id in enumerate(effect_ids):
+            await store.append(
+                "tool_invoked",
+                {
+                    "proposal_id": PROPOSAL_ID,
+                    "effect_id": effect_id,
+                    "effect_kind": "run",
+                    "input_sha256": (str(index + 1) * 64)[:64],
+                },
+                proposal_id=PROPOSAL_ID,
+                schema_version=2,
+            )
+        for index in range(recovery_pauses):
+            effect_id = effect_ids[index % len(effect_ids)] if effect_ids else "cleanup:terminal"
+            notification = await store.append(
+                "algedonic_human_notification",
+                {
+                    "proposal_id": PROPOSAL_ID,
+                    "reason": "fixture recovery pause",
+                    "effects": [["run", effect_id]],
+                },
+                proposal_id=PROPOSAL_ID,
+            )
+            await store.append(
+                "proposal_pause_changed",
+                {
+                    "proposal_id": PROPOSAL_ID,
+                    "action": "added",
+                    "pause_id": f"pause-recovery-fixture-{index}",
+                    "cause": "SUSPEND",
+                    "actor_type": "controller",
+                    "actor_id": "controller",
+                    "pool_id": None,
+                    "reset_at": None,
+                    "source_event_id": notification.event_id,
+                    "reason": "副作用の外部事実を証明できないため停止",
+                },
+                proposal_id=PROPOSAL_ID,
+            )
         if with_stale_waiter:
             consortium_id = f"consortium-{PROPOSAL_ID}-initial"
             await store.append(
@@ -172,7 +241,7 @@ async def _seed(root: Path, *, terminal: bool, with_stale_waiter: bool = False) 
             )
     finally:
         await store.stop()
-    return registered["registered_sha256"]
+    return workspace_registered_sha
 
 
 @pytest.mark.asyncio
@@ -205,7 +274,7 @@ def test_real_proposal_quarantine_count_is_exposed_by_health(tmp_path: Path) -> 
     root = tmp_path / "runs" / "selfdev"
     asyncio.run(_seed(root, terminal=True))
     controller = _controller(tmp_path, SelfDevEventStore(root, clock=FakeClock()))
-    service = SelfDevService(controller, idle_seconds=0.01)
+    service = _StaticService(controller)
 
     with TestClient(create_app(service)) as client:
         health = client.get("/api/selfdev/health")
@@ -347,3 +416,126 @@ def test_real_active_proposal_integrity_abort_releases_slot_even_without_cleanup
         assert body["state"] == ProposalPhase.ABORTED.value
         assert body["state_version"] > current["state_version"]
         assert controller.store.replay()[PROPOSAL_ID].aggregate.is_terminal
+
+
+def test_real_workspace_ready_two_in_doubt_effects_are_adjudicated_then_aborted(tmp_path: Path) -> None:
+    root = tmp_path / "runs" / "selfdev"
+    asyncio.run(_seed(root, terminal=False, in_doubt_effects=2, recovery_pauses=2, clean_integrity=True))
+    controller = _controller(tmp_path, SelfDevEventStore(root, clock=FakeClock()))
+    service = _StaticService(controller)
+
+    with TestClient(create_app(service)) as client:
+        current = client.get(f"/api/selfdev/proposals/{PROPOSAL_ID}").json()
+        assert current["state"] == ProposalPhase.WORKSPACE_READY.value
+        assert len(current["in_doubt_effects"]) == 2
+        assert {item["effect_kind"] for item in current["in_doubt_effects"]} == {"run"}
+        assert {item["input_sha256"] for item in current["in_doubt_effects"]} == {"1" * 64, "2" * 64}
+        assert len(current["pause_causes"]) == 2
+
+        first_pause = current["pause_causes"][0]["pause_id"]
+        resumed = client.post(
+            f"/api/selfdev/proposals/{PROPOSAL_ID}/control",
+            json={
+                "action": "resume",
+                "pause_id": first_pause,
+                "reason": "対象 pause を明示して確認を開始する",
+                "expected_state_version": current["state_version"],
+            },
+        )
+        assert resumed.status_code == 202
+        current = resumed.json()
+        assert len(current["pause_causes"]) == 1
+
+        first_effect, second_effect = current["in_doubt_effects"]
+        completed = client.post(
+            f"/api/selfdev/proposals/{PROPOSAL_ID}/human-decision",
+            json={
+                "decision": "completed",
+                "effect_id": first_effect["effect_id"],
+                "reason": "外部 Run の成果物と実行事実を照合できた",
+                "expected_state_version": current["state_version"],
+            },
+        )
+        assert completed.status_code == 202
+        current = completed.json()
+        assert len(current["in_doubt_effects"]) == 1
+        assert len(current["pause_causes"]) == 1
+
+        failed = client.post(
+            f"/api/selfdev/proposals/{PROPOSAL_ID}/human-decision",
+            json={
+                "decision": "failed",
+                "effect_id": second_effect["effect_id"],
+                "reason": "外部 Run の実行事実は確認できなかった",
+                "expected_state_version": current["state_version"],
+            },
+        )
+        assert failed.status_code == 202
+        current = failed.json()
+        assert current["in_doubt_effects"] == []
+        assert current["pause_causes"] == []
+
+        aborted = client.post(
+            f"/api/selfdev/proposals/{PROPOSAL_ID}/control",
+            json={
+                "action": "abort",
+                "reason": "全 in-doubt 効果の裁定後に通常 abort する",
+                "expected_state_version": current["state_version"],
+            },
+        )
+        assert aborted.status_code == 202
+        assert aborted.json()["state"] == ProposalPhase.ABORTED.value
+        events = controller.store.read_events()
+        assert any(
+            event.event_type == "tool_completed"
+            and event.payload["effect_id"] == first_effect["effect_id"]
+            and event.payload["recovered"] is True
+            and event.payload["recovery_reason"]
+            for event in events
+        )
+        assert any(
+            event.event_type == "tool_failed"
+            and event.payload["effect_id"] == second_effect["effect_id"]
+            and event.payload["disposition"] == "human_decision"
+            for event in events
+        )
+
+
+def test_force_abort_preserves_artifacts_when_cleanup_is_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "runs" / "selfdev"
+    asyncio.run(_seed(root, terminal=False, clean_integrity=True))
+    controller = _controller(tmp_path, SelfDevEventStore(root, clock=FakeClock()))
+    service = _StaticService(controller)
+
+    async def cleanup_unavailable(proposal_id: str, *, phase: ProposalPhase) -> None:
+        raise RuntimeError("fixture cleanup unavailable")
+
+    monkeypatch.setattr(controller, "_cleanup_workspace", cleanup_unavailable)
+    before = (root / "proposals" / PROPOSAL_ID / "workspace.json").read_bytes()
+    with TestClient(create_app(service)) as client:
+        current = client.get(f"/api/selfdev/proposals/{PROPOSAL_ID}").json()
+        normal_abort = client.post(
+            f"/api/selfdev/proposals/{PROPOSAL_ID}/control",
+            json={
+                "action": "abort",
+                "reason": "cleanup 失敗を再現する",
+                "expected_state_version": current["state_version"],
+            },
+        )
+        assert normal_abort.status_code == 409
+        current = client.get(f"/api/selfdev/proposals/{PROPOSAL_ID}").json()
+        assert current["state"] == ProposalPhase.WORKSPACE_READY.value
+        assert current["in_doubt_effects"] == []
+
+        forced = client.post(
+            f"/api/selfdev/proposals/{PROPOSAL_ID}/control",
+            json={
+                "action": "force_abort",
+                "reason": "cleanup不能のため artifact を保全して terminal 化する",
+                "expected_state_version": current["state_version"],
+            },
+        )
+        assert forced.status_code == 202
+        assert forced.json()["state"] == ProposalPhase.ABORTED.value
+        assert (root / "proposals" / PROPOSAL_ID / "workspace.json").read_bytes() == before
+        assert any(event.event_type == "selfdev_force_aborted" for event in controller.store.read_events())

@@ -119,6 +119,35 @@ def _pause_dict(cause: Any) -> dict[str, Any]:
     }
 
 
+def _in_doubt_effect_dict(controller: Any, proposal_id: str) -> list[dict[str, Any]]:
+    grouped: dict[str, list[Any]] = {}
+    for event in _events(controller, proposal_id):
+        if event.event_type not in {"tool_invoked", "tool_completed", "tool_failed"}:
+            continue
+        effect_id = event.payload.get("effect_id")
+        if effect_id:
+            grouped.setdefault(str(effect_id), []).append(event)
+    effects: list[dict[str, Any]] = []
+    for effect_id, events in grouped.items():
+        invoked = [event for event in events if event.event_type == "tool_invoked"]
+        terminal = [event for event in events if event.event_type in {"tool_completed", "tool_failed"}]
+        if len(invoked) > 1 or len(terminal) > 1:
+            raise HTTPException(status_code=503, detail=f"effect_id の journal が不正です: {effect_id}")
+        if not invoked or terminal:
+            continue
+        event = invoked[0]
+        effects.append(
+            {
+                "effect_id": effect_id,
+                "effect_kind": event.payload["effect_kind"],
+                "input_sha256": event.payload["input_sha256"],
+                "invoked_at": event.ts,
+                "invocation_event_id": event.event_id,
+            }
+        )
+    return sorted(effects, key=lambda item: (item["invoked_at"], item["effect_id"]))
+
+
 def _pending_action(projection: Any, manifest: ProposalManifest) -> str | None:
     phase = projection.aggregate.phase
     if phase is ProposalPhase.NEEDS_HUMAN:
@@ -229,6 +258,7 @@ def _detail(controller: Any, proposal_id: str) -> dict[str, Any]:
         "integrity_resolved": projection.integrity_resolved,
         "integrity_reason": projection.integrity_reason,
         "pause_causes": [_pause_dict(cause) for cause in projection.aggregate.pause_causes],
+        "in_doubt_effects": _in_doubt_effect_dict(controller, proposal_id),
         "state_version": projection.aggregate.state_version,
         "active_run_id": projection.aggregate.active_run_id,
         "pending_action": _pending_action(projection, manifest),
@@ -377,8 +407,12 @@ async def control_proposal(proposal_id: str, body: ProposalControlBody, request:
             await controller.suspend(proposal_id, reason=body.reason)
         elif body.action == "abort":
             await controller.abort(proposal_id, reason=body.reason)
+        elif body.action == "force_abort":
+            await controller.force_abort(proposal_id, reason=body.reason)
         else:
             pauses = projection.aggregate.pause_causes
+            if body.pause_id is not None:
+                pauses = tuple(item for item in pauses if item.pause_id == body.pause_id)
             if len(pauses) != 1:
                 raise ControllerError("resume 対象の pause cause を一意に指定できません")
             pause = pauses[0]
@@ -398,6 +432,7 @@ async def control_proposal(proposal_id: str, body: ProposalControlBody, request:
         "state": updated.aggregate.phase.value,
         "state_version": updated.aggregate.state_version,
         "pause_causes": [_pause_dict(cause) for cause in updated.aggregate.pause_causes],
+        "in_doubt_effects": _in_doubt_effect_dict(controller, proposal_id),
     }
 
 
@@ -405,6 +440,29 @@ async def control_proposal(proposal_id: str, body: ProposalControlBody, request:
 async def human_decision(proposal_id: str, body: HumanDecisionBody, request: Request) -> dict[str, Any]:
     controller = _controller(request)
     projection = _check_version(controller, proposal_id, body.expected_state_version)
+    if body.decision in {"completed", "failed"}:
+        try:
+            event, removed_pause_ids = await controller.decide_in_doubt_effect(
+                proposal_id,
+                effect_id=body.effect_id or "",
+                decision=body.decision,
+                reason=body.reason,
+            )
+        except Exception as exc:
+            raise _map_mutation_error(exc) from exc
+        updated = _projection(controller, proposal_id)
+        return {
+            "accepted": True,
+            "proposal_id": proposal_id,
+            "decision": body.decision,
+            "effect_id": body.effect_id,
+            "state": updated.aggregate.phase.value,
+            "state_version": updated.aggregate.state_version,
+            "event_id": getattr(event, "event_id", None),
+            "removed_pause_ids": list(removed_pause_ids),
+            "pause_causes": [_pause_dict(cause) for cause in updated.aggregate.pause_causes],
+            "in_doubt_effects": _in_doubt_effect_dict(controller, proposal_id),
+        }
     if projection.aggregate.phase is not ProposalPhase.NEEDS_HUMAN:
         raise HTTPException(status_code=409, detail="NEEDS_HUMAN 以外では Human decision を受け付けません")
     manifest = _manifest(controller, proposal_id)

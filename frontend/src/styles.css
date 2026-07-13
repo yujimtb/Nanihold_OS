@@ -328,6 +328,10 @@ main { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
 .selfdev-action-buttons button, .selfdev-pr-actions button { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--paper); color: var(--ink); cursor: pointer; font-size: 10px; }
 .selfdev-action-buttons button.danger { color: var(--orange); }
 .selfdev-action-buttons button:disabled, .selfdev-pr-actions button:disabled { opacity: .45; cursor: not-allowed; }
+.effect-row { display: grid; gap: 7px; padding: 10px 0; border-top: 1px solid var(--line); }
+.effect-row code { font-size: 10px; overflow-wrap: anywhere; }
+.effect-row span { color: var(--muted); font-size: 10px; }
+.selfdev-action-card select { box-sizing: border-box; width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; background: var(--paper); color: var(--ink); font: inherit; font-size: 11px; }
 .selfdev-info-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; margin-top: 23px; }
 .selfdev-info-card { min-width: 0; padding: 14px; border-radius: 12px; background: color-mix(in srgb, var(--ink) 3%, transparent); }
 .selfdev-info-card h3 { margin: 0 0 10px; font-size: 11px; }

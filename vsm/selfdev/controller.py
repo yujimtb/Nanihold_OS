@@ -433,10 +433,24 @@ class SelfDevController:
             actor_type="controller",
         )
 
-    async def _append_generic(self, event_type: str, proposal_id: str, payload: dict[str, Any], *, actor_type: str = "controller") -> Any:
+    async def _append_generic(
+        self,
+        event_type: str,
+        proposal_id: str,
+        payload: dict[str, Any],
+        *,
+        actor_type: str = "controller",
+        actor_id: str | None = None,
+    ) -> Any:
         payload = dict(payload)
         payload.setdefault("proposal_id", proposal_id)
-        return await self.store.append(event_type, payload, proposal_id=proposal_id, actor_type=actor_type)
+        return await self.store.append(
+            event_type,
+            payload,
+            proposal_id=proposal_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
+        )
 
     async def _pause_for_recovery(
         self,
@@ -445,6 +459,29 @@ class SelfDevController:
         *,
         reason: str = "effect in doubt; external fact verification is required",
     ) -> None:
+        effect_ids = {effect_id for _, effect_id in effects}
+        projection = self._projection(proposal_id)
+        existing_effect_ids: set[str] = set()
+        for cause in projection.aggregate.pause_causes:
+            if cause.kind is not PauseKind.SUSPEND:
+                continue
+            source = next(
+                (
+                    event
+                    for event in self._events(proposal_id)
+                    if event.event_id == cause.source_event_id
+                    and event.event_type == "algedonic_human_notification"
+                ),
+                None,
+            )
+            if source is None:
+                continue
+            for item in source.payload.get("effects", ()):
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    existing_effect_ids.add(str(item[1]))
+        # 起動のたびに同じ in-doubt effect の pause を増殖させない。
+        if effect_ids and effect_ids.issubset(existing_effect_ids):
+            return
         notification = await self._append_generic(
             "algedonic_human_notification",
             proposal_id,
@@ -466,6 +503,96 @@ class SelfDevController:
             },
             proposal_id=proposal_id,
         )
+
+    def _in_doubt_effects(self, proposal_id: str) -> tuple[Any, ...]:
+        return self.effects.in_doubt(proposal_id)
+
+    async def _remove_recovery_pauses(self, proposal_id: str) -> tuple[str, ...]:
+        """裁定済み effect に対応する recovery pause を全て解除する。"""
+
+        remaining = {item.effect_id for item in self._in_doubt_effects(proposal_id)}
+        removed: list[str] = []
+        projection = self._projection(proposal_id)
+        for cause in projection.aggregate.pause_causes:
+            if cause.kind is not PauseKind.SUSPEND:
+                continue
+            source = next(
+                (
+                    event
+                    for event in self._events(proposal_id)
+                    if event.event_id == cause.source_event_id
+                    and event.event_type == "algedonic_human_notification"
+                ),
+                None,
+            )
+            if source is None:
+                continue
+            effect_ids = {
+                str(item[1])
+                for item in source.payload.get("effects", ())
+                if isinstance(item, (list, tuple)) and len(item) == 2
+            }
+            if effect_ids and effect_ids.isdisjoint(remaining):
+                await self.resume_suspend(proposal_id, pause_id=cause.pause_id)
+                removed.append(cause.pause_id)
+        self._recovery_snapshot = self.recovery.reconcile()
+        return tuple(removed)
+
+    async def decide_in_doubt_effect(
+        self,
+        proposal_id: str,
+        *,
+        effect_id: str,
+        decision: str,
+        reason: str,
+    ) -> tuple[Any, tuple[str, ...]]:
+        """Human の completed/failed 裁定を effect journal に固定する。"""
+
+        self._require_started()
+        normalized_reason = nonempty_reason(reason, context="in-doubt effect decision")
+        if decision not in {"completed", "failed"}:
+            raise ValueError("in-doubt effect の decision は completed または failed です")
+        effect = next(
+            (item for item in self._in_doubt_effects(proposal_id) if item.effect_id == effect_id),
+            None,
+        )
+        if effect is None:
+            raise ControllerError("指定された in-doubt effect はありません")
+        if decision == "completed":
+            await self.effects.record_recovered(
+                proposal_id=proposal_id,
+                effect_id=effect.effect_id,
+                effect_kind=effect.effect_kind,
+                result={
+                    "effect_id": effect.effect_id,
+                    "decision": "completed",
+                    "reason": normalized_reason,
+                },
+                recovery_reason=normalized_reason,
+                actor_type="human",
+                actor_id="human",
+            )
+        else:
+            await self.effects.record_failed_decision(
+                proposal_id=proposal_id,
+                effect_id=effect.effect_id,
+                reason=normalized_reason,
+            )
+        decision_event = await self._append_generic(
+            "selfdev_effect_decided",
+            proposal_id,
+            {
+                "effect_id": effect.effect_id,
+                "decision": decision,
+                "reason": normalized_reason,
+                "input_sha256": effect.input_sha256,
+                "journal_event_id": self._events(proposal_id)[-1].event_id,
+            },
+            actor_type="human",
+            actor_id="human",
+        )
+        removed = await self._remove_recovery_pauses(proposal_id)
+        return decision_event, removed
 
     def implementation_timeout_seconds(self, proposal: ProposalManifest) -> float:
         """Proposal budget から implementation Run の外側 timer を導出する。"""
@@ -1473,6 +1600,38 @@ class SelfDevController:
         await self._abort(proposal_id, reason, reason_code="aborted")
         if not self._projection(proposal_id).aggregate.is_terminal:
             raise ControllerError("abort は cleanup または integrity 解決を完了できませんでした")
+
+    async def force_abort(self, proposal_id: str, *, reason: str) -> None:
+        """cleanup を諦め、artifact を保全したまま Human 裁定で terminal 化する。"""
+
+        self._require_started()
+        projection = self._projection(proposal_id)
+        if projection.aggregate.is_terminal:
+            raise ControllerError("terminal Proposal は操作できません")
+        if self._in_doubt_effects(proposal_id):
+            raise ControllerError("force abort には全ての in-doubt 効果の裁定が必要です")
+        normalized_reason = nonempty_reason(reason, context="force abort")
+        artifact_refs = tuple(
+            str(event.payload["ref"])
+            for event in self._events(proposal_id)
+            if event.event_type == "artifact_created"
+        )
+        await self._append_generic(
+            "selfdev_force_aborted",
+            proposal_id,
+            {
+                "reason": normalized_reason,
+                "preserved_artifact_refs": artifact_refs,
+            },
+            actor_type="human",
+            actor_id="human",
+        )
+        await self._transition(
+            proposal_id,
+            ProposalPhase.ABORTED,
+            reason_code="aborted",
+            reason=normalized_reason,
+        )
 
     async def record_merge_outcome(self, proposal_id: str, *, merged: bool, reason: str = "", merge_sha: str | None = None) -> None:
         self._require_started()

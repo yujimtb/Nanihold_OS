@@ -168,6 +168,14 @@ export interface SelfDevPauseCause {
   reason: string;
 }
 
+export interface SelfDevEffectInDoubt {
+  effect_id: string;
+  effect_kind: string;
+  input_sha256: string;
+  invoked_at: string;
+  invocation_event_id: string;
+}
+
 export interface SelfDevProposalSummary {
   proposal_id: string;
   title: string;
@@ -193,6 +201,7 @@ export interface SelfDevProposalDetail extends SelfDevProposalSummary {
   };
   proposal_manifest_sha256?: string;
   protected_scope_sha256?: string;
+  in_doubt_effects: SelfDevEffectInDoubt[];
   transitions: Array<{ event_id: string; ts: string; transition: Record<string, unknown> }>;
   consortium_reviews: Array<Record<string, unknown>>;
   implementation_runs: Array<Record<string, unknown>>;

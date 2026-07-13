@@ -32,26 +32,39 @@ class ProposalCreateBody(SelfDevRequestModel):
 
 
 class ProposalControlBody(SelfDevRequestModel):
-    action: Literal["suspend", "resume", "abort"]
+    action: Literal["suspend", "resume", "abort", "force_abort"]
     reason: str = Field(min_length=1)
     expected_state_version: int = Field(ge=1)
+    pause_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_pause_id(self) -> "ProposalControlBody":
+        if self.action != "resume" and self.pause_id is not None:
+            raise ValueError("pause_id は resume でのみ指定できます")
+        return self
 
 
 class HumanDecisionBody(SelfDevRequestModel):
-    decision: Literal["approve", "reject", "respond"]
+    decision: Literal["approve", "reject", "respond", "completed", "failed"]
     reason: str = ""
     statement: str | None = None
     expected_state_version: int = Field(ge=1)
     proposal_manifest_sha256: str | None = None
     protected_scope_sha256: str | None = None
+    effect_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def validate_text(self) -> "HumanDecisionBody":
+        effect_decision = self.decision in {"completed", "failed"}
+        if effect_decision and self.effect_id is None:
+            raise ValueError("in-doubt 効果の裁定には effect_id が必要です")
+        if not effect_decision and self.effect_id is not None:
+            raise ValueError("effect_id は in-doubt 効果の裁定でのみ指定できます")
         if self.decision == "respond":
             if not self.statement or not self.statement.strip():
                 raise ValueError("respond には statement が必要です")
         elif not self.reason.strip():
-            raise ValueError("approve/reject には reason が必要です")
+            raise ValueError("approve/reject/completed/failed には reason が必要です")
         return self
 
 

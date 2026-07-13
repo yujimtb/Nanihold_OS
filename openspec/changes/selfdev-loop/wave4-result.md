@@ -9,6 +9,8 @@
 - `vsm/web/app.py` に FastAPI lifespan と `create_app(service=...)` を追加した。`SelfDevService` は single app worker 内で controller lock を取得し、fatal/degraded 時の mutation は 503 になる。`vsm/web/selfdev_runtime.py` は `[selfdev].enabled=true` と S1/S3/S4/S5/S3★ の明示 runtime が揃った場合だけ本番配線を構築する。
 - `vsm/cli.py` に `vsm selfdev propose/list/show/approve/reject/respond/suspend/resume/abort/outcome` を追加した。mutation と observation は loopback REST のみを使い、API停止時に Event Log へ直接 fallback しない。
 - frontend に「自己開発」タブを追加した。全件・承認待ち・MERGE_READY一覧、状態 rail、pause、Manifest、状態遷移、合議全文、gate/audit/budget、artifact、candidate、PR説明文 copy、Human decision、suspend/resume/abort、merge/archive outcome、新規Proposalフォームを表示する。push/PR作成/mergeボタンは持たない。
+- in-doubt effect の一覧（effect_id、種別、入力hash、発生時刻）と completed/failed の理由付きHuman裁定を追加した。`tool_completed(recovered=true)` / `tool_failed(disposition=human_decision)` と `selfdev_effect_decided` を記録し、紐づく recovery pause を解除する。control の `resume` は `pause_id` を受け付け、`force_abort` は全裁定後にartifactを保全してterminal化する。
+- frontend に Playwright の最小基盤（`@playwright/test`、`playwright.config.ts`、`npm run test:e2e`）を追加した。従来 frontend にブラウザ操作テスト基盤が無かったため、自己開発タブの in-doubt completed 裁定を1本追加した。
 - `compose.yaml` の app を `--workers 1` に固定し、`--reload` を除去した。自己開発 controller の二重起動を避ける。
 - `docs/cli.md`、`docs/web-ui.md`、`docs/self-development.md`、`docs/setup.md`、`docs/implementation-status.md`、`README.md` を Wave 4 契約へ更新した。
 

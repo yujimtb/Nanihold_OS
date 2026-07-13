@@ -114,6 +114,30 @@ class ProposalIntegrityResolvedPayload(SelfDevPayload):
     reason: str = Field(min_length=1)
 
 
+class SelfDevEffectDecidedPayload(SelfDevPayload):
+    """Human が in-doubt effect の外部事実を裁定した記録。"""
+
+    proposal_id: str = Field(pattern=r"^proposal-[0-9a-f]{32}$")
+    effect_id: str = Field(min_length=1)
+    decision: Literal["completed", "failed"]
+    reason: str = Field(min_length=1)
+    input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    journal_event_id: str = Field(min_length=1)
+
+
+class SelfDevForceAbortedPayload(SelfDevPayload):
+    """cleanup を実行せず artifact を保全して terminal 化した記録。"""
+
+    proposal_id: str = Field(pattern=r"^proposal-[0-9a-f]{32}$")
+    reason: str = Field(min_length=1)
+    preserved_artifact_refs: tuple[str, ...] = ()
+
+    @field_validator("preserved_artifact_refs")
+    @classmethod
+    def _refs(cls, refs: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(_relative_ref(ref) for ref in refs)
+
+
 class ConsortiumDecidedV2Payload(SelfDevPayload):
     consortium_id: str = Field(min_length=1)
     proposal_id: str = Field(pattern=r"^proposal-[0-9a-f]{32}$")
@@ -189,6 +213,7 @@ class ToolCompletedV2Payload(SelfDevPayload):
     result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     artifact_refs: tuple[str, ...] = ()
     recovered: bool = False
+    recovery_reason: str | None = None
 
     @field_validator("artifact_refs")
     @classmethod
@@ -204,6 +229,7 @@ class ToolFailedV2Payload(SelfDevPayload):
     effect_kind: Literal["workspace", "run", "gate", "commit", "cleanup", "audit", "report"]
     error_type: str = Field(min_length=1)
     reason: str = Field(min_length=1)
+    disposition: Literal["operation_failure", "human_decision"] = "operation_failure"
 
 
 class HumanReviewRequestedV2Payload(SelfDevPayload):
@@ -245,6 +271,8 @@ SELFDEV_EVENT_TYPES: tuple[str, ...] = (
     "proposal_integrity_failed",
     "proposal_integrity_resolved",
     "selfdev_workspace_path_skipped",
+    "selfdev_effect_decided",
+    "selfdev_force_aborted",
 )
 
 SELFDEV_PAYLOAD_MODELS: dict[tuple[str, int], type[BaseModel]] = {
@@ -253,6 +281,8 @@ SELFDEV_PAYLOAD_MODELS: dict[tuple[str, int], type[BaseModel]] = {
     ("proposal_run_linked", 1): ProposalRunLinkedPayload,
     ("proposal_integrity_failed", 1): ProposalIntegrityFailedPayload,
     ("proposal_integrity_resolved", 1): ProposalIntegrityResolvedPayload,
+    ("selfdev_effect_decided", 1): SelfDevEffectDecidedPayload,
+    ("selfdev_force_aborted", 1): SelfDevForceAbortedPayload,
     ("selfdev_workspace_path_skipped", 1): SelfDevWorkspacePathSkippedPayload,
     ("artifact_created", 2): ArtifactCreatedPayload,
     ("audit_report_sent", 2): AuditReportSentV1Payload,
@@ -276,6 +306,8 @@ __all__ = [
     "ProposalRunLinkedPayload",
     "ProposalIntegrityFailedPayload",
     "ProposalIntegrityResolvedPayload",
+    "SelfDevEffectDecidedPayload",
+    "SelfDevForceAbortedPayload",
     "ProposalStateChangedPayload",
     "SelfDevWorkspacePathSkippedPayload",
     "ToolCompletedV2Payload",

@@ -99,11 +99,11 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
-  selfdevControl: (proposalId: string, action: "suspend" | "resume" | "abort", reason: string, stateVersion: number) =>
+  selfdevControl: (proposalId: string, action: "suspend" | "resume" | "abort" | "force_abort", reason: string, stateVersion: number, pauseId?: string) =>
     request<{ accepted: boolean }>(`/api/selfdev/proposals/${encodeURIComponent(proposalId)}/control`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, reason, expected_state_version: stateVersion }),
+      body: JSON.stringify({ action, reason, expected_state_version: stateVersion, ...(pauseId ? { pause_id: pauseId } : {}) }),
     }),
   selfdevHumanDecision: (proposalId: string, payload: Record<string, unknown>) =>
     request<{ accepted: boolean }>(`/api/selfdev/proposals/${encodeURIComponent(proposalId)}/human-decision`, {

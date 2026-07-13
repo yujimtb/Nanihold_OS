@@ -160,6 +160,7 @@ function ProposalForm({ onCreated, onError }: { onCreated: () => Promise<void>; 
 function ProposalDetail({ detail, onChanged, onError }: { detail: SelfDevProposalDetail; onChanged: () => void; onError: (message: string) => void }) {
   const [reason, setReason] = useState("");
   const [statement, setStatement] = useState("");
+  const [selectedPauseId, setSelectedPauseId] = useState("");
   const [busy, setBusy] = useState(false);
 
   const run = async (operation: () => Promise<unknown>) => {
@@ -171,7 +172,19 @@ function ProposalDetail({ detail, onChanged, onError }: { detail: SelfDevProposa
     expected_state_version: detail.state_version,
     ...(decision === "approve" ? { proposal_manifest_sha256: detail.proposal_manifest_sha256, protected_scope_sha256: detail.protected_scope_sha256 } : {}),
   }));
-  const control = (action: "suspend" | "resume" | "abort") => run(() => api.selfdevControl(detail.proposal.id, action, reason.trim(), detail.state_version));
+  const effectDecision = (effectId: string, decision: "completed" | "failed") => run(() => api.selfdevHumanDecision(detail.proposal.id, {
+    decision,
+    effect_id: effectId,
+    reason: reason.trim(),
+    expected_state_version: detail.state_version,
+  }));
+  const control = (action: "suspend" | "resume" | "abort" | "force_abort") => run(() => api.selfdevControl(
+    detail.proposal.id,
+    action,
+    reason.trim(),
+    detail.state_version,
+    action === "resume" ? selectedPauseId || (detail.pause_causes.length === 1 ? detail.pause_causes[0].pause_id : undefined) : undefined,
+  ));
 
   return (
     <article className="selfdev-detail">
@@ -179,8 +192,10 @@ function ProposalDetail({ detail, onChanged, onError }: { detail: SelfDevProposa
       <div className="state-rail">{STATES.map((state) => <span key={state} className={state === detail.state ? "current" : STATES.indexOf(state) < STATES.indexOf(detail.state) ? "passed" : ""}>{stateLabel(state)}</span>)}</div>
       {detail.pause_causes.map((cause) => <div className="pause-notice" key={cause.pause_id}><Pause size={16} /><span><strong>{cause.kind}</strong> {cause.reason}{cause.reset_at ? `（${cause.reset_at} 復帰予定）` : ""}</span></div>)}
 
+      {detail.in_doubt_effects.length > 0 && <section className="selfdev-action-card human effect-resolution" aria-label="in-doubt効果の裁定"><div><h3><ShieldAlert size={17} /> in-doubt 効果の人間裁定</h3><p>外部事実を確認し、completed（存在する）または failed（存在しない）を理由付きで記録します。</p></div>{detail.in_doubt_effects.map((effect) => <div className="effect-row" key={effect.effect_id}><code>{effect.effect_id}</code><span>{effect.effect_kind} · {effect.input_sha256.slice(0, 12)}… · {dateLabel(effect.invoked_at)}</span><div className="selfdev-action-buttons"><button disabled={busy || !reason.trim()} onClick={() => void effectDecision(effect.effect_id, "completed")}>completed</button><button className="danger" disabled={busy || !reason.trim()} onClick={() => void effectDecision(effect.effect_id, "failed")}>failed</button></div></div>)}</section>}
+
       {detail.state === "NEEDS_HUMAN" && <section className="selfdev-action-card human"><div><h3><ShieldAlert size={17} /> Human の判断</h3><p>合議の内容を確認し、承認・却下・追加 statement を記録します。</p></div><textarea value={statement || reason} onChange={(event) => { setStatement(event.target.value); setReason(event.target.value); }} placeholder="理由または statement" rows={2} /><div className="selfdev-action-buttons"><button disabled={busy} onClick={() => void human("respond")}>statementを送る</button><button disabled={busy} onClick={() => void human("approve")}>承認</button><button className="danger" disabled={busy} onClick={() => void human("reject")}>却下</button></div></section>}
-      {detail.state !== "NEEDS_HUMAN" && !["DONE", "ARCHIVED", "REJECTED", "ABORTED", "REJECTED_FINAL"].includes(detail.state) && <section className="selfdev-action-card"><h3>介入</h3><input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="操作理由" /><div className="selfdev-action-buttons"><button disabled={busy || !reason.trim()} onClick={() => void control("suspend")}><Pause size={14} /> suspend</button><button disabled={busy || !reason.trim()} onClick={() => void control("resume")}><Play size={14} /> resume</button><button className="danger" disabled={busy || !reason.trim()} onClick={() => void control("abort")}><Square size={14} /> abort</button></div></section>}
+      {detail.state !== "NEEDS_HUMAN" && !["DONE", "ARCHIVED", "REJECTED", "ABORTED", "REJECTED_FINAL"].includes(detail.state) && <section className="selfdev-action-card"><h3>介入</h3><input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="操作理由（裁定・操作に必須）" />{detail.pause_causes.length > 1 && <label>resume対象<select value={selectedPauseId} onChange={(event) => setSelectedPauseId(event.target.value)}><option value="">pauseを選択</option>{detail.pause_causes.map((cause) => <option key={cause.pause_id} value={cause.pause_id}>{cause.pause_id} · {cause.kind}</option>)}</select></label>}<div className="selfdev-action-buttons"><button disabled={busy || !reason.trim()} onClick={() => void control("suspend")}><Pause size={14} /> suspend</button><button disabled={busy || !reason.trim() || (detail.pause_causes.length > 1 && !selectedPauseId)} onClick={() => void control("resume")}><Play size={14} /> resume</button><button className="danger" disabled={busy || !reason.trim()} onClick={() => void control("abort")}><Square size={14} /> abort</button>{detail.in_doubt_effects.length === 0 && <button className="danger" disabled={busy || !reason.trim()} onClick={() => void control("force_abort")}><Square size={14} /> force abort</button>}</div></section>}
 
       <section className="selfdev-info-grid">
         <Info title="ProposalManifest"><pre>{JSON.stringify(detail.proposal, null, 2)}</pre></Info>
