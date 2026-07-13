@@ -121,7 +121,10 @@ class ControllerRecovery:
         active = [
             projection
             for projection in projections.values()
-            if projection.aggregate.phase not in TERMINAL_PHASES
+            if (
+                projection.aggregate.phase not in TERMINAL_PHASES
+                and not projection.aggregate.is_paused
+            )
         ]
         if len(active) > 1:
             raise RecoveryError("非terminal Proposal は同時に1件だけ許可されます")

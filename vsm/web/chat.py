@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -68,7 +69,7 @@ class ChatSession:
     messages: list[ChatMessage] = field(default_factory=list)
     total_tokens: int = 0
     busy: bool = False
-    state_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    state_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def public_dict(self) -> dict[str, Any]:
         return {
@@ -147,7 +148,7 @@ class ChatManager:
         if not cleaned:
             raise ValueError("メッセージを入力してください")
 
-        async with session.state_lock:
+        with session.state_lock:
             if session.busy:
                 raise ChatBusyError("この対話では別のメッセージを処理中です")
             session.busy = True
@@ -210,7 +211,7 @@ class ChatManager:
                 "message": response.public_dict(),
             }
         finally:
-            async with session.state_lock:
+            with session.state_lock:
                 session.busy = False
 
     def get_session(self, chat_id: str) -> ChatSession:

@@ -53,15 +53,20 @@ class SelfDevScheduler:
         reserve: Mapping[str, float],
         merge_ready: Iterable[ProposalManifest] = (),
         protected_approved_ids: Iterable[str] = (),
+        paused_ids: Iterable[str] = (),
     ) -> SchedulerDecision:
         if active is not None:
             return SchedulerDecision(None, AdmissionResult(False, "active Proposal slot は既に使用中です"))
         done = tuple(done_ids)
         conflicts = tuple(merge_ready)
         protected_approved = set(protected_approved_ids)
+        paused = set(paused_ids)
         ordered = sorted(self.candidates, key=lambda item: (item.created_at, item.id))
         first_reason: str | None = None
         for candidate in ordered:
+            if candidate.id in paused:
+                first_reason = first_reason or "Proposal が pause 中です"
+                continue
             if not dependencies_satisfied(candidate, done):
                 first_reason = first_reason or "依存 Proposal が DONE ではありません"
                 continue
@@ -96,6 +101,7 @@ class SelfDevScheduler:
         reserve: Mapping[str, float],
         merge_ready: Iterable[ProposalManifest] = (),
         protected_approved_ids: Iterable[str] = (),
+        paused_ids: Iterable[str] = (),
     ) -> ProposalManifest | None:
         decision = self.decide(
             active=active,
@@ -104,6 +110,7 @@ class SelfDevScheduler:
             reserve=reserve,
             merge_ready=merge_ready,
             protected_approved_ids=protected_approved_ids,
+            paused_ids=paused_ids,
         )
         if decision.proposal is None:
             return None

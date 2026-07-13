@@ -98,21 +98,52 @@ def _relative(path: str) -> str:
     return value
 
 
-def collect_changed_paths(worktree: Path, base_sha: str) -> tuple[str, ...]:
+def collect_changed_paths(
+    worktree: Path,
+    base_sha: str,
+    *,
+    skipped_paths: list[str] | None = None,
+) -> tuple[str, ...]:
+    """変更 path を返す。
+
+    Git の ``--others`` は、``.gitignore`` による除外を明示しないと
+    selfdev worktree 内に残った pytest の一時 repository まで列挙する。
+    control plane が管理する変更だけを対象にし、無関係または Git path
+    として正規化できない値はスキップする。
+    """
+
     tracked = git_output(
         worktree, "diff", "--no-ext-diff", "--name-only", "--no-renames", base_sha, "--"
     )
-    untracked = git_output(worktree, "ls-files", "--others", "-z")
-    paths = {_relative(item) for item in tracked.splitlines() if item}
-    paths.update(_relative(item) for item in untracked.split("\0") if item)
+    untracked = git_output(
+        worktree,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+    )
+    paths: set[str] = set()
+    for value in (*tracked.splitlines(), *untracked.split("\0")):
+        if not value:
+            continue
+        try:
+            paths.add(_relative(value))
+        except WorkspaceError:
+            if skipped_paths is not None:
+                skipped_paths.append(value)
     return tuple(sorted(paths))
 
 
-def candidate_diff_sha256(worktree: Path, base_sha: str) -> str:
+def candidate_diff_sha256(
+    worktree: Path,
+    base_sha: str,
+    *,
+    skipped_paths: list[str] | None = None,
+) -> str:
     """作業木の内容から計算する、stage/commit を跨いで安定した digest。"""
 
     rows: list[dict[str, Any]] = []
-    for relative in collect_changed_paths(worktree, base_sha):
+    for relative in collect_changed_paths(worktree, base_sha, skipped_paths=skipped_paths):
         path = worktree.joinpath(*relative.split("/"))
         if path.is_symlink():
             rows.append({"path": relative, "kind": "symlink", "target": os.readlink(path)})

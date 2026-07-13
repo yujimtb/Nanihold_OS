@@ -75,6 +75,10 @@ def build_selfdev_service(
     missing = [role.value for role in required if runtimes.get(role) is None]
     if missing:
         raise ConfigError(missing_roles=missing, detail="selfdev の required runtime が未設定です")
+    implementation_backend_name = run_config.agents.backend_for(SystemRole.S1_WORKER)
+    if implementation_backend_name is None:
+        raise ConfigError(missing_roles=[SystemRole.S1_WORKER.value], detail="selfdev runtime が未設定です")
+    implementation_backend = run_config.agents.backends[implementation_backend_name]
     store_root = Path("runs") / "selfdev"
     store = SelfDevEventStore(store_root)
     timeout = run_config.consortium.human_timeout_seconds
@@ -82,7 +86,14 @@ def build_selfdev_service(
         repository=run_config.selfdev.repository,
         store=store,
         writer_runtime=_runtime_binding(SystemRole.S1_WORKER, runtimes[SystemRole.S1_WORKER], run_config),
-        implementation_runner=_RuntimeImplementationRunner(runtimes[SystemRole.S1_WORKER]),
+        implementation_runner=_RuntimeImplementationRunner(
+            runtimes[SystemRole.S1_WORKER],
+            implementation_timeout_margin_seconds=(
+                run_config.selfdev.implementation_timeout_margin_seconds
+            ),
+            configured_timeout_seconds=implementation_backend.timeout_seconds,
+            configured_timeout_explicit=implementation_backend.timeout_explicit,
+        ),
         gate_runner=_TrustedGateWorker(),
         audit_runner=S3StarAuditRunner(runtime=runtimes[SystemRole.S3STAR_AUDITOR]),
         consortium_runtimes={

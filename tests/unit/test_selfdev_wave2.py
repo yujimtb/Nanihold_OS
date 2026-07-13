@@ -208,6 +208,53 @@ def test_proposal_workspace_snapshots_audit_and_cleans_only_on_terminal(
     assert all(item.path != manifest.worktree_path for item in list_worktrees(repository))
 
 
+def test_proposal_workspace_cleanup_ignores_pytest_nested_repository(tmp_path: Path) -> None:
+    """無関係な pytest 残骸を workspace の変更走査へ混入させない。"""
+
+    repository, base_sha = _repository(tmp_path)
+    manifest = _manifest(
+        tmp_path,
+        repository,
+        base_sha,
+        scope=({"path": "src", "kind": "tree"},),
+    )
+    workspace = ProposalWorkspace(manifest=manifest, run_dir=tmp_path / "runs" / "cleanup")
+    workspace.create()
+
+    (manifest.worktree_path / ".gitignore").write_text(".pytest-tmp/\n", encoding="utf-8")
+    nested_repository = (
+        manifest.worktree_path / ".pytest-tmp" / "pid-78" / "test_candidate_committer_create" / "repository"
+    )
+    nested_repository.mkdir(parents=True)
+    _git(nested_repository, "init", "-b", "main")
+    (nested_repository / "unrelated.txt").write_text("not a candidate\n", encoding="utf-8")
+
+    workspace.finalize(terminal=True)
+
+    assert not manifest.worktree_path.exists()
+    assert workspace.skipped_paths == ()
+    audit = json.loads(
+        (workspace.run_dir / "artifacts" / "workspace-audit.json").read_text(encoding="utf-8")
+    )
+    assert not any(path.startswith(".pytest-tmp/") for path in audit["changed_paths"])
+
+
+def test_collect_changed_paths_skips_invalid_git_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    skipped: list[str] = []
+
+    def fake_git_output(_cwd: Path, *args: str, **_kwargs: object) -> str:
+        if args[0] == "diff":
+            return "bad/\n"
+        if args[0] == "ls-files":
+            return ""
+        raise AssertionError(args)
+
+    monkeypatch.setattr(selfdev_git, "git_output", fake_git_output)
+
+    assert selfdev_git.collect_changed_paths(tmp_path, "base", skipped_paths=skipped) == ()
+    assert skipped == ["bad/"]
+
+
 def test_proposal_workspace_rejects_initial_path_and_branch_collisions(tmp_path: Path) -> None:
     repository, base_sha = _repository(tmp_path)
     manifest = _manifest(

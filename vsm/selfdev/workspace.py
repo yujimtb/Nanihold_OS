@@ -149,11 +149,16 @@ def _untracked_patch(worktree: Path, relative: str) -> str:
     return completed.stdout
 
 
-def _worktree_patch(worktree: Path, base_sha: str) -> tuple[str, str, tuple[str, ...]]:
+def _worktree_patch(
+    worktree: Path,
+    base_sha: str,
+    *,
+    skipped_paths: list[str],
+) -> tuple[str, str, tuple[str, ...]]:
     status = git_output(worktree, "status", "--short", "--untracked-files=all")
     patch = git_output(worktree, "diff", "--binary", base_sha)
     summary = git_output(worktree, "diff", "--stat", base_sha)
-    paths = collect_changed_paths(worktree, base_sha)
+    paths = collect_changed_paths(worktree, base_sha, skipped_paths=skipped_paths)
     for relative in paths:
         if "\n?? " + relative in "\n" + status or status.startswith("?? " + relative):
             patch += _untracked_patch(worktree, relative)
@@ -171,6 +176,7 @@ class ProposalWorkspace:
         self.descriptor_path = self.run_dir / "workspace.json"
         self.state_path = self.run_dir / "workspace-state.json"
         self._descriptor: WorkspaceDescriptor | None = None
+        self._skipped_paths: tuple[str, ...] = ()
 
     @property
     def worktree_path(self) -> Path:
@@ -199,6 +205,17 @@ class ProposalWorkspace:
     @property
     def status(self) -> WorkspaceStatus:
         return self.descriptor.status
+
+    @property
+    def skipped_paths(self) -> tuple[str, ...]:
+        """snapshot 中に安全境界の外として読み飛ばした Git path。"""
+
+        return self._skipped_paths
+
+    def registry_entry(self) -> GitWorktreeInfo | None:
+        """Git worktree registry に記録された、この workspace の entry。"""
+
+        return self._registry_entry()
 
     def _assert_descriptor_matches(self, descriptor: WorkspaceDescriptor) -> None:
         expected = WorkspaceDescriptor.from_manifest(self.manifest, status=descriptor.status)
@@ -284,8 +301,19 @@ class ProposalWorkspace:
         """patch と監査情報だけ保存し、worktree は保持する。"""
 
         self.adopt_existing()
-        status, patch, summary = _worktree_patch(self.worktree_path, self.manifest.base_sha)
-        changed_paths = list(collect_changed_paths(self.worktree_path, self.manifest.base_sha))
+        skipped_paths: list[str] = []
+        status, patch, summary = _worktree_patch(
+            self.worktree_path,
+            self.manifest.base_sha,
+            skipped_paths=skipped_paths,
+        )
+        changed_paths = list(
+            collect_changed_paths(
+                self.worktree_path,
+                self.manifest.base_sha,
+                skipped_paths=skipped_paths,
+            )
+        )
         artifact_dir = self.run_dir / "artifacts"
         artifact_dir.mkdir(parents=True, exist_ok=True)
         patch_path = artifact_dir / "candidate.patch"
@@ -299,13 +327,18 @@ class ProposalWorkspace:
             "branch": self.manifest.branch,
             "worktree_path": str(self.worktree_path),
             "changed_paths": changed_paths,
-            "candidate_diff_sha256": candidate_diff_sha256(self.worktree_path, self.manifest.base_sha),
+            "candidate_diff_sha256": candidate_diff_sha256(
+                self.worktree_path,
+                self.manifest.base_sha,
+                skipped_paths=skipped_paths,
+            ),
         }
         (artifact_dir / "workspace-audit.json").write_text(
             json.dumps(audit, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         self._descriptor = replace(self.descriptor, status=WorkspaceStatus.SNAPSHOTTED)
         _write_status(self.state_path, WorkspaceStatus.SNAPSHOTTED)
+        self._skipped_paths = tuple(sorted(set(skipped_paths)))
         return patch_path
 
     def commit_candidate(self, *, gate_report: Any) -> CandidateCommit:

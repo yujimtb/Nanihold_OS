@@ -32,8 +32,8 @@ loopback REST API を経由し、Event Log へ直接 fallback しません。
 
 Selfdev の implementation Run は、ProposalManifest の `active_wall_clock_seconds` と
 `[selfdev].implementation_timeout_margin_seconds` から全体制限時間を導出します。Agent backend の
-単発 `timeout_seconds` とは別タイマーとして記録し、タイムアウト後もworkspaceの `candidate.patch`
-と実行効果ログを成果物として保持します。
+単発 `timeout_seconds` にも同じ導出値を上限として渡し、既定値が短い backend timer で意図せず切断されないようにします。backend timeout を設定で明示的に短くした場合は設定を優先し、その理由を timeout reason に記録します。タイムアウト後もworkspaceの `candidate.patch`
+と実行効果ログを成果物として保持します。cleanup は `runs/selfdev` に登録された worktree だけを対象にし、未知 path は warning event を記録して skip します。cleanup failure は対象 Proposal の SUSPEND + algedonic に封じ込め、controller 全体を停止させません。
 
 ### VSM システム構成
 

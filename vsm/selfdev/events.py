@@ -229,12 +229,22 @@ class HumanReviewRespondedV2Payload(SelfDevPayload):
     response_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class SelfDevWorkspacePathSkippedPayload(SelfDevPayload):
+    """workspace scan が管理対象外の Git path を読み飛ばした警告。"""
+
+    proposal_id: str = Field(pattern=r"^proposal-[0-9a-f]{32}$")
+    operation: Literal["cleanup", "snapshot", "orphan_detection"]
+    path: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
 SELFDEV_EVENT_TYPES: tuple[str, ...] = (
     "proposal_state_changed",
     "proposal_pause_changed",
     "proposal_run_linked",
     "proposal_integrity_failed",
     "proposal_integrity_resolved",
+    "selfdev_workspace_path_skipped",
 )
 
 SELFDEV_PAYLOAD_MODELS: dict[tuple[str, int], type[BaseModel]] = {
@@ -243,6 +253,7 @@ SELFDEV_PAYLOAD_MODELS: dict[tuple[str, int], type[BaseModel]] = {
     ("proposal_run_linked", 1): ProposalRunLinkedPayload,
     ("proposal_integrity_failed", 1): ProposalIntegrityFailedPayload,
     ("proposal_integrity_resolved", 1): ProposalIntegrityResolvedPayload,
+    ("selfdev_workspace_path_skipped", 1): SelfDevWorkspacePathSkippedPayload,
     ("artifact_created", 2): ArtifactCreatedPayload,
     ("audit_report_sent", 2): AuditReportSentV1Payload,
     ("consortium_decided", 2): ConsortiumDecidedV2Payload,
@@ -266,6 +277,7 @@ __all__ = [
     "ProposalIntegrityFailedPayload",
     "ProposalIntegrityResolvedPayload",
     "ProposalStateChangedPayload",
+    "SelfDevWorkspacePathSkippedPayload",
     "ToolCompletedV2Payload",
     "ToolFailedV2Payload",
     "ToolInvokedV2Payload",

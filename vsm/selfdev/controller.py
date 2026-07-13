@@ -81,11 +81,13 @@ class ImplementationRunTimeout(TimeoutError):
 class BackendInvocationTimeout(TimeoutError):
     """Agent backend 単発呼び出し自身の timer が発火した。"""
 
-    def __init__(self, timeout_seconds: float) -> None:
+    def __init__(self, timeout_seconds: float, *, reason: str | None = None) -> None:
         self.timeout_seconds = timeout_seconds
-        super().__init__(
-            f"backend invocation timer ({timeout_seconds:g} seconds) expired"
-        )
+        self.reason = reason
+        detail = f"backend invocation timer ({timeout_seconds:g} seconds) expired"
+        if reason:
+            detail += f": {reason}"
+        super().__init__(detail)
 
 
 class ImplementationRunner(Protocol):
@@ -101,10 +103,59 @@ class AuditRunner(Protocol):
 
 
 class _RuntimeImplementationRunner:
-    def __init__(self, runtime: AgentRuntimeProtocol) -> None:
+    def __init__(
+        self,
+        runtime: AgentRuntimeProtocol,
+        *,
+        implementation_timeout_margin_seconds: float = 300.0,
+        configured_timeout_seconds: float | None = None,
+        configured_timeout_explicit: bool = False,
+    ) -> None:
+        if implementation_timeout_margin_seconds < 0:
+            raise ValueError("implementation_timeout_margin_seconds は0以上でなければなりません")
+        if configured_timeout_seconds is not None and configured_timeout_seconds <= 0:
+            raise ValueError("configured_timeout_seconds は正数でなければなりません")
         self.runtime = runtime
+        self.implementation_timeout_margin_seconds = float(implementation_timeout_margin_seconds)
+        self.configured_timeout_seconds = configured_timeout_seconds
+        self.configured_timeout_explicit = configured_timeout_explicit
+
+    def _per_call_timeout(self, manifest: RunManifest) -> tuple[float | None, str | None]:
+        """Run budget を backend 単発 timer にも適用する。"""
+
+        if not isinstance(manifest, RunManifest):
+            return None, None
+        try:
+            active_wall_clock = manifest.budget["active_wall_clock_seconds"]
+        except KeyError as exc:
+            raise ControllerError(
+                "implementation Run manifest に active_wall_clock_seconds がありません"
+            ) from exc
+        if (
+            not isinstance(active_wall_clock, (int, float))
+            or isinstance(active_wall_clock, bool)
+            or active_wall_clock <= 0
+        ):
+            raise ControllerError(
+                "implementation Run manifest の active_wall_clock_seconds が不正です"
+            )
+        derived = float(active_wall_clock) + self.implementation_timeout_margin_seconds
+        if derived <= 0:
+            raise ControllerError("implementation Run の per-call timeout は正数でなければなりません")
+        if not self.configured_timeout_explicit:
+            return derived, None
+        configured = self.configured_timeout_seconds
+        if configured is None:
+            configured = self.runtime.timeout_seconds
+        if configured < derived:
+            return (
+                configured,
+                "明示設定された backend timeout が implementation Run の予算由来 timer より短いため設定を優先",
+            )
+        return derived, None
 
     async def run(self, *, manifest: RunManifest, worktree: Path, resume: bool) -> ImplementationResult:
+        per_call_timeout, timeout_reason = self._per_call_timeout(manifest)
         try:
             result = await self.runtime.invoke(
                 AgentRequest(
@@ -116,10 +167,14 @@ class _RuntimeImplementationRunner:
                     # selfdev の implementation Run も毎回新規セッションで開始する。
                     # 実 runtime は lifetime session 属性を持たず、resume 用の参照を保持しない。
                     session_ref=None,
+                    timeout_seconds=per_call_timeout,
                 )
             )
         except asyncio.TimeoutError as exc:
-            raise BackendInvocationTimeout(self.runtime.timeout_seconds) from exc
+            raise BackendInvocationTimeout(
+                per_call_timeout or self.runtime.timeout_seconds,
+                reason=timeout_reason,
+            ) from exc
         if result.quota_exhausted:
             if result.quota_reset_at is None or result.quota_kind == "unknown":
                 raise ControllerError("quota exhausted だが reset_at/quota_kind がありません")
@@ -300,7 +355,7 @@ class SelfDevController:
         self._require_started()
         active = [
             item for item in self.store.replay().values()
-            if not item.aggregate.is_terminal
+            if not item.aggregate.is_terminal and not item.aggregate.is_paused
         ]
         if active:
             raise ControllerError("active Proposal slot は既に使用中です")
@@ -496,7 +551,7 @@ class SelfDevController:
                     review_kind="initial",
                     dossier=dossier,
                     dossier_ref="artifacts/initial-dossier.json",
-                    human=True,
+                    human=proposal.risk_class != "low",
                     dossier_sha256=dossier_sha,
                 )
             except HumanTimeout:
@@ -1218,15 +1273,38 @@ class SelfDevController:
         workspace = self._workspace(manifest, proposal_id)
         if not workspace.descriptor_path.exists() or workspace.status is WorkspaceStatus.CLOSED:
             return
+        if workspace.registry_entry() is None:
+            await self._append_generic(
+                "selfdev_workspace_path_skipped",
+                proposal_id,
+                {
+                    "operation": "cleanup",
+                    "path": str(workspace.worktree_path),
+                    "reason": "Git worktree registry に記録がない path の cleanup をスキップしました",
+                },
+            )
+            return
         effect_id = f"cleanup:{phase.value}"
-        value = await self.effects.run(
-            proposal_id=proposal_id,
-            effect_id=effect_id,
-            effect_kind="cleanup",
-            input_value={"phase": phase.value, "run_id": run_id},
-            operation=lambda: workspace.finalize(phase=phase),
-            artifact_refs=("artifacts/candidate.patch",),
-        )
+        try:
+            value = await self.effects.run(
+                proposal_id=proposal_id,
+                effect_id=effect_id,
+                effect_kind="cleanup",
+                input_value={"phase": phase.value, "run_id": run_id},
+                operation=lambda: workspace.finalize(phase=phase),
+                artifact_refs=("artifacts/candidate.patch",),
+            )
+        finally:
+            for path in workspace.skipped_paths:
+                await self._append_generic(
+                    "selfdev_workspace_path_skipped",
+                    proposal_id,
+                    {
+                        "operation": "cleanup",
+                        "path": path,
+                        "reason": "Git registry 外または不正な path を cleanup の走査対象から除外しました",
+                    },
+                )
         if value[0] or (self._proposal_dir(proposal_id) / "artifacts" / "candidate.patch").exists():
             await self._record_artifact(proposal_id, "candidate_patch", self._proposal_dir(proposal_id) / "artifacts" / "candidate.patch", relative="artifacts/candidate.patch")
 
@@ -1436,7 +1514,11 @@ class SelfDevController:
         self._require_started()
         active_id = proposal_id
         if active_id is None:
-            active = [item for item in self.store.replay().values() if not item.aggregate.is_terminal]
+            active = [
+                item
+                for item in self.store.replay().values()
+                if not item.aggregate.is_terminal and not item.aggregate.is_paused
+            ]
             if not active:
                 return False
             if len(active) != 1:
@@ -1450,7 +1532,7 @@ class SelfDevController:
         ):
             return False
         if projection.aggregate.is_paused:
-            raise ControllerPaused(f"Proposal は pause 中です: {active_id}")
+            return False
         proposal = self._manifest(active_id)
         phase = projection.aggregate.phase
         try:

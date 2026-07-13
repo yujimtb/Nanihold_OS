@@ -47,6 +47,7 @@ from vsm.selfdev.ready_queue import scope_overlaps
 from vsm.selfdev.scheduler import SelfDevScheduler
 from vsm.selfdev.store import SelfDevEventStore
 from vsm.selfdev.verification import scope_sha256
+from vsm.runtime.manifest import RunManifest
 
 
 def _manifest(*, proposal_id: str | None = None, risk: str = "low", path: str = "candidate.txt") -> ProposalManifest:
@@ -109,6 +110,17 @@ class _BackendTimeoutRuntime:
     timeout_seconds = 900.0
 
     async def invoke(self, request: AgentRequest):
+        raise TimeoutError()
+
+
+class _RecordingTimeoutRuntime:
+    timeout_seconds = 900.0
+
+    def __init__(self) -> None:
+        self.requests: list[AgentRequest] = []
+
+    async def invoke(self, request: AgentRequest):
+        self.requests.append(request)
         raise TimeoutError()
 
 
@@ -483,6 +495,54 @@ async def test_proposal_failure_does_not_kill_controller_and_next_proposal_runs(
         await service.stop()
 
 
+@pytest.mark.asyncio
+async def test_cleanup_failure_pauses_proposal_and_controller_skips_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repository, _ = _repository(tmp_path)
+    store = SelfDevEventStore(tmp_path / "runs" / "selfdev", clock=FakeClock())
+    controller = SelfDevController(
+        repository=repository,
+        store=store,
+        writer_runtime=RunRuntime(role="S1_WORKER", backend="fake", model="fake", reasoning_effort="standard"),
+        implementation_runner=_Implementation(),
+        gate_runner=_Gates(),
+        audit_runner=S3StarAuditRunner(runtime=_audit_runtime(), clock=FakeClock()),
+        consortium_runtimes=_consortium_runtimes(),
+        timeout_policy=HumanTimeoutPolicy(
+            timeout_seconds={"low": 1, "normal": 1, "protected": 1},
+            timeout_action={"low": "proceed", "normal": "abort", "protected": "abort"},
+        ),
+        worktree_root=tmp_path / "worktrees",
+        base_ref="main",
+        clock=FakeClock(),
+    )
+    await controller.start()
+    try:
+        first = _manifest(proposal_id=f"proposal-{'1' * 32}")
+        await controller.submit_proposal(first)
+
+        async def fail_cleanup(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("cleanup failed")
+
+        monkeypatch.setattr(controller, "_cleanup_workspace", fail_cleanup)
+        await controller._abort(first.id, "implementation failed", reason_code="aborted")
+
+        projection = controller._projection(first.id)
+        assert projection.aggregate.is_paused
+        assert any(event.event_type == "algedonic_raised" for event in controller._events(first.id))
+
+        service = SelfDevService(controller, idle_seconds=0.001)
+        await service.start()
+        try:
+            assert await controller.step() is False
+            await asyncio.sleep(0.01)
+            assert service.healthy
+            assert service.fatal is None
+        finally:
+            await service.stop()
+    finally:
+        await controller.stop()
+
+
 def test_implementation_timeout_is_derived_from_proposal_budget_and_margin(tmp_path: Path) -> None:
     repository, _ = _repository(tmp_path)
     store = SelfDevEventStore(tmp_path / "runs" / "selfdev", clock=FakeClock())
@@ -517,6 +577,42 @@ async def test_backend_timeout_is_labeled_as_single_invocation_timer(tmp_path: P
             worktree=tmp_path,
             resume=False,
         )
+
+
+@pytest.mark.asyncio
+async def test_backend_invocation_timeout_uses_run_budget_and_explains_explicit_short_setting(
+    tmp_path: Path,
+) -> None:
+    manifest = RunManifest(
+        run_id="run-timeout",
+        repository=tmp_path,
+        base_sha="base",
+        worktree_path=tmp_path,
+        backend="fake",
+        model="fake",
+        budget={"active_wall_clock_seconds": 1800},
+        risk_class="normal",
+        issued_by={"decision": "test", "conversation": "test"},
+    )
+    runtime = _RecordingTimeoutRuntime()
+    runner = _RuntimeImplementationRunner(
+        runtime,
+        implementation_timeout_margin_seconds=300,
+    )
+    with pytest.raises(BackendInvocationTimeout, match="2100 seconds"):
+        await runner.run(manifest=manifest, worktree=tmp_path, resume=False)
+    assert runtime.requests[0].timeout_seconds == 2100
+
+    explicit_runtime = _RecordingTimeoutRuntime()
+    explicit_runner = _RuntimeImplementationRunner(
+        explicit_runtime,
+        implementation_timeout_margin_seconds=300,
+        configured_timeout_seconds=900,
+        configured_timeout_explicit=True,
+    )
+    with pytest.raises(BackendInvocationTimeout, match="明示設定された backend timeout"):
+        await explicit_runner.run(manifest=manifest, worktree=tmp_path, resume=False)
+    assert explicit_runtime.requests[0].timeout_seconds == 900
 
 
 @pytest.mark.asyncio
@@ -758,6 +854,22 @@ def test_wave3_scheduler_enforces_single_slot_reserve_dependency_and_path_confli
     active = scheduler.decide(active=first, done_ids=(), remaining={"pool": 10}, reserve={"pool": 5})
     assert active.proposal is None
     assert "slot" in (active.admission.reason or "")
+
+
+def test_wave3_scheduler_skips_paused_candidates() -> None:
+    first = _manifest(proposal_id=f"proposal-{'d' * 32}")
+    second = _manifest(proposal_id=f"proposal-{'e' * 32}", path="other.txt")
+    scheduler = SelfDevScheduler([first, second])
+
+    decision = scheduler.decide(
+        active=None,
+        done_ids=(),
+        remaining={},
+        reserve={},
+        paused_ids=(first.id,),
+    )
+
+    assert decision.proposal is second
 
 
 def test_wave3_consortium_decision_extended_fields_are_strict() -> None:

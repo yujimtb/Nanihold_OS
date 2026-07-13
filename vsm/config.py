@@ -210,6 +210,7 @@ class AgentBackendConfig:
     model: str
     timeout_seconds: float
     reasoning_effort: str | None = None
+    timeout_explicit: bool = True
 
     def __post_init__(self) -> None:
         if self.bin is not None and (not isinstance(self.bin, str) or not self.bin.strip()):
@@ -225,6 +226,10 @@ class AgentBackendConfig:
                 missing_roles=[],
                 detail="agent backend timeout_seconds must be positive",
             )
+        if not isinstance(self.timeout_explicit, bool):
+            raise ConfigError(
+                missing_roles=[], detail="agent backend timeout_explicit must be a boolean"
+            )
         if self.reasoning_effort is not None and (
             not isinstance(self.reasoning_effort, str) or not self.reasoning_effort.strip()
         ):
@@ -236,17 +241,20 @@ class AgentBackendConfig:
 def _default_agent_backends() -> dict[str, AgentBackendConfig]:
     return {
         "claude-code": AgentBackendConfig(
-            bin="claude", model="", timeout_seconds=1800.0
+            bin="claude", model="", timeout_seconds=1800.0, timeout_explicit=False
         ),
         "codex": AgentBackendConfig(
             bin="codex",
             model="gpt-5.6-sol",
             reasoning_effort="high",
             timeout_seconds=1800.0,
+            timeout_explicit=False,
         ),
-        "litellm": AgentBackendConfig(bin=None, model="", timeout_seconds=60.0),
+        "litellm": AgentBackendConfig(
+            bin=None, model="", timeout_seconds=60.0, timeout_explicit=False
+        ),
         "fake": AgentBackendConfig(
-            bin=None, model="fake/test-model", timeout_seconds=60.0
+            bin=None, model="fake/test-model", timeout_seconds=60.0, timeout_explicit=False
         ),
     }
 
@@ -995,6 +1003,7 @@ def _extract_agents_section(raw: Mapping[str, Any], path: Path) -> AgentsConfig:
             model=model,
             timeout_seconds=float(timeout_seconds),
             reasoning_effort=effort,
+            timeout_explicit=("timeout_seconds" in raw_backend) or base.timeout_explicit,
         )
 
     raw_roles = section.get("roles", {})

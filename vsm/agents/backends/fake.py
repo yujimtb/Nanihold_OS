@@ -49,19 +49,24 @@ class FakeAgentRuntime:
                 backend=self.backend_name,
                 session_ref=None,
             )
-        if self.latency:
-            await asyncio.sleep(self.latency)
         if self.error is not None:
+            if self.latency:
+                await asyncio.sleep(self.latency)
             raise self.error
         if callable(self.response):
             value = self.response(request)
             if isinstance(value, AgentResult):
-                return value
-            response_text = str(value)
+                result = value
+            else:
+                result = str(value)
         else:
-            response_text = self.response
+            result = self.response
+        if self.latency:
+            await asyncio.sleep(self.latency)
+        if isinstance(result, AgentResult):
+            return result
         return AgentResult(
-            text=response_text,
+            text=str(result),
             tokens_in=self.tokens_in,
             tokens_out=self.tokens_out,
             tokens_cache_read=self.tokens_cache_read,
