@@ -122,6 +122,8 @@ def _pause_dict(cause: Any) -> dict[str, Any]:
 def _pending_action(projection: Any, manifest: ProposalManifest) -> str | None:
     phase = projection.aggregate.phase
     if phase is ProposalPhase.NEEDS_HUMAN:
+        if projection.integrity_failed and not projection.integrity_resolved:
+            return "integrity_resolution"
         return "protected_scope_approval" if manifest.risk_class == "protected" else "human_decision"
     if phase is ProposalPhase.MERGE_READY:
         return "merge_outcome"
@@ -223,6 +225,9 @@ def _detail(controller: Any, proposal_id: str) -> dict[str, Any]:
         "proposal_manifest_sha256": manifest.sha256(),
         "protected_scope_sha256": scope_sha256([rule.model_dump(mode="json") for rule in manifest.scope]),
         "state": projection.aggregate.phase.value,
+        "integrity_failed": projection.integrity_failed,
+        "integrity_resolved": projection.integrity_resolved,
+        "integrity_reason": projection.integrity_reason,
         "pause_causes": [_pause_dict(cause) for cause in projection.aggregate.pause_causes],
         "state_version": projection.aggregate.state_version,
         "active_run_id": projection.aggregate.active_run_id,
@@ -385,7 +390,15 @@ async def control_proposal(proposal_id: str, body: ProposalControlBody, request:
                 await controller.resume_quota(proposal_id, pool_id=pause.pool_id)
     except Exception as exc:
         raise _map_mutation_error(exc) from exc
-    return {"accepted": True, "proposal_id": proposal_id, "action": body.action}
+    updated = _projection(controller, proposal_id)
+    return {
+        "accepted": True,
+        "proposal_id": proposal_id,
+        "action": body.action,
+        "state": updated.aggregate.phase.value,
+        "state_version": updated.aggregate.state_version,
+        "pause_causes": [_pause_dict(cause) for cause in updated.aggregate.pause_causes],
+    }
 
 
 @router.post("/proposals/{proposal_id}/human-decision", status_code=202)
@@ -395,9 +408,12 @@ async def human_decision(proposal_id: str, body: HumanDecisionBody, request: Req
     if projection.aggregate.phase is not ProposalPhase.NEEDS_HUMAN:
         raise HTTPException(status_code=409, detail="NEEDS_HUMAN 以外では Human decision を受け付けません")
     manifest = _manifest(controller, proposal_id)
-    if body.decision == "approve" and manifest.risk_class != "protected":
+    integrity_resolution = projection.integrity_failed and not projection.integrity_resolved
+    if body.decision == "respond" and integrity_resolution:
+        raise HTTPException(status_code=409, detail="integrity 隔離では追加 statement を受け付けません")
+    if body.decision == "approve" and not integrity_resolution and manifest.risk_class != "protected":
         raise HTTPException(status_code=409, detail="approve が必要なのは protected Proposal だけです")
-    if body.decision == "approve":
+    if body.decision == "approve" and manifest.risk_class == "protected":
         if body.proposal_manifest_sha256 is None or body.protected_scope_sha256 is None:
             raise HTTPException(status_code=422, detail="protected approve には2つの hash が必要です")
         if body.proposal_manifest_sha256 != manifest.sha256():
@@ -408,10 +424,20 @@ async def human_decision(proposal_id: str, body: HumanDecisionBody, request: Req
     try:
         decision = "statement" if body.decision == "respond" else body.decision
         response = body.statement if body.decision == "respond" else body.reason
-        await controller.respond_human(proposal_id, decision=decision, response=response or "")
+        event = await controller.respond_human(proposal_id, decision=decision, response=response or "")
     except Exception as exc:
         raise _map_mutation_error(exc) from exc
-    return {"accepted": True, "proposal_id": proposal_id, "decision": body.decision}
+    updated = _projection(controller, proposal_id)
+    transition_event_id = updated.transition_event_ids[-1] if updated.transition_event_ids else None
+    return {
+        "accepted": True,
+        "proposal_id": proposal_id,
+        "decision": body.decision,
+        "state": updated.aggregate.phase.value,
+        "state_version": updated.aggregate.state_version,
+        "event_id": getattr(event, "event_id", None),
+        "transition_event_id": transition_event_id,
+    }
 
 
 @router.post("/proposals/{proposal_id}/merge-outcome", status_code=202)

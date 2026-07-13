@@ -270,7 +270,16 @@ class SelfDevController:
             return
         approvals = [
             event for event in self._events(proposal.id)
-            if event.event_type == "human_review_responded" and event.payload.get("decision") == "approve"
+            if (
+                (
+                    event.event_type == "human_review_responded"
+                    and event.payload.get("decision") == "approve"
+                )
+                or (
+                    event.event_type == "proposal_integrity_resolved"
+                    and event.payload.get("decision") == "approve"
+                )
+            )
         ]
         if len(approvals) > 1:
             raise ControllerError("protected Human approval が二重です")
@@ -535,10 +544,36 @@ class SelfDevController:
 
     async def respond_human(self, proposal_id: str, *, decision: str, response: str) -> Any:
         self._require_started()
+        projection = self._projection(proposal_id)
+        if projection.aggregate.phase is not ProposalPhase.NEEDS_HUMAN:
+            raise ControllerError("NEEDS_HUMAN 以外では Human decision を受け付けません")
+        if projection.integrity_failed:
+            if projection.integrity_resolved:
+                raise ControllerError("integrity 隔離の解決は既に記録されています")
+            if decision == "respond":
+                raise ControllerError("integrity 隔離では追加 statement を受け付けません")
+            if decision == "reject":
+                return await self._abort(
+                    proposal_id,
+                    response,
+                    reason_code="aborted",
+                    reason_context="integrity quarantine human rejection",
+                    integrity_decision="reject",
+                )
+            if decision == "approve":
+                return await self._resolve_integrity_approval(proposal_id, response)
+            raise ValueError("integrity 隔離の Human decision が不正です")
         proposal = self._manifest(proposal_id)
         initial = self._decision(proposal_id, "initial")
         if initial is None:
             raise ControllerError("initial Consortium decision がありません")
+        review_id = f"review-{initial[1].consortium_id}"
+        if not any(
+            event.event_type == "human_review_requested"
+            and event.payload.get("review_id") == review_id
+            for event in self._events(proposal_id)
+        ):
+            raise ControllerError("現在の Consortium human waiter がありません")
         if decision == "approve" and proposal.risk_class != "protected":
             raise ValueError("明示 Human approval は protected Proposal にだけ必要です")
         return await self.consortium.respond_human(
@@ -546,6 +581,43 @@ class SelfDevController:
             consortium_id=initial[1].consortium_id,
             decision=decision,
             response=response,
+        )
+
+    async def _resolve_integrity_approval(self, proposal_id: str, reason: str) -> Any:
+        projection = self._projection(proposal_id)
+        if not projection.integrity_failed or projection.integrity_resolved:
+            raise ControllerError("Proposal の integrity 隔離は解決待ちではありません")
+        failure = next(
+            (event for event in self._events(proposal_id) if event.event_type == "proposal_integrity_failed"),
+            None,
+        )
+        if failure is None:
+            raise ControllerError("integrity failure event がありません")
+        resolution = await self.store.append(
+            "proposal_integrity_resolved",
+            {
+                "proposal_id": proposal_id,
+                "decision": "approve",
+                "failure_event_id": failure.event_id,
+                "reason": nonempty_reason(reason, context="integrity quarantine approval"),
+            },
+            proposal_id=proposal_id,
+            actor_type="human",
+            actor_id="human",
+        )
+        proposal = self._manifest(proposal_id)
+        if proposal.risk_class == "protected":
+            self._protected_approvals[proposal_id] = {
+                "event_id": resolution.event_id,
+                "proposal_manifest_sha256": proposal.sha256(),
+                "protected_scope_sha256": self._scope_sha(proposal),
+            }
+        return await self._transition(
+            proposal_id,
+            ProposalPhase.APPROVED,
+            reason_code="human_approved",
+            reason="integrity 隔離の再開を Human が明示承認しました",
+            decision_event_id=resolution.event_id,
         )
 
     async def _handle_needs_human(self, proposal: ProposalManifest) -> None:
@@ -1165,11 +1237,32 @@ class SelfDevController:
         *,
         reason_code: str,
         reason_context: str = "proposal abort",
-    ) -> None:
+        integrity_decision: str | None = None,
+    ) -> Any:
         projection = self._projection(proposal_id)
         if projection.aggregate.is_terminal:
-            return
+            return None
         normalized_reason = nonempty_reason(reason, context=reason_context)
+        integrity_isolation = projection.integrity_failed and not projection.integrity_resolved
+        if integrity_isolation:
+            failure = next(
+                (event for event in self._events(proposal_id) if event.event_type == "proposal_integrity_failed"),
+                None,
+            )
+            if failure is None:
+                raise ControllerError("integrity failure event がありません")
+            await self.store.append(
+                "proposal_integrity_resolved",
+                {
+                    "proposal_id": proposal_id,
+                    "decision": integrity_decision or "abort",
+                    "failure_event_id": failure.event_id,
+                    "reason": normalized_reason,
+                },
+                proposal_id=proposal_id,
+                actor_type="human",
+                actor_id="human",
+            )
         await self._append_generic(
             "algedonic_raised",
             proposal_id,
@@ -1189,16 +1282,17 @@ class SelfDevController:
                 "source": "selfdev-controller",
             },
         )
-        try:
-            await self._cleanup_workspace(proposal_id, phase=ProposalPhase.ABORTED)
-        except Exception as exc:
-            await self._pause_for_recovery(
-                proposal_id,
-                (("cleanup", "terminal"),),
-                reason=exception_reason(exc, context="abort cleanup"),
-            )
-            return
-        await self._transition(
+        if not projection.integrity_failed:
+            try:
+                await self._cleanup_workspace(proposal_id, phase=ProposalPhase.ABORTED)
+            except Exception as exc:
+                await self._pause_for_recovery(
+                    proposal_id,
+                    (("cleanup", "terminal"),),
+                    reason=exception_reason(exc, context="abort cleanup"),
+                )
+                return None
+        return await self._transition(
             proposal_id,
             ProposalPhase.ABORTED,
             reason_code=reason_code if reason_code in {"aborted", "repair_exhausted", "audit_failed", "human_timeout"} else "aborted",
@@ -1299,6 +1393,8 @@ class SelfDevController:
     async def abort(self, proposal_id: str, *, reason: str) -> None:
         self._require_started()
         await self._abort(proposal_id, reason, reason_code="aborted")
+        if not self._projection(proposal_id).aggregate.is_terminal:
+            raise ControllerError("abort は cleanup または integrity 解決を完了できませんでした")
 
     async def record_merge_outcome(self, proposal_id: str, *, merged: bool, reason: str = "", merge_sha: str | None = None) -> None:
         self._require_started()
@@ -1349,7 +1445,9 @@ class SelfDevController:
         projection = self._projection(active_id)
         if projection.aggregate.is_terminal:
             return False
-        if projection.integrity_failed:
+        if projection.integrity_failed and (
+            not projection.integrity_resolved or projection.aggregate.phase is ProposalPhase.NEEDS_HUMAN
+        ):
             return False
         if projection.aggregate.is_paused:
             raise ControllerPaused(f"Proposal は pause 中です: {active_id}")

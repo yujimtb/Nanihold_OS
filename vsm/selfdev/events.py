@@ -105,6 +105,15 @@ class ProposalIntegrityFailedPayload(SelfDevPayload):
         return _relative_ref(value) if value is not None else None
 
 
+class ProposalIntegrityResolvedPayload(SelfDevPayload):
+    """Human/control plane が Proposal 単位の integrity 隔離を解決した記録。"""
+
+    proposal_id: str = Field(pattern=r"^proposal-[0-9a-f]{32}$")
+    decision: Literal["approve", "reject", "abort"]
+    failure_event_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
 class ConsortiumDecidedV2Payload(SelfDevPayload):
     consortium_id: str = Field(min_length=1)
     proposal_id: str = Field(pattern=r"^proposal-[0-9a-f]{32}$")
@@ -225,6 +234,7 @@ SELFDEV_EVENT_TYPES: tuple[str, ...] = (
     "proposal_pause_changed",
     "proposal_run_linked",
     "proposal_integrity_failed",
+    "proposal_integrity_resolved",
 )
 
 SELFDEV_PAYLOAD_MODELS: dict[tuple[str, int], type[BaseModel]] = {
@@ -232,6 +242,7 @@ SELFDEV_PAYLOAD_MODELS: dict[tuple[str, int], type[BaseModel]] = {
     ("proposal_pause_changed", 1): ProposalPauseChangedPayload,
     ("proposal_run_linked", 1): ProposalRunLinkedPayload,
     ("proposal_integrity_failed", 1): ProposalIntegrityFailedPayload,
+    ("proposal_integrity_resolved", 1): ProposalIntegrityResolvedPayload,
     ("artifact_created", 2): ArtifactCreatedPayload,
     ("audit_report_sent", 2): AuditReportSentV1Payload,
     ("consortium_decided", 2): ConsortiumDecidedV2Payload,
@@ -253,6 +264,7 @@ __all__ = [
     "ProposalPauseChangedPayload",
     "ProposalRunLinkedPayload",
     "ProposalIntegrityFailedPayload",
+    "ProposalIntegrityResolvedPayload",
     "ProposalStateChangedPayload",
     "ToolCompletedV2Payload",
     "ToolFailedV2Payload",

@@ -21,6 +21,7 @@ MERGE_READY →(人間が merge/push)→ DONE / (人間が却下)→ ARCHIVED
 
 - どの状態からも人間・Fable は ABORT・SUSPEND できる(既存介入APIに統合)
 - ABORTED / REJECTED でも worktree の diff は candidate.patch として監査保存してから掃除する(既存 WorkspaceController)
+- 起動時の Proposal 単位 integrity 隔離で `NEEDS_HUMAN` になった Proposal は、通常の Consortium Human waiter と別の解決対象として扱う。Human の reject または control abort は `ABORTED` へ遷移して active slot を解放し、隔離対象 artifact の cleanup 失敗で解決を閉塞させない。approve を受けた場合だけ明示的な integrity 解決を記録して `APPROVED` へ戻し、controller が再開を試みる。
 
 ## 3. 提案(Proposal)の要件
 - ProposalManifest: id / title / 動機(なぜ今это必要か)/ 変更scope(許可path)/ 受入条件(検証可能な形式)/ risk class(low・normal・protected)/ 予算見積(トークン・時間)/ 提案元(conversation_id・decision・roadmap項目参照)/ 依存する先行Proposal

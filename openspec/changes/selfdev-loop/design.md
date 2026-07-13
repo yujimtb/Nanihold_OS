@@ -1032,6 +1032,8 @@ FastAPI lifespan起動時に1つだけcontroller taskを開始する。
 
 Proposalのmanifest/artifactだけが不整合な場合は controller 全体を停止しない。terminal (`ABORTED` / `REJECTED` / `REJECTED_FINAL` / `DONE` / `ARCHIVED`) は artifacts を変更せず `proposal_integrity_failed(disposition=isolated)` を Event Log に一度だけ記録し、projection から除外する。active Proposal は `proposal_integrity_failed(disposition=needs_human)` を記録し、projection の phase を `NEEDS_HUMAN` 相当にして自動処理を停止する。どちらも `/api/selfdev/health` の `integrity_failed_count` と詳細に反映する。Event Log の欠損・torn・seq/stream逆行・未知schemaなど store 全体の破損だけは従来どおり起動拒否とする。
 
+active integrity quarantine の `NEEDS_HUMAN` は Consortium の過去 waiter を再利用しない。Human decision は `proposal_integrity_resolved` に隔離 failure event を束縛して記録し、reject は `ABORTED`、approve は隔離解除後に `APPROVED` へ遷移させる。control abort も同じ解決記録を残して `ABORTED` へ遷移させる。隔離対象の immutable artifact は読み取り検査以外で変更せず、workspace state 欠損など cleanup を証明できない場合も、cleanup の再試行待ち pause で active slot を塞がない。
+
 state別reconcile:
 
 | state | 再起動後の処理 |
@@ -1187,6 +1189,9 @@ MERGE_READY/DONE/ARCHIVED件数
 | `CONSORTIUM_REVIEW` | protected approveだが明示承認なし | `NEEDS_HUMAN` | `human_review_requested` |
 | `NEEDS_HUMAN` | Human approve | guard成立なら`APPROVED` | hash束縛approval event |
 | `NEEDS_HUMAN` | Human reject | `REJECTED` | response + state event |
+| integrity隔離中の`NEEDS_HUMAN` | Human reject | `ABORTED` | `proposal_integrity_resolved` + state event。immutable artifactは変更しない |
+| integrity隔離中の`NEEDS_HUMAN` | Human approve | guard成立後`APPROVED` | `proposal_integrity_resolved` + state event |
+| integrity隔離中の`NEEDS_HUMAN` | control abort | `ABORTED` | 過去のConsortium waiterへ配送せず、cleanup failureで閉塞させない |
 | `APPROVED` | local main SHA取得不能、main checkout汚染 | `ABORTED` | git error、Human通知 |
 | `APPROVED` | worktree/branch collision | exact一致ならadopt、それ以外`ABORTED` | workspace audit、pain |
 | `WORKSPACE_READY` | runtime/model/budget不一致 | `ABORTED` | config error |

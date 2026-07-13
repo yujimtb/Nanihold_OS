@@ -21,6 +21,8 @@ class ProposalProjection:
     integrity_failed: bool = False
     isolated: bool = False
     integrity_reason: str | None = None
+    integrity_resolved: bool = False
+    integrity_resolution_event_id: str | None = None
 
     def apply(self, event: Event | dict[str, Any]) -> "ProposalProjection":
         envelope = event if isinstance(event, Event) else Event.model_validate(event)
@@ -66,6 +68,13 @@ class ProposalProjection:
                     phase=ProposalPhase.NEEDS_HUMAN,
                     state_version=aggregate.state_version + 1,
                 )
+        elif envelope.event_type == "proposal_integrity_resolved":
+            if not self.integrity_failed:
+                raise ValueError("integrity 隔離されていない Proposal は解決できません")
+            if self.integrity_resolved:
+                raise ValueError("Proposal integrity resolution が二重に記録されています")
+            if payload["failure_event_id"] not in self.event_ids:
+                raise ValueError("integrity resolution が対象の failure event に紐付いていません")
         elif envelope.event_type == "proposal_pause_changed":
             if payload["action"] == "added":
                 reset_at = payload.get("reset_at")
@@ -117,6 +126,13 @@ class ProposalProjection:
                 str(payload["reason"])
                 if envelope.event_type == "proposal_integrity_failed"
                 else self.integrity_reason
+            ),
+            integrity_resolved=self.integrity_resolved
+            or envelope.event_type == "proposal_integrity_resolved",
+            integrity_resolution_event_id=(
+                envelope.event_id
+                if envelope.event_type == "proposal_integrity_resolved"
+                else self.integrity_resolution_event_id
             ),
         )
 

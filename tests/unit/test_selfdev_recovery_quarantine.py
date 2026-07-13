@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from vsm.clock import FakeClock
 from vsm.selfdev.controller import SelfDevController
-from vsm.selfdev.models import RunRuntime
+from vsm.selfdev.models import ProposalManifest, RunRuntime
 from vsm.selfdev.service import SelfDevService
 from vsm.selfdev.state_machine import ProposalPhase
 from vsm.selfdev.store import SelfDevEventStore
@@ -83,7 +83,7 @@ async def _append_state(
     )
 
 
-async def _seed(root: Path, *, terminal: bool) -> str:
+async def _seed(root: Path, *, terminal: bool, with_stale_waiter: bool = False) -> str:
     _copy_real_proposal(root)
     store = SelfDevEventStore(root, clock=FakeClock())
     await store.start()
@@ -128,6 +128,42 @@ async def _seed(root: Path, *, terminal: bool) -> str:
             proposal_id=PROPOSAL_ID,
             schema_version=2,
         )
+        if with_stale_waiter:
+            consortium_id = f"consortium-{PROPOSAL_ID}-initial"
+            await store.append(
+                "consortium_decided",
+                {
+                    "consortium_id": consortium_id,
+                    "proposal_id": PROPOSAL_ID,
+                    "review_kind": "initial",
+                    "decision": "APPROVE",
+                    "reason": "fixture initial approval",
+                    "dissent_summary": "",
+                    "conditions": (),
+                    "residual_risks": (),
+                    "merge_recommendation_reason": None,
+                    "dossier_ref": "artifacts/initial-dossier.json",
+                    "dossier_sha256": "a" * 64,
+                    "human_participated": False,
+                    "human_timed_out": True,
+                },
+                proposal_id=PROPOSAL_ID,
+                schema_version=2,
+            )
+            await store.append(
+                "human_review_requested",
+                {
+                    "proposal_id": PROPOSAL_ID,
+                    "consortium_id": consortium_id,
+                    "review_id": f"review-{consortium_id}",
+                    "review_kind": "initial",
+                    "risk_class": "low",
+                    "deadline": "2026-07-14T00:00:00.000Z",
+                    "approval_required": False,
+                },
+                proposal_id=PROPOSAL_ID,
+                schema_version=2,
+            )
         if terminal:
             await _append_state(
                 store,
@@ -204,3 +240,110 @@ async def test_active_proposal_integrity_failure_becomes_needs_human_without_rew
         assert markers[0].payload["disposition"] == "needs_human"
     finally:
         await controller.stop()
+
+
+@pytest.mark.asyncio
+async def test_active_proposal_integrity_approve_records_resolution_before_resuming(tmp_path: Path) -> None:
+    root = tmp_path / "runs" / "selfdev"
+    await _seed(root, terminal=False)
+    controller = _controller(tmp_path, SelfDevEventStore(root, clock=FakeClock()))
+
+    await controller.start()
+    try:
+        event = await controller.respond_human(
+            PROPOSAL_ID,
+            decision="approve",
+            response="整合性隔離の再開を明示承認する",
+        )
+        projection = controller.store.replay()[PROPOSAL_ID]
+        assert projection.aggregate.phase is ProposalPhase.APPROVED
+        assert projection.integrity_resolved is True
+        assert event.event_type == "proposal_state_changed"
+        assert any(
+            item.event_type == "proposal_integrity_resolved"
+            and item.payload["decision"] == "approve"
+            for item in controller.store.read_events()
+        )
+    finally:
+        await controller.stop()
+
+
+def test_real_active_proposal_integrity_reject_routes_away_from_stale_waiter_and_releases_slot(tmp_path: Path) -> None:
+    root = tmp_path / "runs" / "selfdev"
+    asyncio.run(_seed(root, terminal=False, with_stale_waiter=True))
+    controller = _controller(tmp_path, SelfDevEventStore(root, clock=FakeClock()))
+    service = SelfDevService(controller, idle_seconds=0.01)
+
+    with TestClient(create_app(service)) as client:
+        detail = client.get(f"/api/selfdev/proposals/{PROPOSAL_ID}")
+        assert detail.status_code == 200
+        current = detail.json()
+        assert current["state"] == ProposalPhase.NEEDS_HUMAN.value
+        assert current["pending_action"] == "integrity_resolution"
+
+        response = client.post(
+            f"/api/selfdev/proposals/{PROPOSAL_ID}/human-decision",
+            json={
+                "decision": "reject",
+                "reason": "整合性隔離された実物Proposalを安全に打ち切る",
+                "expected_state_version": current["state_version"],
+            },
+        )
+        assert response.status_code == 202
+        body = response.json()
+        assert body["accepted"] is True
+        assert body["state"] == ProposalPhase.ABORTED.value
+        assert body["state_version"] > current["state_version"]
+        assert body["event_id"]
+
+        events = controller.store.read_events()
+        assert not any(event.event_type == "human_review_responded" for event in events)
+        resolutions = [event for event in events if event.event_type == "proposal_integrity_resolved"]
+        assert len(resolutions) == 1
+        assert resolutions[0].payload["decision"] == "reject"
+
+        proposal = ProposalManifest.model_validate_json(
+            (PROPOSAL_FIXTURE / "proposal.json").read_text(encoding="utf-8")
+        )
+        replacement = proposal.model_copy(update={"id": "proposal-" + "f" * 32})
+        created = client.post(
+            "/api/selfdev/proposals",
+            json={
+                "title": replacement.title,
+                "motivation": replacement.motivation,
+                "scope": [rule.model_dump(mode="json") for rule in replacement.scope],
+                "acceptance_criteria": [
+                    criterion.model_dump(mode="json")
+                    for criterion in replacement.acceptance_criteria
+                ],
+                "risk_class": replacement.risk_class,
+                "budget_estimate": replacement.budget_estimate.model_dump(mode="json"),
+                "origin": replacement.origin.model_dump(mode="json"),
+                "dependencies": list(replacement.dependencies),
+            },
+        )
+        assert created.status_code == 201
+
+
+def test_real_active_proposal_integrity_abort_releases_slot_even_without_cleanup_state(tmp_path: Path) -> None:
+    root = tmp_path / "runs" / "selfdev"
+    asyncio.run(_seed(root, terminal=False))
+    controller = _controller(tmp_path, SelfDevEventStore(root, clock=FakeClock()))
+    service = SelfDevService(controller, idle_seconds=0.01)
+
+    with TestClient(create_app(service)) as client:
+        current = client.get(f"/api/selfdev/proposals/{PROPOSAL_ID}").json()
+        response = client.post(
+            f"/api/selfdev/proposals/{PROPOSAL_ID}/control",
+            json={
+                "action": "abort",
+                "reason": "整合性隔離された実物Proposalを打ち切る",
+                "expected_state_version": current["state_version"],
+            },
+        )
+        assert response.status_code == 202
+        body = response.json()
+        assert body["accepted"] is True
+        assert body["state"] == ProposalPhase.ABORTED.value
+        assert body["state_version"] > current["state_version"]
+        assert controller.store.replay()[PROPOSAL_ID].aggregate.is_terminal
