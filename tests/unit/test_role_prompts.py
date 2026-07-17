@@ -65,7 +65,7 @@ from vsm.systems.prompts import (
                 round_number=1,
                 round_count=2,
             ),
-            ("S4_SCANNER", "判断案", "根拠", "懸念"),
+            ("S4_SCANNER", "判断案", "根拠", "懸念", "日本語ファースト"),
         ),
         (
             lambda: build_consortium_synthesis_prompt(

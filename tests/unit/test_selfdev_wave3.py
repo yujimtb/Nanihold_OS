@@ -293,6 +293,8 @@ async def test_selfdev_statement_retries_once_and_saves_raw_responses(tmp_path: 
         )
         assert len(calls) == 3
         assert '期待スキーマは {"statement": "string"}' in calls[0].prompt
+        assert "statement 本文は日本語ファースト" in calls[0].prompt
+        assert "英語だけにしないでください" in calls[0].prompt
         assert "コードフェンス、前置き、後置きは禁止" in calls[0].prompt
         assert "パースエラー:" in calls[1].prompt
         raw_dir = tmp_path / "runs" / "selfdev" / "proposals" / proposal.id / "artifacts"

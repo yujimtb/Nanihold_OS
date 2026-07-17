@@ -203,6 +203,7 @@ def build_consortium_statement_prompt(
     )
     instructions = (
         "Consortium の参加者として、件名に対する判断案・根拠・懸念を短く述べてください。"
+        "statement 本文は日本語ファーストで記述し、固有名詞・コード識別子以外を英語だけにしないでください。"
         "他の参加者への確認質問はせず、現時点の仮定で前進する statement を返してください。"
     )
     input_text = (

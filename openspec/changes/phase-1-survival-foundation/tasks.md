@@ -2,6 +2,24 @@
 
 > ロードマップ §5。Week A/B/C と 7/12 障害演習に対応。各タスクの DoD は対応 spec の Scenario を正とする。
 
+## 再基線化判定 (2026-07-18)
+
+現行 Nanihold リポジトリのコード、テスト、実装結果文書を照合したが、Phase 1 の DoD（円建て
+CostRecorded、日次・月次 cap、3経路 kill switch、常駐復旧、一般 scheduler、Discord 生存レポート、
+6シナリオ障害演習など）を完了と断定できる証拠は得られなかった。そのため、以下の `[ ]` は過剰な
+完了マークを避けて変更せず、要確認リストに残す。Wave 3〜5 の実装完了はこの Phase 1 の生存基盤
+DoD の代替根拠とはしない。
+
+### 要確認リスト（31件）
+
+- Week A: `1.1`〜`1.9`（Web UI の外部非公開境界、円建て課金、日次/月次 cap、kill switch、
+  systemd/health 監視、3段階 algedonic の各 DoD）
+- Week B: `2.1`〜`2.8`（一般 scheduler/catch-up、生存レポート、watchdog、権限付き lifecycle、
+  suspend 安全停止、Discord human review、顧客入力の敵対テスト CI 常設）
+- Week C: `3.1`〜`3.5`（org/customer schema、org 別会計、受託 lifecycle、請求/入金、model tiering）
+- 障害演習: `4.1`〜`4.7`（6シナリオの実行証跡と営業可能状態の判定）
+- 並行・事業: `5.1`〜`5.2`（開業・会計および HUMAI 奨励金の外部確認）
+
 ## 1. Week A: 死なない基盤(6/25–7/1)
 - [ ] 1.1 Web UI ブランチをマージし常駐に同梱(LAN/VPN 内のみ、外部非公開)— `web-ui`
 - [ ] 1.2 LiteLLM cost callback → CostRecorded → BudgetLedger 集計、円換算(月初固定レート)— `cost-accounting`
