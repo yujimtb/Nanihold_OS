@@ -70,6 +70,7 @@ _RETRY_BACKOFF_SECONDS = 0.11
 # for the CLI/read-side visibility SLA; set this env var when crash-durable
 # fsync is required for an operational run.
 Durability = Literal["buffered", "durable"]
+WriterState = Literal["created", "running", "stopping", "stopped"]
 
 
 class EventLogWriter:
@@ -179,8 +180,12 @@ class EventLogWriter:
         self._fh = open(path, "a", encoding="utf-8", buffering=1)
 
         # The writer task handle. ``None`` until ``start()`` is called and
-        # again after ``stop()`` returns.
+        # again after ``stop()`` returns. 受付状態と sentinel 投入は同じ
+        # lock の中で遷移させる。これにより ``append`` が sentinel の後ろへ
+        # enqueue され、成功を返したまま失われる shutdown race を防ぐ。
         self._task: asyncio.Task[None] | None = None
+        self._state: WriterState = "created"
+        self._lifecycle_lock = asyncio.Lock()
 
     async def start(self) -> None:
         """Spawn the writer task if it is not already running.
@@ -188,11 +193,17 @@ class EventLogWriter:
         Idempotent: a second call is a no-op so that callers do not have to
         track lifecycle state defensively.
         """
-        if self._task is not None:
-            return
-        self._task = asyncio.create_task(
-            self._writer_loop(), name=f"event_log_writer[{self._run_id}]"
-        )
+        async with self._lifecycle_lock:
+            if self._state == "running":
+                return
+            if self._state != "created":
+                raise RuntimeError(
+                    f"EventLogWriter cannot start from state {self._state}: {self._run_id}"
+                )
+            self._task = asyncio.create_task(
+                self._writer_loop(), name=f"event_log_writer[{self._run_id}]"
+            )
+            self._state = "running"
 
     async def stop(self) -> None:
         """Drain the writer queue and close the underlying file handle.
@@ -200,27 +211,62 @@ class EventLogWriter:
         A sentinel is queued after every event already accepted by
         :meth:`append`, then the writer task is awaited. FIFO ordering therefore
         guarantees that shutdown does not discard the tail of the Event_Log.
-        The lifecycle layer calls ``stop`` only after every System has been shut
-        down, so no further ``append`` calls may race with the sentinel.
+        受付終了への状態遷移と sentinel 投入は ``append`` と同じ lock 内で
+        行うため、競合した ``append`` は sentinel より前に受理されるか、
+        明示的に失敗するかのどちらかであり、後ろへ紛れ込まない。
         """
-        if self._task is not None:
-            try:
-                await self._queue.put(None)
-                await self._task
-            finally:
-                self._task = None
-                if not self._fh.closed:
-                    try:
-                        self._fh.flush()
-                    finally:
-                        self._fh.close()
-            return
+        async with self._lifecycle_lock:
+            if self._state == "stopped":
+                return
+            if self._state == "created":
+                self._state = "stopped"
+                self._close_file()
+                return
+            task = self._task
+            if task is None:
+                raise RuntimeError(
+                    f"EventLogWriter has no task in state {self._state}: {self._run_id}"
+                )
+            if self._state == "running":
+                # ``append`` も同じ lock を取るため、state 変更後に受理される
+                # event はなく、sentinel より前の全 event が排水対象になる。
+                self._state = "stopping"
+                self._queue.put_nowait(None)
 
-        if not self._fh.closed:
+        try:
+            # stop 呼び出し元の cancel を writer task へ伝播させない。
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # shutdown 自体が cancel されても sentinel 排水と file close は
+            # 完遂してから上位へ cancel を返す。
             try:
-                self._fh.flush()
+                await asyncio.shield(task)
             finally:
-                self._fh.close()
+                await self._finish_stop(task)
+            raise
+        finally:
+            if task.done():
+                await self._finish_stop(task)
+
+    async def _finish_stop(self, task: asyncio.Task[None]) -> None:
+        """完了した writer task を一度だけ回収して file を閉じる。"""
+
+        async with self._lifecycle_lock:
+            if self._state == "stopped":
+                return
+            if self._task is not task:
+                raise RuntimeError("EventLogWriter task changed during stop")
+            self._task = None
+            self._state = "stopped"
+            self._close_file()
+
+    def _close_file(self) -> None:
+        if self._fh.closed:
+            return
+        try:
+            self._fh.flush()
+        finally:
+            self._fh.close()
 
     async def append(
         self,
@@ -285,7 +331,16 @@ class EventLogWriter:
         future: asyncio.Future[Event] | None = None
         if self._durability == "durable":
             future = asyncio.get_running_loop().create_future()
-        await self._queue.put((event_type, payload, ts, metadata, expected_stream_version, future))
+        async with self._lifecycle_lock:
+            task = self._task
+            if self._state != "running" or task is None or task.done():
+                raise RuntimeError(
+                    "EventLogWriter is not accepting events "
+                    f"(state={self._state}, run_id={self._run_id})"
+                )
+            self._queue.put_nowait(
+                (event_type, payload, ts, metadata, expected_stream_version, future)
+            )
         if future is not None:
             return await future
         return None

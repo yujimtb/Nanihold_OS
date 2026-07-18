@@ -45,8 +45,11 @@ async def _lifespan(application: FastAPI):
     try:
         yield
     finally:
-        if service is not None:
-            await service.stop()
+        try:
+            await manager.shutdown()
+        finally:
+            if service is not None:
+                await service.stop()
 
 
 app = FastAPI(title="Nanihold OS", version="0.1.0", lifespan=_lifespan)

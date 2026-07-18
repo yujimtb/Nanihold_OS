@@ -159,6 +159,7 @@ EVENT_TYPES_V1: tuple[str, ...] = (
     "human_review_requested",
     "human_review_responded",
     "instruction_received",
+    "instruction_applied",
     "instruction_completed",
     "instruction_failed",
     "summary_generated",
@@ -686,6 +687,14 @@ class GateReportGeneratedPayload(_StrictModel):
     gate_statuses: dict[str, str]
 
 
+class InstructionAppliedPayload(_StrictModel):
+    """次の LLM invocation 境界で追加指示を適用した証跡。"""
+
+    instruction_id: str = Field(min_length=1)
+    target_node: str = Field(min_length=1)
+    invocation_id: str = Field(min_length=1)
+
+
 class GenericV1Payload(BaseModel):
     """Permissive payload model for new v1 domain/control events.
 
@@ -736,6 +745,7 @@ PAYLOAD_MODELS: Mapping[str, type[BaseModel]] = {
 PAYLOAD_MODELS_V1: Mapping[str, type[BaseModel]] = {
     **{event_type: GenericV1Payload for event_type in EVENT_TYPES_V1},
     "gate_report_generated": GateReportGeneratedPayload,
+    "instruction_applied": InstructionAppliedPayload,
 }
 
 KNOWN_PAYLOAD_MODELS: Mapping[str, type[BaseModel]] = {

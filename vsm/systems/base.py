@@ -23,11 +23,12 @@ from vsm.clock import Clock
 from vsm.errors import ConfigError, LLMProviderError, LLMTimeoutError
 from vsm.eventlog.writer import EventLogWriter
 from vsm.ids import generate_uuid
-from vsm.messaging.message import Message
+from vsm.messaging.message import Message, SendResult
 from vsm.roles import SystemRole
 
 if TYPE_CHECKING:
     from vsm.memory.builder import ContextViewBuilder
+    from vsm.messaging.bus import MessageBus
     from vsm.nodes.model import NodeRunState
 
 __all__ = ["SubAgent", "System"]
@@ -46,6 +47,17 @@ class AgentRuntimeControl(Protocol):
     async def after_agent_invoke(
         self, node_id: str, result: AgentResult, pending_message: Any | None
     ) -> None: ...
+
+
+class AgentInvocationBoundary(Protocol):
+    async def prepare_agent_invocation(
+        self,
+        *,
+        invocation_id: str,
+        sub_agent_id: str,
+        model: str | None,
+        prompt: str,
+    ) -> str: ...
 
 
 @dataclass
@@ -93,6 +105,7 @@ class SubAgent:
     _context_builder: "ContextViewBuilder | None" = None
     _resume_within_run: bool = False
     _workdir: Path | None = None
+    _invocation_boundary: AgentInvocationBoundary | None = None
 
     async def respond(
         self,
@@ -173,15 +186,6 @@ class SubAgent:
                 "SubAgent の workdir は Run が束縛した作業ディレクトリから変更できません: "
                 f"expected={self._workdir}, received={requested_workdir}"
             )
-        request = AgentRequest(
-            prompt=prompt,
-            context_view=None if saved_session_ref is not None else full_context_view,
-            session_ref=saved_session_ref,
-            workdir=requested_workdir,
-            model=model,
-            timeout_seconds=timeout,
-        )
-
         if self._runtime_control is not None:
             await self._runtime_control.before_agent_invoke(self.system_id)
 
@@ -191,18 +195,23 @@ class SubAgent:
         # 構成できる。
         started_monotonic = self._clock.monotonic()
         tool_invocation_id = generate_uuid()
-        await self._eventlog.append(
-            "tool_invoked",
-            {
-                "tool_invocation_id": tool_invocation_id,
-                "tool_name": "llm_call",
-                "effect": "EXTERNAL_READ",
-                "requested_by_node_id": self.system_id,
-                "model": model,
-            },
-            node_id=self.system_id,
-            actor_type="agent",
-            actor_id=self.sub_agent_id,
+        if self._invocation_boundary is None:
+            raise RuntimeError(
+                f"SubAgent {self.sub_agent_id} に invocation boundary がありません"
+            )
+        prompt = await self._invocation_boundary.prepare_agent_invocation(
+            invocation_id=tool_invocation_id,
+            sub_agent_id=self.sub_agent_id,
+            model=model,
+            prompt=prompt,
+        )
+        request = AgentRequest(
+            prompt=prompt,
+            context_view=None if saved_session_ref is not None else full_context_view,
+            session_ref=saved_session_ref,
+            workdir=requested_workdir,
+            model=model,
+            timeout_seconds=timeout,
         )
 
         try:
@@ -414,8 +423,11 @@ class System(ABC):
         # ``run()`` を保持する asyncio Task。``start()`` で生成され、
         # ``shutdown()`` で cancel + await される。
         self._task: asyncio.Task[None] | None = None
-        self._instruction_task: asyncio.Task[None] | None = None
         self._instruction_queue: asyncio.Queue[Message] | None = None
+        # Instruction の配送完了と LLM invocation 開始点を直列化する。
+        # invocation 側はこの lock 内でキュー排水・適用 event・tool_invoked
+        # を連続記録するため、配送済み Instruction が境界をすり抜けない。
+        self._instruction_lock = asyncio.Lock()
         self._runtime_control: AgentRuntimeControl | None = None
         eventlog_path = getattr(eventlog, "_path", None)
         self._workdir: Path | None = (
@@ -446,63 +458,101 @@ class System(ABC):
             raise RuntimeError(f"instruction queue already bound: {self.system_id}")
         self._instruction_queue = queue
 
-    async def _consume_instructions(self) -> None:
-        if self._instruction_queue is None:
-            raise RuntimeError(f"instruction queue is not bound: {self.system_id}")
-        while True:
-            message = await self._instruction_queue.get()
-            instruction = message.payload.get("instruction")
+    async def deliver_instruction(
+        self, message: Message, bus: "MessageBus"
+    ) -> SendResult:
+        """invocation 開始点と競合しない形で Instruction を配送する。"""
+
+        async with self._instruction_lock:
             instruction_id = message.payload.get("instruction_id")
+            instruction = message.payload.get("instruction")
+            if not isinstance(instruction_id, str) or not instruction_id:
+                raise ValueError("instruction_id must be a non-empty string")
             if not isinstance(instruction, str) or not instruction.strip():
-                await self._eventlog.append(
-                    "instruction_failed",
-                    {
-                        "instruction_id": instruction_id,
-                        "target_node": self.system_id,
-                        "reason": "instruction must be a non-empty string",
-                    },
-                    node_id=self.system_id,
-                    actor_id=self.system_id,
+                raise ValueError("instruction must be a non-empty string")
+            await self._eventlog.append(
+                "instruction_received",
+                {
+                    "instruction_id": instruction_id,
+                    "instruction": instruction,
+                    "target_node": self.system_id,
+                    "source": "human",
+                },
+                node_id=self.system_id,
+                actor_type="human",
+                actor_id=message.sender_id,
+            )
+            return await bus.send(message)
+
+    async def prepare_agent_invocation(
+        self,
+        *,
+        invocation_id: str,
+        sub_agent_id: str,
+        model: str | None,
+        prompt: str,
+    ) -> str:
+        """未適用 Instruction を注入し、LLM invocation 開始を記録する。"""
+
+        async with self._instruction_lock:
+            pending: list[tuple[str, str]] = []
+            if self._instruction_queue is not None:
+                while True:
+                    try:
+                        message = self._instruction_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    instruction_id = message.payload.get("instruction_id")
+                    instruction = message.payload.get("instruction")
+                    if not isinstance(instruction_id, str) or not instruction_id:
+                        raise ValueError("instruction_id must be a non-empty string")
+                    if not isinstance(instruction, str) or not instruction.strip():
+                        raise ValueError("instruction must be a non-empty string")
+                    pending.append((instruction_id, instruction.strip()))
+
+            effective_prompt = prompt
+            if pending:
+                injected = "\n\n".join(
+                    f"追加指示 {index}:\n{instruction}"
+                    for index, (_instruction_id, instruction) in enumerate(
+                        pending, start=1
+                    )
                 )
-                continue
-            if not self._sub_agents:
-                await self._eventlog.append(
-                    "instruction_failed",
-                    {
-                        "instruction_id": instruction_id,
-                        "target_node": self.system_id,
-                        "reason": "target Node has no SubAgent",
-                    },
-                    node_id=self.system_id,
-                    actor_id=self.system_id,
+                effective_prompt = (
+                    f"{prompt}\n\n"
+                    "【このLLM呼び出しで必ず適用する人間の追加指示】\n"
+                    f"{injected}"
                 )
-                continue
-            try:
-                response = await self._sub_agents[0].respond(
-                    f"人間からの追加指示:\n{instruction.strip()}",
-                    context={"pending_message": message},
-                )
-                await self._eventlog.append(
-                    "instruction_completed",
-                    {
-                        "instruction_id": instruction_id,
-                        "target_node": self.system_id,
-                        "response": response.text,
-                    },
-                    node_id=self.system_id,
-                    actor_id=self.system_id,
-                )
-            except Exception as exc:
-                await self._eventlog.append(
-                    "instruction_failed",
-                    {
-                        "instruction_id": instruction_id,
-                        "target_node": self.system_id,
-                        "reason": str(exc),
-                    },
-                    node_id=self.system_id,
-                    actor_id=self.system_id,
-                )
+                for instruction_id, _instruction in pending:
+                    await self._eventlog.append(
+                        "instruction_applied",
+                        {
+                            "instruction_id": instruction_id,
+                            "target_node": self.system_id,
+                            "invocation_id": invocation_id,
+                        },
+                        node_id=self.system_id,
+                        actor_type="agent",
+                        actor_id=sub_agent_id,
+                    )
+
+            # この event を invocation の開始点とする。Instruction 配送も
+            # 同じ lock を取るため、ここより前に受理されたものは必ず上で
+            # 排水され、ここより後のものは次 invocation の対象になる。
+            await self._eventlog.append(
+                "tool_invoked",
+                {
+                    "tool_invocation_id": invocation_id,
+                    "tool_name": "llm_call",
+                    "effect": "EXTERNAL_READ",
+                    "requested_by_node_id": self.system_id,
+                    "model": model,
+                },
+                node_id=self.system_id,
+                actor_type="agent",
+                actor_id=sub_agent_id,
+            )
+            return effective_prompt
 
     @property
     def sub_agents(self) -> list[SubAgent]:
@@ -572,6 +622,7 @@ class System(ABC):
             _clock=self._clock,
             _runtime_control=self._runtime_control,
             _workdir=self._workdir,
+            _invocation_boundary=self,
         )
         self._sub_agents.append(sub_agent)
         return sub_agent
@@ -616,13 +667,6 @@ class System(ABC):
                 self.run(),
                 name=f"{self.role.value}[{self.system_id}]",
             )
-        if self._instruction_queue is not None and (
-            self._instruction_task is None or self._instruction_task.done()
-        ):
-            self._instruction_task = asyncio.create_task(
-                self._consume_instructions(),
-                name=f"instruction[{self.system_id}]",
-            )
 
     async def shutdown(self) -> None:
         """``run()`` Task を cancel し、終了を待つ。
@@ -633,19 +677,14 @@ class System(ABC):
         例外なくシャットダウンさせる。Task が無い / 既に done の場合は
         no-op として安全に呼べる (lifecycle 層からの冗長呼び出しに耐える)。
         """
-        if self._task is not None and not self._task.done():
-            self._task.cancel()
+        task = self._task
+        if task is not None:
+            if not task.done():
+                task.cancel()
             try:
-                await self._task
+                await task
             except asyncio.CancelledError:
                 # ``run()`` のキャンセルは正常終了として扱う。
                 pass
         # ``done()`` 判定後も次回 ``start()`` で再生成できるようリセット。
         self._task = None
-        if self._instruction_task is not None and not self._instruction_task.done():
-            self._instruction_task.cancel()
-            try:
-                await self._instruction_task
-            except asyncio.CancelledError:
-                pass
-        self._instruction_task = None

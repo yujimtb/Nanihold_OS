@@ -286,6 +286,8 @@ class Platform:
             "node_running_ms": 0.0,
         }
         self._node_started_at: dict[str, float] = {}
+        self._shutdown_lock = asyncio.Lock()
+        self._shutdown_task: asyncio.Task[None] | None = None
         self._escalations = EscalationFacade()
         self._budget_guard = InvocationBudgetGuard(
             initial_tokens=run_config.budget.invocation_initial_tokens,
@@ -1114,7 +1116,18 @@ class Platform:
     async def deliver_instruction(
         self, instruction: str, *, target_node: str | None = None
     ) -> str:
-        """追加指示を Event_Log に記録し、Human Message として配送する。"""
+        """追加指示を記録し、次の LLM invocation 用キューへ配送する。"""
+
+        async with self._shutdown_lock:
+            if self._shutdown_task is not None:
+                raise RuntimeError("Platform is shutting down")
+            return await self._deliver_instruction(
+                instruction, target_node=target_node
+            )
+
+    async def _deliver_instruction(
+        self, instruction: str, *, target_node: str | None
+    ) -> str:
 
         cleaned = instruction.strip()
         if not cleaned:
@@ -1127,33 +1140,20 @@ class Platform:
         else:
             target = self._system_for_node(target_node)
         instruction_id = generate_uuid()
-        await self.eventlog.append(
-            "instruction_received",
-            {
+        message = Message(
+            message_id=generate_uuid(),
+            sender_role=ExternalRole.HUMAN,
+            sender_id="local-user",
+            receiver_role=target.role,
+            receiver_id=target.system_id,
+            channel=ChannelId.INSTRUCTION,
+            payload={
                 "instruction_id": instruction_id,
                 "instruction": cleaned,
-                "target_node": target.system_id,
-                "source": "human",
             },
-            node_id=target.system_id,
-            actor_type="human",
-            actor_id="local-user",
+            timestamp_ms=int(self.clock.now().timestamp() * 1000),
         )
-        result = await self.bus.send(
-            Message(
-                message_id=generate_uuid(),
-                sender_role=ExternalRole.HUMAN,
-                sender_id="local-user",
-                receiver_role=target.role,
-                receiver_id=target.system_id,
-                channel=ChannelId.INSTRUCTION,
-                payload={
-                    "instruction_id": instruction_id,
-                    "instruction": cleaned,
-                },
-                timestamp_ms=int(self.clock.now().timestamp() * 1000),
-            )
-        )
+        result = await target.deliver_instruction(message, self.bus)
         if not result.delivered:
             raise RuntimeError(f"instruction delivery rejected: {target.system_id}")
         return instruction_id
@@ -1408,6 +1408,23 @@ class Platform:
                     )
 
     async def shutdown(self) -> None:
+        """同時呼出しと呼出元 cancel に耐えて shutdown を一度だけ完遂する。"""
+
+        async with self._shutdown_lock:
+            if self._shutdown_task is None:
+                self._shutdown_task = asyncio.create_task(
+                    self._shutdown_once(),
+                    name=f"platform-shutdown[{self.run_id}]",
+                )
+            task = self._shutdown_task
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # 呼出元の cancel で配下 task 回収や EventLog 排水を中断しない。
+            await asyncio.shield(task)
+            raise
+
+    async def _shutdown_once(self) -> None:
         """Gracefully tear down all Systems, the EventLogWriter, and lockfile.
 
         Proposal-owned selfdev worktrees are borrowed by this Platform and
@@ -1418,8 +1435,8 @@ class Platform:
 
         1. 全 System の ``run()`` Task を cancel + await (基底実装で
            ``CancelledError`` は握り潰される)。
-        2. :class:`EventLogWriter` を ``stop()`` で停止 (writer task の
-           cancel + ファイルハンドル close)。
+        2. :class:`EventLogWriter` を ``stop()`` で停止 (sentinel 排水 +
+           writer task の終了待機 + ファイルハンドル close)。
         3. ``RUNNING`` lockfile を削除 (REQ 11.6: ``vsm replay`` が
            「Run is no longer active」と判断できるようにする)。
 
@@ -1432,30 +1449,32 @@ class Platform:
         # 1. Systems の cancel + await。``shutdown`` はサブクラスがオーバ
         # ライドしてもよい (S3*_Auditor の timer task など) ので、基底
         # ``System.shutdown`` を経由する。
-        # ``self.systems`` はスナップショット化してから iterate する:
-        # ``await system.shutdown()`` 中に他の System (典型的には S3) が
-        # まだ動的 S1 生成 (spawn_s1) を起こしうるため、辞書 / リスト
-        # 双方を直接 iterate すると ``RuntimeError: dictionary changed
-        # size during iteration`` が起きる。スナップショットを取れば、
-        # 後から追加された System は次の Run で参照される (Run 自体は
-        # ここで終了するので問題ない)。
-        snapshot: list["System"] = [
-            system
-            for systems_for_role in list(self.systems.values())
-            for system in list(systems_for_role)
-        ]
-        for system in snapshot:
-            await system.shutdown()
-            node = self.nodes.get(system.system_id)
-            if node is not None and node.status is NodeStatus.RUNNING:
-                node.status = NodeStatus.IDLE
-                self.node_run_states[(self.run_id, node.id)].status = NodeStatus.IDLE
-                await self.eventlog.append(
-                    "node_idled",
-                    {"node_id": node.id, "status": NodeStatus.IDLE.value},
-                    node_id=node.id,
-                    actor_id=node.id,
-                )
+        # ``self.systems`` はスナップショット化してから iterate する。
+        # ``await system.shutdown()`` 中に S3 が動的 S1 生成を完了しても
+        # 孤児化させないよう、未回収 System がなくなるまで再走査する。
+        stopped_systems: set[int] = set()
+        while True:
+            snapshot: list["System"] = [
+                system
+                for systems_for_role in list(self.systems.values())
+                for system in list(systems_for_role)
+                if id(system) not in stopped_systems
+            ]
+            if not snapshot:
+                break
+            for system in snapshot:
+                await system.shutdown()
+                stopped_systems.add(id(system))
+                node = self.nodes.get(system.system_id)
+                if node is not None and node.status is NodeStatus.RUNNING:
+                    node.status = NodeStatus.IDLE
+                    self.node_run_states[(self.run_id, node.id)].status = NodeStatus.IDLE
+                    await self.eventlog.append(
+                        "node_idled",
+                        {"node_id": node.id, "status": NodeStatus.IDLE.value},
+                        node_id=node.id,
+                        actor_id=node.id,
+                    )
 
         # CLI セッションは Event_Log から再構築可能な Run 内キャッシュであり、
         # Run 境界を越えて保持しない。

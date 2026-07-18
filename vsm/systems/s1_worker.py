@@ -182,13 +182,16 @@ class S1Worker(System):
                     tasks, return_when=asyncio.FIRST_COMPLETED
                 )
             except asyncio.CancelledError:
-                # shutdown 経路。pending をすべて cancel してから再 raise。
+                # shutdown 経路。子 Task を cancel するだけで親を終えると、
+                # Queue.get Task が次 tick まで孤児化するため必ず回収する。
                 for t in tasks:
                     t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
                 raise
 
             for p in pending:
                 p.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
 
             for d in done:
                 msg: Message = d.result()

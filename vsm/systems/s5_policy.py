@@ -203,10 +203,12 @@ class S5Policy(System):
                 # から再 raise する (リソースリーク防止)。
                 for t in tasks:
                     t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
                 raise
 
             for t in pending:
                 t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
 
             for d in done:
                 msg: Message = d.result()

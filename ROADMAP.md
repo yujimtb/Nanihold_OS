@@ -30,9 +30,8 @@ Proposal の Domain / State / Event / Store 基盤、workspace / GateRunner v2 /
 
 1. **Phase 1 生存基盤の再確認** — 円建て CostRecorded、日次/月次 cap、kill switch、常駐復旧、scheduler、survival report、watchdog、障害演習の完了根拠を揃える
 2. **CLI Run と Web Run の統合** — 現状 CLI(`runs/<id>/`)と Web(`runs/web/<id>/runtime/<runtime_id>/`)は別ディレクトリ・別 run_id 体系。Event_Log projection を共有できる単一 Run identity へ寄せる
-3. **ランタイムのシャットダウン品質** — キャンセル時の孤児タスクとシャットダウン競合時の Message 消失を、実運用負荷テストを含めて継続検証する
-4. **Human review の待機継続** — API から回答イベントを記録する段階から、要求元 Tool の Future を解決して作業を継続する正式な待機プロトコルへ拡張する
-5. **Run 間の会計・長期記憶** — 現在の Run 内 Budget/ContextView を、Node と LETHE を介した長期運用へ接続する
+3. **Human review の待機継続** — API から回答イベントを記録する段階から、要求元 Tool の Future を解決して作業を継続する正式な待機プロトコルへ拡張する
+4. **Run 間の会計・長期記憶** — 現在の Run 内 Budget/ContextView を、Node と LETHE を介した長期運用へ接続する
 
 ## 2026-07-12 Wave 5 完了
 
@@ -41,6 +40,17 @@ Proposal の Domain / State / Event / Store 基盤、workspace / GateRunner v2 /
 - Algedonic / Consortium statement / topology / budget API を公開
 - Event_Log だけから再構成できるライブ組織図と Node 介入 UI を追加
 - README の標準起動手順を Docker Compose app + uvicorn + Vite に一本化
+
+## 2026-07-18 live instruct / shutdown 修正
+
+- `vsm instruct` の未適用指示を対象 Node の次の LLM invocation 開始前に必ず注入し、
+  `instruction_applied` に適用先 invocation ID を記録する。
+- EventLogWriter の受付終了と sentinel を原子的にし、shutdown と Message 送信の競合でも
+  停止前に受理済みの event を全件排水する。
+- System の受信子 Task、Web generation Task、AgentRuntime CLI process を cancel 後にawaitし、
+  Platform / FastAPI lifespan の shutdown を一度だけ完遂する。
+- 回帰根拠は `tests/unit/test_instruction_shutdown_races.py`、`tests/unit/test_web.py`、
+  `tests/unit/test_agent_backends.py` に置く。
 
 ## 2026-07-18 再基線化の判定
 
@@ -54,7 +64,7 @@ Proposal の Domain / State / Event / Store 基盤、workspace / GateRunner v2 /
 ### 要確認・未完了
 
 - Phase 1 生存基盤の31項目は、現行コードだけでは仕様の全 DoD を満たしたと断定できないため、[Phase 1 tasks](openspec/changes/phase-1-survival-foundation/tasks.md) の `[ ]` と要確認リストを維持する。
-- CLI/Web の単一 Run identity、shutdown 競合時の Message 保全、Human review Future の正式再開、Run 間会計・長期記憶は Wave 5 結果文書に残る未完了項目である。
+- CLI/Web の単一 Run identity、Human review Future の正式再開、Run 間会計・長期記憶は Wave 5 結果文書に残る未完了項目である。
 
 ## 中期(LETHE / Eos との接続)
 
