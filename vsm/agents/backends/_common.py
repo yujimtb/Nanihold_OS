@@ -141,32 +141,50 @@ def detect_quota_kind(text: str) -> str:
     """
 
     lowered = text.lower()
-    if any(marker in lowered for marker in _WEEKLY_MARKERS):
+    weekly = any(marker in lowered for marker in _WEEKLY_MARKERS) or bool(
+        re.search(r'["\']?window_minutes["\']?\s*[:=]\s*10080\b', lowered)
+    )
+    five_hour = any(marker in lowered for marker in _FIVE_HOUR_MARKERS) or bool(
+        re.search(r'["\']?window_minutes["\']?\s*[:=]\s*300\b', lowered)
+    )
+    if weekly == five_hour:
+        return "unknown"
+    if weekly:
         return "weekly"
-    if any(marker in lowered for marker in _FIVE_HOUR_MARKERS):
+    if five_hour:
         return "five_hour"
     return "unknown"
 
 
 def parse_quota_reset_at(text: str) -> datetime | None:
-    """診断文字列に含まれる ISO 8601 のリセット時刻を抽出する。"""
+    """診断文字列に含まれる ISO 8601 / Unix epoch の reset 時刻を抽出する。"""
 
     match = re.search(
-        r"(?:reset(?:s|_at)?|try again)(?:\s+at|\s*[:=])?\s*"
+        r'''(?:["']?resets?(?:_at)?["']?|try again)'''
+        r'''(?:\s+at|\s*[:=])?\s*["']?'''
         r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2}))",
         text,
         flags=re.IGNORECASE,
     )
-    if match is None:
+    if match is not None:
+        value = match.group(1).replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        return parsed.astimezone(timezone.utc)
+
+    epoch_match = re.search(
+        r'''["']?resets?_at["']?\s*[:=]\s*["']?(\d{10}(?:\.\d+)?)''',
+        text,
+        flags=re.IGNORECASE,
+    )
+    if epoch_match is None:
         return None
-    value = match.group(1).replace("Z", "+00:00")
     try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
+        return datetime.fromtimestamp(float(epoch_match.group(1)), tz=timezone.utc)
+    except (OverflowError, ValueError):
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
 
 
 def as_non_negative_int(value: Any) -> int:

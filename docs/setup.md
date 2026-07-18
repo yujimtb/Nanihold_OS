@@ -215,14 +215,15 @@ resume_within_run = true
 [budget]
 run_tokens = 2000000
 run_wall_clock_seconds = 7200
+invocation_initial_tokens = 4096
+invocation_initial_wall_clock_seconds = 60
+invocation_safety_multiplier = 1.25
 
 [budget.roles]
 S1_WORKER = { tokens = 500000, wall_clock_seconds = 1800 }
 
 [quota]
 suspend_on_exhausted = true
-fallback_resume_minutes = 60
-weekly_fallback_resume_minutes = 360
 ```
 
 `[residency].native_runs_enabled` の既定値は `false` です。`false` の間は `vsm submit`、WebUI の
@@ -255,12 +256,16 @@ Run 終了時に破棄され、Run 間では引き継がれない。
 
 `[budget]` は Run 全体のトークン合計（input + output + cache read）と AgentRuntime
 呼び出し時間を制限する。`[budget.roles]` に指定したロールは個別 envelope を使い、未指定
-ロールは Run envelope を使う。既消費量が上限以上の呼び出しは実行前に拒否され、
-`budget_exceeded` と `escalation_requested` が記録される。
+ロールは Run envelope を使う。単一 invocation の開始前には、Node の直近1回の実績と
+`invocation_initial_tokens` / `invocation_initial_wall_clock_seconds` の大きい方へ
+`invocation_safety_multiplier` を掛けた量を予約見積とする。Node または Run の残余が見積未満なら
+runtime を起動せず、`budget_exceeded` と `escalation_requested` を記録する。
 
-quota 枯渇を返したバックエンドの Node は `SUSPENDED` になり、`quota_reset_at`、または
-時刻不明時の `fallback_resume_minutes` に自動復帰する。休眠中および枯渇検知時に処理中だった
-Message は Node 別キューに保持され、復帰後に再投入される。
+quota 枯渇では `quota_kind` が `five_hour` または `weekly` で、timezone-aware な
+`quota_reset_at` も得られた場合だけ `quota-state.json` に `waiting_reset` として永続化し、
+その正確な時刻に自動復帰する。種別が `unknown`、または reset 時刻が無い場合は
+`human_review_required` として永続化して Node を `FAILED` にし、timer や推測再試行を作らない。
+休眠中および枯渇検知時に処理中だった Message は Node 別キューに保持される。
 
 ### LiteLLM を明示的に使う場合
 

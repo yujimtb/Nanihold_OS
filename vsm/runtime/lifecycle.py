@@ -89,12 +89,14 @@ from vsm.agents.backends import (
 )
 from vsm.agents.runtime import AgentRequest, AgentResult, AgentRuntimeProtocol
 from vsm.authority import ParentAuthority
+from vsm.budget import InvocationBudgetGuard
 from vsm.clock import Clock, SystemClock
 from vsm.config import LLMConfig, RunConfig
 from vsm.errors import (
     BudgetExceededError,
     ConfigError,
     QuotaExhaustedError,
+    QuotaResolutionRequiredError,
     RunDirectoryError,
     SystemInstantiationError,
     WorkspaceError,
@@ -285,6 +287,13 @@ class Platform:
         }
         self._node_started_at: dict[str, float] = {}
         self._escalations = EscalationFacade()
+        self._budget_guard = InvocationBudgetGuard(
+            initial_tokens=run_config.budget.invocation_initial_tokens,
+            initial_wall_clock_seconds=(
+                run_config.budget.invocation_initial_wall_clock_seconds
+            ),
+            safety_multiplier=run_config.budget.invocation_safety_multiplier,
+        )
         self.quota_monitor = QuotaMonitor(
             eventlog=eventlog,
             bus=bus,
@@ -292,8 +301,6 @@ class Platform:
             nodes=self.nodes,
             node_run_states=self.node_run_states,
             run_id=run_id,
-            fallback_resume_minutes=run_config.quota.fallback_resume_minutes,
-            weekly_fallback_resume_minutes=run_config.quota.weekly_fallback_resume_minutes,
             node_pools=self._node_pools,
             state_path=run_dir / "quota-state.json",
             probe=self._quota_probe,
@@ -654,6 +661,13 @@ class Platform:
                 {
                     "run_tokens": rc.budget.run_tokens,
                     "run_wall_clock_seconds": rc.budget.run_wall_clock_seconds,
+                    "invocation_initial_tokens": rc.budget.invocation_initial_tokens,
+                    "invocation_initial_wall_clock_seconds": (
+                        rc.budget.invocation_initial_wall_clock_seconds
+                    ),
+                    "invocation_safety_multiplier": (
+                        rc.budget.invocation_safety_multiplier
+                    ),
                 },
                 actor_id="platform",
             )
@@ -1203,10 +1217,14 @@ class Platform:
         )
 
     async def before_agent_invoke(self, node_id: str) -> None:
-        """AgentRuntime 呼び出し前に Node/Run の既消費量を強制する。"""
+        """単一 invocation の保守見積を Node/Run 残余へ予約できるか検証する。"""
 
         node = self.nodes[node_id]
         state = self.node_run_states[(self.run_id, node_id)]
+        if self.quota_monitor.requires_human_resolution(node_id):
+            raise QuotaResolutionRequiredError(
+                f"node {node_id} requires human quota resolution"
+            )
         if state.status is NodeStatus.SUSPENDED:
             if self.quota_monitor.has_pending_resume(node_id):
                 raise QuotaExhaustedError(f"node {node_id} is suspended by quota")
@@ -1224,15 +1242,32 @@ class Platform:
             self.run_cost_consumed["wall_clock_ms"],
             self.run_cost_consumed["node_running_ms"],
         )
-        reasons: list[str] = []
-        if node_tokens >= state.budget["tokens"]:
-            reasons.append("node_tokens")
-        if node_wall_ms >= state.budget["wall_clock_seconds"] * 1000:
-            reasons.append("node_wall_clock")
-        if run_tokens >= self.run_config.budget.run_tokens:
-            reasons.append("run_tokens")
-        if run_wall_ms >= self.run_config.budget.run_wall_clock_seconds * 1000:
-            reasons.append("run_wall_clock")
+        estimate = self._budget_guard.estimate(node_id)
+        remaining = {
+            "node_tokens": max(0.0, state.budget["tokens"] - node_tokens),
+            "node_wall_clock_seconds": max(
+                0.0, state.budget["wall_clock_seconds"] - (node_wall_ms / 1000)
+            ),
+            "run_tokens": max(
+                0.0, self.run_config.budget.run_tokens - run_tokens
+            ),
+            "run_wall_clock_seconds": max(
+                0.0,
+                self.run_config.budget.run_wall_clock_seconds
+                - (run_wall_ms / 1000),
+            ),
+        }
+        reasons = self._budget_guard.rejection_reasons(
+            estimate,
+            node_remaining_tokens=remaining["node_tokens"],
+            node_remaining_wall_clock_seconds=remaining[
+                "node_wall_clock_seconds"
+            ],
+            run_remaining_tokens=remaining["run_tokens"],
+            run_remaining_wall_clock_seconds=remaining[
+                "run_wall_clock_seconds"
+            ],
+        )
         if not reasons:
             return
 
@@ -1242,6 +1277,11 @@ class Platform:
             {
                 "node_id": node_id,
                 "reasons": reasons,
+                "invocation_estimate": {
+                    "tokens": estimate.tokens,
+                    "wall_clock_seconds": estimate.wall_clock_seconds,
+                },
+                "remaining_before_invocation": remaining,
                 "node_consumed": dict(state.cost_consumed),
                 "node_budget": dict(state.budget),
                 "run_consumed": dict(self.run_cost_consumed),
@@ -1293,6 +1333,11 @@ class Platform:
         for key, amount in amounts.items():
             state.cost_consumed[key] += amount
             self.run_cost_consumed[key] += amount
+        self._budget_guard.record(
+            node_id,
+            tokens=int(amounts["tokens_total"]),
+            wall_clock_seconds=amounts["wall_clock_ms"] / 1000,
+        )
         running_ms = int(state.cost_consumed["node_running_ms"])
         await self.eventlog.append(
             "budget_consumed",
