@@ -75,6 +75,7 @@ REQ 1.1, 1.2, 1.3, 1.5, 1.6, 1.7, 10.3, 10.4, 11.6, 13.1, 13.2, 13.3,
 from __future__ import annotations
 
 import asyncio
+import inspect
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
@@ -105,6 +106,12 @@ from vsm.eventlog.writer import EventLogWriter
 from vsm.eventlog.reader import read_all
 from vsm.ids import generate_run_id, generate_uuid
 from vsm.llm.types import LLMProviderProtocol
+from vsm.lethe_bridge import (
+    LetheBridge,
+    LetheContextInjector,
+    LetheTransport,
+    SupplementalRecord,
+)
 from vsm.messaging.bus import MessageBus
 from vsm.messaging.channels import ChannelId, ExternalRole
 from vsm.messaging.message import Message, SendResult
@@ -251,6 +258,7 @@ class Platform:
         workdir: Path | None = None,
         context_view_hook: ContextViewHook | None = None,
         human_statement_waiter: HumanStatementWaiter | None = None,
+        lethe_bridge: LetheBridge,
     ) -> None:
         self.run_id: str = run_id
         self.run_dir: Path = run_dir
@@ -259,6 +267,8 @@ class Platform:
         self.runtimes = dict(runtimes)
         self.clock: Clock = clock
         self.run_config: RunConfig = run_config
+        self.lethe_bridge = lethe_bridge
+        self.lethe_context_records: tuple[SupplementalRecord, ...] = ()
         self.manifest = manifest
         self.workspace_controller = workspace_controller
         if workdir is None:
@@ -320,12 +330,27 @@ class Platform:
             summary_index=self.task_summary_index,
             run_dir=run_dir,
         )
-        resolved_context_view_hook = context_view_hook
-        if resolved_context_view_hook is None:
-            resolved_context_view_hook = (
-                lambda node_id, hook_run_id, subject, recent_event_summary: (
-                    self.context_view_builder.build(node_id, hook_run_id)
+        async def resolved_context_view_hook(
+            node_id: str,
+            hook_run_id: str,
+            subject: str,
+            recent_event_summary: str,
+        ) -> str:
+            if context_view_hook is None:
+                base = self.context_view_builder.build(node_id, hook_run_id)
+            else:
+                value = context_view_hook(
+                    node_id, hook_run_id, subject, recent_event_summary
                 )
+                base = await value if inspect.isawaitable(value) else value
+            if not self.lethe_context_records:
+                return base
+            return "\n".join(
+                [
+                    base,
+                    "【LETHE Run間文脈】",
+                    *(f"- {record.text}" for record in self.lethe_context_records),
+                ]
             )
         self.consortium = Consortium(
             run_id=run_id,
@@ -343,6 +368,26 @@ class Platform:
         # 後続 task で terminate 経路が追加されたら同期的に decrement
         # する設計にすること)。
         self._s1_count: int = 0
+
+    async def load_lethe_context(
+        self,
+        query: str | None,
+        injector: LetheContextInjector | None = None,
+    ) -> tuple[SupplementalRecord, ...]:
+        """Run 開始時に関連レコードを検索し、文脈 hook へ注入する。"""
+
+        if not self.run_config.lethe.enabled or query is None:
+            return ()
+
+        def store(records: Sequence[SupplementalRecord]) -> None:
+            self.lethe_context_records = tuple(records)
+
+        records = await self.lethe_bridge.inject_context(query, store)
+        if injector is not None:
+            result = injector(records)
+            if inspect.isawaitable(result):
+                await result
+        return tuple(records)
 
     def reserve_s1_writer(self, system: "System") -> None:
         """同一 self-hosting worktree の S1 writer を 1 つに制限する。"""
@@ -421,6 +466,9 @@ class Platform:
         clock: Clock | None = None,
         context_view_hook: ContextViewHook | None = None,
         human_statement_waiter: HumanStatementWaiter | None = None,
+        lethe_transport: LetheTransport | None = None,
+        lethe_context_query: str | None = None,
+        lethe_context_injector: LetheContextInjector | None = None,
         resume: bool = False,
     ) -> "Platform":
         """Construct and bootstrap a :class:`Platform` for a new Run.
@@ -655,9 +703,13 @@ class Platform:
             workdir=workdir,
             context_view_hook=context_view_hook,
             human_statement_waiter=human_statement_waiter,
+            lethe_bridge=LetheBridge(config=rc.lethe, transport=lethe_transport),
         )
 
         try:
+            await platform.load_lethe_context(
+                lethe_context_query, injector=lethe_context_injector
+            )
             await writer.append(
                 "budget_configured",
                 {
@@ -1498,6 +1550,23 @@ class Platform:
         # 失敗するが、System が全て停止しているので呼ばれることは無い。
         await self.eventlog.stop()
 
+        # Run 終了時の唯一の LETHE export hook。disabled は完全 no-op、
+        # dry-run は共有 JSONL、live は supplemental POST へ出力する。
+        lethe_error: Exception | None = None
+        if self.run_config.lethe.enabled:
+            try:
+                await asyncio.to_thread(
+                    self.lethe_bridge.export_run,
+                    run_id=self.run_id,
+                    ended_at=self.clock.now_iso(),
+                    events_path=self.run_dir / _EVENTS_FILENAME,
+                    nodes=self.nodes,
+                    node_run_states=self.node_run_states,
+                    run_consumption=self.run_cost_consumed,
+                )
+            except Exception as exc:
+                lethe_error = exc
+
         # 3. RUNNING lockfile を削除 (REQ 11.6)。Run dir 自体は観測 /
         # replay のため残す (REQ 10.1: Source_of_Truth)。
         lockfile_path = self.run_dir / _RUNNING_LOCKFILE_NAME
@@ -1508,8 +1577,15 @@ class Platform:
             # best-effort: 削除失敗は Run の状態に影響しない。
             pass
 
+        if workspace_error is not None and lethe_error is not None:
+            raise ExceptionGroup(
+                "workspace finalize and LETHE export both failed",
+                [workspace_error, lethe_error],
+            )
         if workspace_error is not None:
             raise workspace_error
+        if lethe_error is not None:
+            raise lethe_error
 
     # ------------------------------------------------------------------
     # Dynamic S1 spawn
@@ -1916,6 +1992,9 @@ async def start_run(
     clock: Clock | None = None,
     context_view_hook: ContextViewHook | None = None,
     human_statement_waiter: HumanStatementWaiter | None = None,
+    lethe_transport: LetheTransport | None = None,
+    lethe_context_query: str | None = None,
+    lethe_context_injector: LetheContextInjector | None = None,
     resume: bool = False,
 ) -> Platform:
     """Top-level coroutine to start a new Run.
@@ -1972,6 +2051,9 @@ async def start_run(
         clock=clock,
         context_view_hook=context_view_hook,
         human_statement_waiter=human_statement_waiter,
+        lethe_transport=lethe_transport,
+        lethe_context_query=lethe_context_query,
+        lethe_context_injector=lethe_context_injector,
         resume=resume,
     )
     await platform.start()

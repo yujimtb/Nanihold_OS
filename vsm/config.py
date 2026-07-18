@@ -38,6 +38,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -57,6 +58,7 @@ __all__ = [
     "QuotaConfig",
     "ResidencyConfig",
     "SelfDevConfig",
+    "LetheConfig",
     "RunConfig",
     "require_native_runs_enabled",
     "load_config",
@@ -540,6 +542,60 @@ class ResidencyConfig:
             )
 
 
+@dataclass(frozen=True)
+class LetheConfig:
+    """Run 間の会計・長期記憶を LETHE へ接続する設定。"""
+
+    enabled: bool = False
+    mode: str = "dry-run"
+    dry_run_path: Path = field(
+        default_factory=lambda: Path("runs") / "lethe-dry-run.jsonl"
+    )
+    endpoint: str | None = None
+    token: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ConfigError(missing_roles=[], detail="lethe.enabled must be a boolean")
+        if self.mode not in {"dry-run", "live"}:
+            raise ConfigError(
+                missing_roles=[], detail="lethe.mode must be dry-run or live"
+            )
+        if not isinstance(self.dry_run_path, Path):
+            raise ConfigError(
+                missing_roles=[], detail="lethe.dry_run_path must be a path string"
+            )
+        for name in ("endpoint", "token"):
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ConfigError(
+                    missing_roles=[], detail=f"lethe.{name} must be a non-empty string"
+                )
+        if self.enabled and self.mode == "live":
+            if self.endpoint is None:
+                raise ConfigError(
+                    missing_roles=[], detail="enabled live LETHE requires lethe.endpoint"
+                )
+            if self.token is None:
+                raise ConfigError(
+                    missing_roles=[], detail="enabled live LETHE requires lethe.token"
+                )
+            parsed = urlsplit(self.endpoint)
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.netloc
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ConfigError(
+                    missing_roles=[],
+                    detail=(
+                        "lethe.endpoint must be an absolute http(s) URL "
+                        "without query or fragment"
+                    ),
+                )
+
+
 def _validate_sub_agent_count(role: SystemRole, count: int) -> None:
     """Validate a Sub_Agent count for a single role.
 
@@ -642,6 +698,7 @@ class RunConfig:
     quota: QuotaConfig = field(default_factory=QuotaConfig)
     selfdev: SelfDevConfig = field(default_factory=SelfDevConfig)
     residency: ResidencyConfig = field(default_factory=ResidencyConfig)
+    lethe: LetheConfig = field(default_factory=LetheConfig)
 
     def __post_init__(self) -> None:
         if not isinstance(self.agents, AgentsConfig):
@@ -674,6 +731,8 @@ class RunConfig:
             raise ConfigError(
                 missing_roles=[], detail="RunConfig.residency must be a ResidencyConfig"
             )
+        if not isinstance(self.lethe, LetheConfig):
+            raise ConfigError(missing_roles=[], detail="RunConfig.lethe must be a LetheConfig")
         # Materialise the mapping into a plain dict so that callers can
         # not mutate the configuration after construction. The frozen
         # dataclass would still allow mutation through the original
@@ -884,6 +943,7 @@ def _extract_run_section(
     quota: QuotaConfig,
     residency: ResidencyConfig,
     selfdev: SelfDevConfig,
+    lethe: LetheConfig,
 ) -> RunConfig:
     """Build a :class:`RunConfig` from the optional ``[run]`` TOML section.
 
@@ -906,6 +966,7 @@ def _extract_run_section(
             quota=quota,
             residency=residency,
             selfdev=selfdev,
+            lethe=lethe,
         )
     if not isinstance(section, Mapping):
         raise ConfigError(
@@ -964,6 +1025,7 @@ def _extract_run_section(
         quota=quota,
         residency=residency,
         selfdev=selfdev,
+        lethe=lethe,
     )
 
 
@@ -1356,6 +1418,62 @@ def _extract_selfdev_section(raw: Mapping[str, Any], path: Path) -> SelfDevConfi
     )
 
 
+def _extract_lethe_section(raw: Mapping[str, Any], path: Path) -> LetheConfig:
+    """``[lethe]`` の明示的な接続設定を読み込む。"""
+
+    section = raw.get("lethe")
+    defaults = LetheConfig()
+    if section is None:
+        return defaults
+    if not isinstance(section, Mapping):
+        raise ConfigError(
+            missing_roles=[], detail=f"[lethe] section in {path} must be a table"
+        )
+    allowed = {"enabled", "mode", "dry_run_path", "endpoint", "token"}
+    unknown = set(section) - allowed
+    if unknown:
+        raise ConfigError(
+            missing_roles=[], detail=f"unknown [lethe] fields: {sorted(unknown)}"
+        )
+    enabled = section.get("enabled", defaults.enabled)
+    if not isinstance(enabled, bool):
+        raise ConfigError(missing_roles=[], detail="[lethe] enabled must be a boolean")
+    mode = _require_string(
+        section.get("mode", defaults.mode),
+        field_name="[lethe] mode",
+        path=path,
+    )
+    dry_run_path_raw = section.get("dry_run_path")
+    if dry_run_path_raw is None:
+        dry_run_path = defaults.dry_run_path
+    elif isinstance(dry_run_path_raw, str) and dry_run_path_raw.strip():
+        dry_run_path = Path(dry_run_path_raw.strip())
+        if not dry_run_path.is_absolute():
+            dry_run_path = path.parent / dry_run_path
+    else:
+        raise ConfigError(
+            missing_roles=[], detail="[lethe] dry_run_path must be a non-empty string"
+        )
+
+    def optional_string(name: str) -> str | None:
+        value = section.get(name)
+        if value is None:
+            return None
+        return _require_string(
+            value,
+            field_name=f"[lethe] {name}",
+            path=path,
+        )
+
+    return LetheConfig(
+        enabled=enabled,
+        mode=mode,
+        dry_run_path=dry_run_path,
+        endpoint=optional_string("endpoint"),
+        token=optional_string("token"),
+    )
+
+
 def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
     """Load :class:`LLMConfig` and :class:`RunConfig` from disk + environment.
 
@@ -1442,6 +1560,7 @@ def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
     budget = _extract_budget_section(raw, toml_path)
     quota = _extract_quota_section(raw, toml_path)
     selfdev = _extract_selfdev_section(raw, toml_path)
+    lethe = _extract_lethe_section(raw, toml_path)
     run_config = _extract_run_section(
         raw,
         toml_path,
@@ -1454,6 +1573,7 @@ def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
         quota=quota,
         residency=residency,
         selfdev=selfdev,
+        lethe=lethe,
     )
     llm_config = LLMConfig(
         provider_from_env=env_provider,
