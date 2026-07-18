@@ -453,6 +453,9 @@ class RunManager:
                 runs_dir=runtime_root,
                 run_config=run_config,
                 llm_config=llm_config,
+                lethe_context_query=" ".join(
+                    value for value in (run.description, instruction) if value.strip()
+                ),
             )
             self._platforms[run.run_id] = platform
 

@@ -28,6 +28,7 @@
 | Role / Agent / Execution | `RoleSpec`, `AgentSpec`, `PromptTemplate`, `Execution`。Spec versioning と Agent / Tool 実行単位を明示。 |
 | Memory / Graph / Telemetry | `ContextView`, `TaskSummary`, `GraphProjection`, `TelemetryCorrelation` を実装。`ContextViewBuilder` は Node の直近イベント、親 directive、直接 child の TaskSummary、参照 Artifact を短い日本語ビューへ決定論的に射影する。S1 完了時は規則ベースの TaskSummary を Run 配下の `memory/task-summaries.jsonl` に登録する。 |
 | Run Budget / quota recovery | `[budget]` / `[budget.roles]` を Authority と NodeRunState に注入し、AgentResult の input/output/cache-read token と wall clock を累算・呼出前強制する。quota 枯渇時は Node を休眠し、reset 時刻に保留 Message を再投入して自動復帰する。resume 失敗時の物理再試行は論理呼び出し内に閉じ、成功結果への課金とイベント発行を各1回にする。Quota/Algedonic の suspend は共通 lifecycle 操作を使う。 |
+| LETHE Run間会計・長期記憶 | `vsm.lethe_bridge` に schema v1 の会計・知見 supplemental exporter、検索v2 client、文脈注入 hook を実装。`enabled=false` が完全 no-op、dry-run は共有JSONLのみ、live は endpoint/token 必須で supplemental POST と検索を行う。CLI/Web のタスク記述を開始時queryへ渡し、Platform shutdownの1点でexportする。live書込の運用有効化は契約承認待ち。 |
 | Wave 5 REST / 外部指示 | JSON の Run 投入、Node 宛追加指示、Human Algedonic、Consortium statement、topology、budget API を FastAPI に実装。`vsm instruct` は `127.0.0.1:8000` の instruction API を呼ぶ。追加指示は `instruction_received` と Human→Node の `INSTRUCTION` Message の両方で記録・配送される。 |
 | 自己開発 Wave 4 API / CLI / WebUI | `/api/selfdev` の Proposal create/list/detail、SSE、Human decision、in-doubt effect の completed/failed 裁定、pause_id付きcontrol、force_abort、merge outcome、artifact、health、`vsm selfdev` loopback subgroup、専用自己開発タブを実装。FastAPI lifespan は controller service を single worker で管理し、Compose から `--reload` を除去。 |
 | ライブ組織図 | `events.jsonl` の Node lifecycle、`agent_attached`、`tool_invoked`、`llm_invocation`、`budget_consumed` 等だけから役割、親子、backend/model、状態、活動、指示元、予算を再構成する。React UI はポーリングし、Node の休眠・再開・停止、追加指示、Algedonic、Consortium/Human review 応答を提供する。 |
@@ -39,7 +40,7 @@
 dynamic differentiate の自律実行
 request_escalation の親 Node 判断ループ
 lease timeout 後の recovery policy
-Run 間 budget accounting
+LETHE live write の運用有効化（write 契約承認待ち）
 Secret store / Artifact store の具体実装
 OpenTelemetry exporter 連携
 ```

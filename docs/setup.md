@@ -219,6 +219,11 @@ S1_WORKER = { tokens = 500000, wall_clock_seconds = 1800 }
 suspend_on_exhausted = true
 fallback_resume_minutes = 60
 weekly_fallback_resume_minutes = 360
+
+[lethe]
+enabled = false
+mode = "dry-run"
+dry_run_path = "runs/lethe-dry-run.jsonl"
 ```
 
 自己開発を有効にする場合は、S3_ALLOCATOR、S4_SCANNER、S5_POLICY、S3STAR_AUDITOR、S1_WORKER の
@@ -246,6 +251,27 @@ Run 終了時に破棄され、Run 間では引き継がれない。
 quota 枯渇を返したバックエンドの Node は `SUSPENDED` になり、`quota_reset_at`、または
 時刻不明時の `fallback_resume_minutes` に自動復帰する。休眠中および枯渇検知時に処理中だった
 Message は Node 別キューに保持され、復帰後に再投入される。
+
+### LETHE Run間会計・長期記憶
+
+LETHE 書込は既定で無効である。`enabled = false` では Run 開始時の検索、終了時のexport、
+ローカルファイル作成、HTTP通信を一切行わない。契約確認前の検証は次の dry-run 設定だけを使う。
+
+```toml
+[lethe]
+enabled = true
+mode = "dry-run"
+dry_run_path = "runs/lethe-dry-run.jsonl"
+```
+
+dry-run JSONL は Run 間で共有され、次の `vsm submit` / Web Run 開始時にタスク記述の全単語を
+含む `text` を検索する。実 LETHE への通信は発生しない。
+
+write 契約承認後に限り `mode = "live"` とし、同じ `[lethe]` table に絶対 HTTP(S) `endpoint` と
+Bearer `token` を明示注入する。両方がない live 設定は起動時に失敗する。`vsm.toml` は Git ignore
+対象だが、token の実値をリポジトリ、サンプル、ログへ書いてはならない。live は
+`POST /api/supplemental`、read は `GET /api/v2/search?query=...` の契約だけを使用し、別経路への
+fallback は行わない。
 
 ### LiteLLM を明示的に使う場合
 

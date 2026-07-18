@@ -994,6 +994,7 @@ def submit(
             run_id=run_id,
             run_config=run_config,
             llm_config=llm_config,
+            lethe_context_query=description,
         )
         events_path = platform.run_dir / "events.jsonl"
         progress_started = clock.monotonic()
