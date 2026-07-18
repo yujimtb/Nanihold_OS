@@ -399,6 +399,9 @@ class BudgetConfig:
 
     run_tokens: int = 2_000_000
     run_wall_clock_seconds: float = 7_200.0
+    invocation_initial_tokens: int = 4_096
+    invocation_initial_wall_clock_seconds: float = 60.0
+    invocation_safety_multiplier: float = 1.25
     roles: Mapping[SystemRole, Mapping[str, float]] = field(
         default_factory=lambda: {
             SystemRole.S1_WORKER: {
@@ -418,6 +421,33 @@ class BudgetConfig:
         ):
             raise ConfigError(
                 missing_roles=[], detail="budget.run_wall_clock_seconds must be positive"
+            )
+        if (
+            not isinstance(self.invocation_initial_tokens, int)
+            or isinstance(self.invocation_initial_tokens, bool)
+            or self.invocation_initial_tokens <= 0
+        ):
+            raise ConfigError(
+                missing_roles=[],
+                detail="budget.invocation_initial_tokens must be a positive integer",
+            )
+        if (
+            not isinstance(self.invocation_initial_wall_clock_seconds, (int, float))
+            or isinstance(self.invocation_initial_wall_clock_seconds, bool)
+            or self.invocation_initial_wall_clock_seconds <= 0
+        ):
+            raise ConfigError(
+                missing_roles=[],
+                detail="budget.invocation_initial_wall_clock_seconds must be positive",
+            )
+        if (
+            not isinstance(self.invocation_safety_multiplier, (int, float))
+            or isinstance(self.invocation_safety_multiplier, bool)
+            or self.invocation_safety_multiplier < 1
+        ):
+            raise ConfigError(
+                missing_roles=[],
+                detail="budget.invocation_safety_multiplier must be at least 1",
             )
         normalised: dict[SystemRole, dict[str, float]] = {}
         for role, envelope in self.roles.items():
@@ -455,16 +485,10 @@ class QuotaConfig:
     """サブスクリプション quota 枯渇時の休眠・復帰設定。"""
 
     suspend_on_exhausted: bool = True
-    fallback_resume_minutes: float = 60.0
-    weekly_fallback_resume_minutes: float = 360.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.suspend_on_exhausted, bool):
             raise ConfigError(missing_roles=[], detail="quota.suspend_on_exhausted must be a boolean")
-        for name in ("fallback_resume_minutes", "weekly_fallback_resume_minutes"):
-            value = getattr(self, name)
-            if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
-                raise ConfigError(missing_roles=[], detail=f"quota.{name} must be positive")
 
 
 @dataclass(frozen=True)
@@ -1134,7 +1158,15 @@ def _extract_budget_section(raw: Mapping[str, Any], path: Path) -> BudgetConfig:
         return BudgetConfig()
     if not isinstance(section, Mapping):
         raise ConfigError(missing_roles=[], detail=f"[budget] section in {path} must be a table")
-    unknown = set(section) - {"run_tokens", "run_wall_clock_seconds", "roles"}
+    allowed = {
+        "run_tokens",
+        "run_wall_clock_seconds",
+        "invocation_initial_tokens",
+        "invocation_initial_wall_clock_seconds",
+        "invocation_safety_multiplier",
+        "roles",
+    }
+    unknown = set(section) - allowed
     if unknown:
         raise ConfigError(missing_roles=[], detail=f"unknown [budget] fields: {sorted(unknown)}")
     defaults = BudgetConfig()
@@ -1153,6 +1185,16 @@ def _extract_budget_section(raw: Mapping[str, Any], path: Path) -> BudgetConfig:
         run_wall_clock_seconds=section.get(
             "run_wall_clock_seconds", defaults.run_wall_clock_seconds
         ),
+        invocation_initial_tokens=section.get(
+            "invocation_initial_tokens", defaults.invocation_initial_tokens
+        ),
+        invocation_initial_wall_clock_seconds=section.get(
+            "invocation_initial_wall_clock_seconds",
+            defaults.invocation_initial_wall_clock_seconds,
+        ),
+        invocation_safety_multiplier=section.get(
+            "invocation_safety_multiplier", defaults.invocation_safety_multiplier
+        ),
         roles=roles,
     )
 
@@ -1163,11 +1205,7 @@ def _extract_quota_section(raw: Mapping[str, Any], path: Path) -> QuotaConfig:
         return QuotaConfig()
     if not isinstance(section, Mapping):
         raise ConfigError(missing_roles=[], detail=f"[quota] section in {path} must be a table")
-    allowed = {
-        "suspend_on_exhausted",
-        "fallback_resume_minutes",
-        "weekly_fallback_resume_minutes",
-    }
+    allowed = {"suspend_on_exhausted"}
     unknown = set(section) - allowed
     if unknown:
         raise ConfigError(missing_roles=[], detail=f"unknown [quota] fields: {sorted(unknown)}")

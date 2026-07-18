@@ -590,10 +590,13 @@ Budget:
 `[budget]` の Run envelope と `[budget.roles]` のロール別 envelope を
 `ParentAuthority.budget_envelope` / `NodeRunState.budget` に注入する。AgentRuntime の応答ごとに
 3種のトークン、応答 latency、Node の RUNNING 経過時間を `NodeRunState.cost_consumed` と
-`budget_consumed` event に累算する。既消費量が上限以上なら次の AgentRuntime 呼び出しを拒否し、
-`budget_exceeded` と `request_escalation` を発行する。
+`budget_consumed` event に累算する。次回 invocation の開始前に、Node の直近実績と設定済み初期値の
+大きい方へ安全倍率を掛けた予約見積を算出する。Node/Run のいずれかの残余が見積未満なら
+AgentRuntime を起動せず、`budget_exceeded` と `request_escalation` を発行する。
 
-quota 枯渇時は Node を `SUSPENDED` にし、reset 時刻（不明時は設定した間隔）に自動復帰する。
+quota 枯渇時は `five_hour` / `weekly` の種別と正確な reset 時刻を quota-state v2 に永続化し、
+確定済み時刻にだけ自動復帰する。種別不明または時刻不明なら `human_review_required` を永続化して
+Node を `FAILED` にし、timer を作らず人間判断を要求する。
 MessageBus は当該 Node の処理中 Message と休眠中に到着した Message を保留し、`quota_resumed`
 発行時に同じ購読キューへ再投入する。QuotaMonitor の timer は Platform shutdown で全て cancel する。
 Quota と Algedonic の suspend は同じ検証付き Node lifecycle 操作を通し、Node と

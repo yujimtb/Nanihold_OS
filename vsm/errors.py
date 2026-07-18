@@ -173,6 +173,10 @@ class QuotaExhaustedError(LLMError):
     """AgentRuntime の quota 枯渇により Node が休眠へ移行した。"""
 
 
+class QuotaResolutionRequiredError(QuotaExhaustedError):
+    """quota 種別または reset 時刻を確定できず、人間判断が必要になった。"""
+
+
 # ---------------------------------------------------------------------------
 # Event_Log
 # ---------------------------------------------------------------------------
@@ -254,6 +258,7 @@ __all__ = [
     "LLMProviderError",
     "BudgetExceededError",
     "QuotaExhaustedError",
+    "QuotaResolutionRequiredError",
     "EventLogError",
     "EventLogAppendError",
     "SystemInstantiationError",

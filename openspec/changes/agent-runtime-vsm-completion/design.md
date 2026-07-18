@@ -93,13 +93,14 @@ resume_within_run = true    # Run内・同一Node内のセッション再開(§4
 [budget]                    # §5
 run_tokens = 2000000
 run_wall_clock_seconds = 7200
+invocation_initial_tokens = 4096
+invocation_initial_wall_clock_seconds = 60
+invocation_safety_multiplier = 1.25
 [budget.roles]              # ロール別エンベロープ(比率または絶対値)
 S1_WORKER = { tokens = 500000, wall_clock_seconds = 1800 }
 
 [quota]                     # §6
 suspend_on_exhausted = true
-fallback_resume_minutes = 60   # reset時刻が取れないときの再試行間隔
-weekly_fallback_resume_minutes = 360
 
 [coordination]              # §7
 ai_deliberation = true

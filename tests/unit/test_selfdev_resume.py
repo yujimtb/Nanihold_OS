@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from vsm.agents.backends import FakeAgentRuntime
-from vsm.agents.backends._common import detect_quota_kind, terminate_process_group
+from vsm.agents.backends._common import (
+    detect_quota_kind,
+    parse_quota_reset_at,
+    terminate_process_group,
+)
 from vsm.clock import FakeClock
 from vsm.config import AgentsConfig, RunConfig
 from vsm.eventlog.reader import read_all
@@ -36,7 +40,19 @@ def _message(message_id: str, receiver_id: str) -> Message:
 def test_quota_kind_is_detected_from_cli_diagnostics() -> None:
     assert detect_quota_kind("weekly usage limit reached") == "weekly"
     assert detect_quota_kind("5-hour quota limit reached") == "five_hour"
+    assert detect_quota_kind('{"window_minutes": 300}') == "five_hour"
+    assert detect_quota_kind('{"window_minutes": 10080}') == "weekly"
+    assert detect_quota_kind("5-hour and weekly limits reached") == "unknown"
     assert detect_quota_kind("quota limit reached") == "unknown"
+
+
+def test_quota_reset_is_parsed_exactly_from_structured_diagnostics() -> None:
+    assert parse_quota_reset_at(
+        '{"reset_at":"2026-07-19T12:04:05.678+09:00"}'
+    ) == datetime(2026, 7, 19, 3, 4, 5, 678000, tzinfo=timezone.utc)
+    assert parse_quota_reset_at('{"resets_at":1784420645}') == datetime.fromtimestamp(
+        1784420645, tz=timezone.utc
+    )
 
 
 @pytest.mark.asyncio
@@ -81,7 +97,6 @@ async def test_quota_pool_probe_then_resumes_nodes_sequentially(tmp_path) -> Non
         nodes=nodes,
         node_run_states=states,
         run_id="resume-pool-test",
-        fallback_resume_minutes=1,
         node_pools={node_id: "claude-subscription" for node_id in nodes},
         probe=probe,
         on_node_resumed=resumed.append,

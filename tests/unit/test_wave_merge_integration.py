@@ -119,7 +119,9 @@ async def test_algedonic_and_quota_suspend_do_not_double_transition(tmp_path) ->
         assert not platform.quota_monitor.has_pending_resume(algedonic_node)
 
         reset_at = datetime.now(timezone.utc) + timedelta(hours=1)
-        await platform.quota_monitor.suspend(quota_node, reset_at)
+        await platform.quota_monitor.suspend(
+            quota_node, reset_at, quota_kind="five_hour"
+        )
         with pytest.raises(ValueError, match="SUSPENDED -> SUSPENDED"):
             await platform.suspend_node_from_algedonic(
                 source_node_id=quota_node,
