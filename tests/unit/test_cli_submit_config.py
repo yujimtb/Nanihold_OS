@@ -22,6 +22,11 @@ def test_submit_loads_dotenv_config_before_start_run(tmp_path, monkeypatch) -> N
         "LITELLM_PROVIDER=openrouter/test-model\n",
         encoding="utf-8",
     )
+    (tmp_path / "vsm.toml").write_text(
+        "[residency]\n"
+        "native_runs_enabled = true\n",
+        encoding="utf-8",
+    )
 
     captured: dict[str, object] = {}
 
@@ -96,3 +101,22 @@ def test_submit_loads_dotenv_config_before_start_run(tmp_path, monkeypatch) -> N
     assert llm_config.resolve_model() == "openrouter/test-model"
     assert "S4_SCANNER" in result.stderr
     assert "S1_WORKER" in result.stderr
+
+
+def test_submit_fails_fast_when_native_runs_are_disabled(tmp_path, monkeypatch) -> None:
+    """設定省略時は native Run を起動せず D0 メッセージで終了する。"""
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(LITELLM_PROVIDER_ENV, raising=False)
+
+    def unexpected_start_run(*_args, **_kwargs):
+        raise AssertionError("start_run must not be called while native Run is disabled")
+
+    import vsm.runtime.lifecycle as lifecycle
+
+    monkeypatch.setattr(lifecycle, "start_run", unexpected_start_run)
+
+    result = runner.invoke(app, ["submit", "起動されてはいけない"])
+
+    assert result.exit_code != 0
+    assert "D0契約によりnative Runは封鎖中" in result.stderr

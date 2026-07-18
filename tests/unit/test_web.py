@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from vsm.config import AgentsConfig, LLMConfig, RunConfig
+from vsm.config import AgentsConfig, LLMConfig, ResidencyConfig, RunConfig
 from vsm.roles import SystemRole
 from vsm.web.manager import RunManager, utc_now
 from vsm.web.models import RunGeneration, WebRun, WebRunStatus
@@ -188,7 +188,10 @@ async def test_manager_fails_before_generation_when_litellm_provider_is_missing(
     roles = {role: "fake" for role in SystemRole}
     roles[SystemRole.S5_POLICY] = "litellm"
     roles[SystemRole.S3_ALLOCATOR] = ""
-    run_config = RunConfig(agents=AgentsConfig(default_backend="fake", roles=roles))
+    run_config = RunConfig(
+        agents=AgentsConfig(default_backend="fake", roles=roles),
+        residency=ResidencyConfig(native_runs_enabled=True),
+    )
     monkeypatch.setattr(
         "vsm.web.manager.load_config",
         lambda _path=None: (LLMConfig(), run_config),

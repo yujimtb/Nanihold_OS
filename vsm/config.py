@@ -41,7 +41,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from vsm.errors import ConfigError
+from vsm.errors import ConfigError, NativeRunDisabledError
 from vsm.roles import MANDATORY_ROLES, SystemRole
 from vsm.runtime.manifest import DEFAULT_SELFDEV_FORBIDDEN_PATHS
 
@@ -55,8 +55,10 @@ __all__ = [
     "ConsortiumConfig",
     "BudgetConfig",
     "QuotaConfig",
+    "ResidencyConfig",
     "SelfDevConfig",
     "RunConfig",
+    "require_native_runs_enabled",
     "load_config",
     "LITELLM_PROVIDER_ENV",
     "DEFAULT_CONFIG_PATH",
@@ -500,6 +502,20 @@ class SelfDevConfig:
         object.__setattr__(self, "forbidden_paths", tuple(self.forbidden_paths))
 
 
+@dataclass(frozen=True)
+class ResidencyConfig:
+    """恒常稼働時の native Run 起動可否。"""
+
+    native_runs_enabled: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.native_runs_enabled, bool):
+            raise ConfigError(
+                missing_roles=[],
+                detail="residency.native_runs_enabled must be a boolean",
+            )
+
+
 def _validate_sub_agent_count(role: SystemRole, count: int) -> None:
     """Validate a Sub_Agent count for a single role.
 
@@ -601,6 +617,7 @@ class RunConfig:
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     quota: QuotaConfig = field(default_factory=QuotaConfig)
     selfdev: SelfDevConfig = field(default_factory=SelfDevConfig)
+    residency: ResidencyConfig = field(default_factory=ResidencyConfig)
 
     def __post_init__(self) -> None:
         if not isinstance(self.agents, AgentsConfig):
@@ -629,6 +646,10 @@ class RunConfig:
             raise ConfigError(missing_roles=[], detail="RunConfig.quota must be a QuotaConfig")
         if not isinstance(self.selfdev, SelfDevConfig):
             raise ConfigError(missing_roles=[], detail="RunConfig.selfdev must be a SelfDevConfig")
+        if not isinstance(self.residency, ResidencyConfig):
+            raise ConfigError(
+                missing_roles=[], detail="RunConfig.residency must be a ResidencyConfig"
+            )
         # Materialise the mapping into a plain dict so that callers can
         # not mutate the configuration after construction. The frozen
         # dataclass would still allow mutation through the original
@@ -705,6 +726,13 @@ class RunConfig:
         read the configured count using either name interchangeably.
         """
         return self.count(role)
+
+
+def require_native_runs_enabled(run_config: RunConfig) -> None:
+    """native Run の起動・再開を許可し、封鎖中なら即時に失敗させる。"""
+
+    if not run_config.residency.native_runs_enabled:
+        raise NativeRunDisabledError()
 
 
 # ---------------------------------------------------------------------------
@@ -830,6 +858,7 @@ def _extract_run_section(
     consortium: ConsortiumConfig,
     budget: BudgetConfig,
     quota: QuotaConfig,
+    residency: ResidencyConfig,
     selfdev: SelfDevConfig,
 ) -> RunConfig:
     """Build a :class:`RunConfig` from the optional ``[run]`` TOML section.
@@ -851,6 +880,7 @@ def _extract_run_section(
             consortium=consortium,
             budget=budget,
             quota=quota,
+            residency=residency,
             selfdev=selfdev,
         )
     if not isinstance(section, Mapping):
@@ -908,6 +938,7 @@ def _extract_run_section(
         consortium=consortium,
         budget=budget,
         quota=quota,
+        residency=residency,
         selfdev=selfdev,
     )
 
@@ -1060,6 +1091,33 @@ def _extract_session_section(raw: Mapping[str, Any], path: Path) -> SessionConfi
             missing_roles=[], detail="[session] resume_within_run must be a boolean"
         )
     return SessionConfig(resume_within_run=value)
+
+
+def _extract_residency_section(
+    raw: Mapping[str, Any], path: Path
+) -> ResidencyConfig:
+    """``[residency]`` の native Run 起動許可を読み込む。"""
+
+    section = raw.get("residency")
+    if section is None:
+        return ResidencyConfig()
+    if not isinstance(section, Mapping):
+        raise ConfigError(
+            missing_roles=[], detail=f"[residency] section in {path} must be a table"
+        )
+    unknown = set(section) - {"native_runs_enabled"}
+    if unknown:
+        raise ConfigError(
+            missing_roles=[],
+            detail=f"unknown [residency] fields: {sorted(unknown)}",
+        )
+    value = section.get("native_runs_enabled", False)
+    if not isinstance(value, bool):
+        raise ConfigError(
+            missing_roles=[],
+            detail="[residency] native_runs_enabled must be a boolean",
+        )
+    return ResidencyConfig(native_runs_enabled=value)
 
 
 def _extract_boolean_section(
@@ -1323,6 +1381,7 @@ def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
     file_provider, overrides = _extract_llm_section(raw, toml_path)
     agents = _extract_agents_section(raw, toml_path)
     session = _extract_session_section(raw, toml_path)
+    residency = _extract_residency_section(raw, toml_path)
     coordination = CoordinationConfig(
         ai_deliberation=_extract_boolean_section(
             raw,
@@ -1355,6 +1414,7 @@ def load_config(path: Path | None = None) -> tuple[LLMConfig, RunConfig]:
         consortium=consortium,
         budget=budget,
         quota=quota,
+        residency=residency,
         selfdev=selfdev,
     )
     llm_config = LLMConfig(

@@ -59,6 +59,15 @@ class ConfigError(VSMError):
         super().__init__(message)
 
 
+class NativeRunDisabledError(VSMError):
+    """D0 契約で native Run の起動・再開が封鎖されている。"""
+
+    MESSAGE = "D0契約によりnative Runは封鎖中"
+
+    def __init__(self) -> None:
+        super().__init__(self.MESSAGE)
+
+
 class CLIError(VSMError):
     """CLI 入力バリデーション失敗。
 
@@ -241,6 +250,7 @@ class CoordinationAckMissing(VSMError):
 __all__ = [
     "VSMError",
     "ConfigError",
+    "NativeRunDisabledError",
     "CLIError",
     "RunDirectoryError",
     "WorkspaceError",

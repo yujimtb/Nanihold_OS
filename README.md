@@ -30,6 +30,11 @@ loopback REST API を経由し、Event Log へ直接 fallback しません。
 実行中 Run には `vsm instruct <run_id> "<指示>" [--node <id>]` で外部エージェントからも
 指示できます。最近の Run は `vsm runs` で一覧できます。
 
+恒常稼働D0契約では native Run の起動・再開を既定で封鎖しています。`vsm submit` と WebUI の
+Run作成は `vsm.toml` の `[residency] native_runs_enabled = true` を明示した場合だけ実行でき、
+封鎖中は CLI が起動前に失敗し、REST API は HTTP 403 を返します。chat API、selfdev、既存Runの
+閲覧、停止操作はこのフラグの対象外です。
+
 Selfdev の implementation Run は、ProposalManifest の `active_wall_clock_seconds` と
 `[selfdev].implementation_timeout_margin_seconds` から全体制限時間を導出します。Agent backend の
 単発 `timeout_seconds` にも同じ導出値を上限として渡し、既定値が短い backend timer で意図せず切断されないようにします。backend timeout を設定で明示的に短くした場合は設定を優先し、その理由を timeout reason に記録します。タイムアウト後もworkspaceの `candidate.patch`

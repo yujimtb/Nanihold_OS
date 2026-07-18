@@ -58,7 +58,7 @@ import typer
 from typer.core import TyperGroup
 
 from vsm.clock import SystemClock
-from vsm.errors import CLIError, ConfigError, RunDirectoryError
+from vsm.errors import CLIError, ConfigError, NativeRunDisabledError, RunDirectoryError
 from vsm.ids import generate_run_id, generate_uuid, validate_run_id
 
 __all__ = ["app"]
@@ -983,13 +983,12 @@ def submit(
     # ``vsm --help`` does not pay their startup cost.
     import asyncio
 
-    from vsm.config import load_config
+    from vsm.config import load_config, require_native_runs_enabled
     from vsm.eventlog.reader import read_all
     from vsm.roles import SystemRole
     from vsm.runtime.lifecycle import start_run
 
     async def _run() -> None:
-        llm_config, run_config = load_config(None)
         platform = await start_run(
             run_id=run_id,
             run_config=run_config,
@@ -1087,7 +1086,18 @@ def submit(
             await platform.shutdown()
 
     try:
+        llm_config, run_config = load_config(None)
+        require_native_runs_enabled(run_config)
         asyncio.run(_run())
+    except NativeRunDisabledError as exc:
+        _emit_cli_error(
+            str(exc),
+            next_step=(
+                "native Run を起動する場合だけ、vsm.toml の "
+                "[residency] native_runs_enabled = true を明示してください。"
+            ),
+        )
+        raise typer.Exit(code=1) from None
     except ConfigError as exc:
         # REQ 13.2: structural constraint violation (e.g. mandatory
         # System missing). The lifecycle layer has already written
