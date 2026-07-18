@@ -16,7 +16,7 @@ PowerShell の例。`cmd.exe` では `.\vsm.ps1` の代わりに `vsm.cmd`、Doc
 |---|---|
 | `.\vsm.ps1 submit "<description>"` | タスクを投入し、新しい Run を起動する。実行中の進捗は stderr に表示され、完了時の stdout は `run_id=...` / `task_id=...` の2行だけになる。 |
 | `.\vsm.ps1 submit "<description>" --file path\to\file.txt` | UTF-8 の補足ファイル付きでタスクを投入する。`--file` は複数指定できる。 |
-| `vsm instruct <run_id> "<text>" [--node <id>]` | ローカル FastAPI (`127.0.0.1:8000`) を通じて実行中 Run へ追加指示を配送する。`--node` 省略時は S5 宛。 |
+| `vsm instruct <run_id> "<text>" [--node <id>]` | ローカル FastAPI (`127.0.0.1:8000`) を通じて実行中 Run へ追加指示を配送する。`--node` 省略時は S5 宛。対象 Node の次の LLM invocation 開始前に注入し、適用先 invocation を Event_Log に記録する。 |
 | `vsm selfdev ...` | `/api/selfdev` の loopback REST 経由で Proposal を作成・確認・承認・介入する。API 停止時に Event Log へ直接 fallback しない。 |
 | `.\vsm.ps1 runs` | `runs\` 配下の Run を新しい順に一覧表示する。短縮 run_id、開始時刻、導出状態、イベント数、Run 合計トークン、AgentRuntime 実行時間、タスク概要を確認できる。 |
 | `.\vsm.ps1 runs --full-id` | 詳細確認に使うフル run_id 付きで Run 一覧を表示する。 |
@@ -26,6 +26,11 @@ PowerShell の例。`cmd.exe` では `.\vsm.ps1` の代わりに `vsm.cmd`、Doc
 | `.\vsm.ps1 tail <run_id> --channel S4-S5` | channel の一致でイベントを絞り込む。 |
 | `.\vsm.ps1 replay <run_id>` | 完了済み Run の全イベントを append 順で表示し、主な payload を短く要約する。 |
 | `.\vsm.ps1 replay <run_id> --raw` | 旧来の1イベント1行形式で表示する。 |
+
+`vsm instruct` の成功は `instruction_received` と Human→Node の `INSTRUCTION` Message が
+受理されたことを表す。未適用指示は invocation 境界でFIFOに排水され、同じプロンプトへ全件注入される。
+各指示の `instruction_applied.payload.invocation_id` は、直後の `tool_invoked` にある
+`tool_invocation_id` と一致する。実行中の CLI process は停止せず、その次の invocation に適用する。
 
 `cmd.exe` の例:
 

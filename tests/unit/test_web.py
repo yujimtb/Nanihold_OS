@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 
@@ -210,3 +211,44 @@ async def test_manager_fails_before_generation_when_litellm_provider_is_missing(
     detail = manager.detail(run.run_id)
     assert detail["status"] == "failed"
     assert detail["error"] == run.error
+
+
+@pytest.mark.asyncio
+async def test_manager_cancel_awaits_generation_task_and_platform(tmp_path) -> None:
+    manager = RunManager(tmp_path)
+    run = make_run(tmp_path)
+    run.status = WebRunStatus.RUNNING
+    run.current_stage = "実行中"
+    run.generations[0].status = "active"
+    manager.store.create(run)
+    manager._runs[run.run_id] = run
+
+    task_finished = asyncio.Event()
+
+    async def generation() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            task_finished.set()
+
+    class PlatformStub:
+        def __init__(self) -> None:
+            self.shutdown_count = 0
+
+        async def shutdown(self) -> None:
+            self.shutdown_count += 1
+
+    task = asyncio.create_task(generation(), name="web-run[test-cancel]")
+    await asyncio.sleep(0)
+    platform = PlatformStub()
+    manager._tasks[run.run_id] = task
+    manager._platforms[run.run_id] = platform  # type: ignore[assignment]
+
+    cancelled = await manager.cancel(run.run_id)
+
+    assert cancelled.status is WebRunStatus.CANCELLED
+    assert task.done()
+    assert task_finished.is_set()
+    assert run.run_id not in manager._tasks
+    assert run.run_id not in manager._platforms
+    assert platform.shutdown_count == 1

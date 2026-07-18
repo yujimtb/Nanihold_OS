@@ -599,6 +599,18 @@ MessageBus は当該 Node の処理中 Message と休眠中に到着した Messa
 Quota と Algedonic の suspend は同じ検証付き Node lifecycle 操作を通し、Node と
 `NodeRunState` を一度だけ同時更新する。既に `SUSPENDED` の Node への二重 suspend は失敗させる。
 
+Human の追加指示は対象 Node の `INSTRUCTION` queue にFIFOで保持する。指示配送と LLM invocation
+開始点は Node 単位の同一 lock で直列化し、invocation 側は未適用指示を全件プロンプトへ注入してから
+`instruction_applied` を指示ごとに記録する。`instruction_applied.payload.invocation_id` と直後の
+`tool_invoked.payload.tool_invocation_id` は一致し、`tool_invoked` を invocation 開始点と定義する。
+したがって開始点より前に受理済みの指示は必ずその invocation に入り、開始点より後の指示は次の
+invocation に入る。実行中 invocation の process interrupt はこの経路では行わない。
+
+EventLogWriter の受付状態変更と終端 sentinel 投入は同一 lock 内で原子的に行う。`append` が先に
+受付を完了した event は sentinel より前に置かれて全件排水され、停止開始後の `append` は明示的に
+失敗する。Platform shutdown は一度だけ実行され、cancel した System の受信子 Task、Web generation
+Task、AgentRuntime の CLI process を終了確認まで await してから EventLogWriter を停止する。
+
 ---
 
 ## 15. Observability

@@ -222,6 +222,7 @@ class S3Allocator(System):
                 # shutdown 経路。pending タスクも明示的に cancel する。
                 for t in tasks:
                     t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
                 raise
 
             # pending タスクをキャンセルし、結果を捨てる。次回ループで
@@ -229,6 +230,7 @@ class S3Allocator(System):
             # 残っていても次の wait で取り出される。
             for p in pending:
                 p.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
 
             for d in done:
                 msg: Message = d.result()

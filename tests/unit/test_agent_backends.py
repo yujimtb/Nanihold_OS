@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -152,3 +153,41 @@ async def test_cli_invalid_json_is_normalized() -> None:
     with pytest.raises(AgentRuntimeError) as caught:
         await runtime.invoke(AgentRequest(prompt="実装", workdir=Path(".")))
     assert caught.value.code == "invalid_jsonl"
+
+
+@pytest.mark.asyncio
+async def test_codex_cancel_terminates_and_reaps_process() -> None:
+    class BlockingProcess(_Process):
+        def __init__(self) -> None:
+            super().__init__("")
+            self.started = asyncio.Event()
+            self.terminated = asyncio.Event()
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            self.started.set()
+            await self.terminated.wait()
+            self.returncode = -1
+            return b"", b""
+
+        def kill(self) -> None:
+            super().kill()
+            self.terminated.set()
+
+    process = BlockingProcess()
+    runtime = CodexRuntime(
+        model="gpt-test",
+        reasoning_effort="high",
+        process_factory=_Factory(process),
+    )
+    task = asyncio.create_task(
+        runtime.invoke(AgentRequest(prompt="長時間作業", workdir=Path(".")))
+    )
+    await asyncio.wait_for(process.started.wait(), timeout=1)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert task.done()
+    assert process.killed
+    assert process.returncode == -1

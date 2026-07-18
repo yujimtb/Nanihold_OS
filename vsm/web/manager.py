@@ -59,6 +59,7 @@ class RunManager:
         self._platforms: dict[str, Platform] = {}
         self._lock = asyncio.Lock()
         self._active_run_id: str | None = None
+        self._closing = False
         for run in self._runs.values():
             if run.status in {
                 WebRunStatus.QUEUED,
@@ -93,6 +94,8 @@ class RunManager:
         if not 1 <= len(cleaned) <= 8192:
             raise ValueError("タスクは1文字以上8192文字以下で入力してください")
         async with self._lock:
+            if self._closing:
+                raise RuntimeError("RunManager はshutdown中です")
             if self._active_run_id is not None:
                 active = self._runs.get(self._active_run_id)
                 if active and active.status in {
@@ -231,8 +234,16 @@ class RunManager:
     async def cancel(self, run_id: str) -> WebRun:
         run = self.get_run(run_id)
         task = self._tasks.get(run_id)
-        if task and not task.done():
-            task.cancel()
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            finally:
+                if self._tasks.get(run_id) is task:
+                    self._tasks.pop(run_id, None)
         platform = self._platforms.get(run_id)
         if platform is not None:
             await platform.shutdown()
@@ -245,6 +256,33 @@ class RunManager:
         self._release_active(run_id)
         self.store.record_state(run, "cancelled_by_user")
         return run
+
+    async def shutdown(self) -> None:
+        """全 generation task と Platform を回収してから終了する。"""
+
+        async with self._lock:
+            self._closing = True
+            tasks = list(self._tasks.values())
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        task_results = await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
+
+        platforms = list(self._platforms.values())
+        platform_results = await asyncio.gather(
+            *(platform.shutdown() for platform in platforms),
+            return_exceptions=True,
+        )
+        self._platforms.clear()
+
+        failures = [
+            result
+            for result in (*task_results, *platform_results)
+            if isinstance(result, Exception)
+        ]
+        if failures:
+            raise ExceptionGroup("RunManager shutdown failed", failures)
 
     async def interrupt(self, run_id: str, instruction: str) -> WebRun:
         run = self.get_run(run_id)
@@ -535,6 +573,9 @@ class RunManager:
             if platform is not None:
                 await platform.shutdown()
             self._platforms.pop(run.run_id, None)
+            current_task = asyncio.current_task()
+            if self._tasks.get(run.run_id) is current_task:
+                self._tasks.pop(run.run_id, None)
 
     async def _wait_for_completion(
         self,
