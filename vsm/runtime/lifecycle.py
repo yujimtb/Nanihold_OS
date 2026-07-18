@@ -249,6 +249,7 @@ class Platform:
         workdir: Path | None = None,
         context_view_hook: ContextViewHook | None = None,
         human_statement_waiter: HumanStatementWaiter | None = None,
+        metering_hook: Callable[[str, str, AgentResult], Any] | None = None,
     ) -> None:
         self.run_id: str = run_id
         self.run_dir: Path = run_dir
@@ -259,6 +260,7 @@ class Platform:
         self.run_config: RunConfig = run_config
         self.manifest = manifest
         self.workspace_controller = workspace_controller
+        self.metering_hook = metering_hook
         if workdir is None:
             raise ValueError("Platform の workdir は明示的に指定しなければなりません")
         self.workdir: Path = workdir.resolve(strict=False)
@@ -412,6 +414,7 @@ class Platform:
         clock: Clock | None = None,
         context_view_hook: ContextViewHook | None = None,
         human_statement_waiter: HumanStatementWaiter | None = None,
+        metering_hook: Callable[[str, str, AgentResult], Any] | None = None,
         resume: bool = False,
     ) -> "Platform":
         """Construct and bootstrap a :class:`Platform` for a new Run.
@@ -646,6 +649,7 @@ class Platform:
             workdir=workdir,
             context_view_hook=context_view_hook,
             human_statement_waiter=human_statement_waiter,
+            metering_hook=metering_hook,
         )
 
         try:
@@ -1309,6 +1313,8 @@ class Platform:
             node_id=node_id,
             actor_id=node_id,
         )
+        if self.metering_hook is not None:
+            self.metering_hook(self.run_id, node_id, result)
         if result.quota_exhausted and self.run_config.quota.suspend_on_exhausted:
             message = pending_message if isinstance(pending_message, Message) else None
             reset_at = await self.quota_monitor.suspend(
@@ -1852,6 +1858,7 @@ async def start_run(
     clock: Clock | None = None,
     context_view_hook: ContextViewHook | None = None,
     human_statement_waiter: HumanStatementWaiter | None = None,
+    metering_hook: Callable[[str, str, AgentResult], Any] | None = None,
     resume: bool = False,
 ) -> Platform:
     """Top-level coroutine to start a new Run.
@@ -1908,6 +1915,7 @@ async def start_run(
         clock=clock,
         context_view_hook=context_view_hook,
         human_statement_waiter=human_statement_waiter,
+        metering_hook=metering_hook,
         resume=resume,
     )
     await platform.start()

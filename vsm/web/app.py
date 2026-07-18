@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,12 +17,15 @@ from pydantic import BaseModel, Field
 from vsm.agents.runtime import AgentRuntimeError
 from vsm.config import load_config
 from vsm.runtime.lifecycle import describe_role_runtimes
+from vsm.survival import LedgerEntry, LedgerEntryKind, SurvivalService
 from vsm.web.chat import ChatBusyError, ChatManager, ChatTimeoutError
 from vsm.web.manager import RunManager
 from vsm.web.selfdev import router as selfdev_router
 
 RUNS_ROOT = Path("runs") / "web"
-manager = RunManager(RUNS_ROOT)
+_, survival_run_config = load_config(None)
+survival_service = SurvivalService(run_config=survival_run_config)
+manager = RunManager(RUNS_ROOT, metering_hook=survival_service.meter.record_agent_result)
 chat_manager = ChatManager(RUNS_ROOT / "chat")
 selfdev_service = None
 
@@ -52,6 +58,7 @@ app = FastAPI(title="Nanihold OS", version="0.1.0", lifespan=_lifespan)
 app.state.selfdev_service = None
 app.state.selfdev_startup_error = None
 app.state.selfdev_autobuild = True
+app.state.survival_service = survival_service
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -65,7 +72,7 @@ app.add_middleware(
 app.include_router(selfdev_router)
 
 
-def create_app(service=None) -> FastAPI:
+def create_app(service=None, survival: SurvivalService | None = None) -> FastAPI:
     """TestClient/運用配備用に selfdev service を明示注入した app を返す。
 
     ``service`` に ``None`` を明示した app は selfdev mutation を 503 で拒否する。
@@ -76,6 +83,7 @@ def create_app(service=None) -> FastAPI:
 
     app.state.selfdev_service = service
     app.state.selfdev_autobuild = False
+    app.state.survival_service = survival or survival_service
     return app
 
 
@@ -128,9 +136,109 @@ class ChatMessageBody(BaseModel):
     text: str
 
 
+class SurvivalLedgerBody(BaseModel):
+    entry_id: str = Field(default_factory=lambda: str(uuid4()), min_length=1)
+    occurred_at: datetime
+    kind: Literal["expense", "revenue", "owner_contribution", "cash_adjustment"]
+    category: str = Field(min_length=1)
+    signed_amount_jpy: int
+    tax_jpy: int = Field(default=0, ge=0)
+    original_amount: Decimal
+    currency: str = Field(min_length=3, max_length=3)
+    fx_rate_id: str | None = None
+    source: str = Field(min_length=1)
+    source_id: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1)
+    run_id: str | None = None
+    proposal_id: str | None = None
+    opportunity_id: str | None = None
+    evidence_ref: str | None = None
+    evidence_hash: str | None = None
+    reverses_entry_id: str | None = None
+    actor_id: str = Field(min_length=1)
+    metadata: dict = Field(default_factory=dict)
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+def _survival() -> SurvivalService:
+    service = getattr(app.state, "survival_service", None)
+    if service is None:
+        raise RuntimeError("survival service is not configured")
+    return service
+
+
+@app.get("/api/survival/dashboard")
+def survival_dashboard(report_date: date | None = None) -> dict:
+    try:
+        return _survival().dashboard(report_date)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/survival/config")
+def survival_config() -> dict:
+    service = _survival()
+    return {
+        "schema_version": 1,
+        "baseline": service.baseline(),
+        "safety": service.config.safety.to_dict(),
+        "pricing_path": str(service.config.pricing_path),
+    }
+
+
+@app.get("/api/survival/ledger")
+def survival_ledger() -> dict:
+    service = _survival()
+    return {
+        "entries": [entry.to_dict() for entry in service.ledger.entries()],
+        "usages": [usage.to_dict() for usage in service.ledger.usages()],
+    }
+
+
+@app.post("/api/survival/ledger", status_code=201)
+def record_survival_ledger(body: SurvivalLedgerBody) -> dict:
+    service = _survival()
+    booked_at = datetime.now(timezone.utc)
+    try:
+        entry = LedgerEntry(
+            entry_id=body.entry_id,
+            occurred_at=body.occurred_at,
+            booked_at=booked_at,
+            kind=LedgerEntryKind(body.kind),
+            category=body.category,
+            signed_amount_jpy=body.signed_amount_jpy,
+            tax_jpy=body.tax_jpy,
+            original_amount=body.original_amount,
+            currency=body.currency.upper(),
+            fx_rate_id=body.fx_rate_id,
+            source=body.source,
+            source_id=body.source_id,
+            idempotency_key=body.idempotency_key,
+            run_id=body.run_id,
+            proposal_id=body.proposal_id,
+            opportunity_id=body.opportunity_id,
+            evidence_ref=body.evidence_ref,
+            evidence_hash=body.evidence_hash,
+            reverses_entry_id=body.reverses_entry_id,
+            actor_id=body.actor_id,
+            metadata=body.metadata,
+        )
+        return service.record_entry(entry)
+    except (ValueError, ArithmeticError) as exc:
+        status = 409 if "already exists" in str(exc) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.get("/api/survival/reports/{report_date}")
+def survival_report(report_date: date) -> dict:
+    try:
+        return _survival().report(report_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/api/chat", status_code=201)

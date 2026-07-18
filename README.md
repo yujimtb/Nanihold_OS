@@ -170,6 +170,7 @@ Audit / 予算、artifact、`MERGE_READY` PR説明文コピーを扱えます。
 - [docs/setup.md](docs/setup.md) — 環境構築(WSL / Docker、Windows ネイティブ、Codex アプリ、LLM プロバイダ設定)
 - [docs/cli.md](docs/cli.md) — `vsm` CLI コマンド、Run の確認、終了コード、開発コマンド、ファイルレイアウト
 - [docs/web-ui.md](docs/web-ui.md) — ローカル Web UI ダッシュボード
+- [docs/economics.md](docs/economics.md) — 円建て economic ledger / survival report / 事業状況 API
 - [docs/discord-bot.md](docs/discord-bot.md) — Discord Codex Bot
 
 **設計・計画**

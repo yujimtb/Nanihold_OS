@@ -219,6 +219,19 @@ S1_WORKER = { tokens = 500000, wall_clock_seconds = 1800 }
 suspend_on_exhausted = true
 fallback_resume_minutes = 60
 weekly_fallback_resume_minutes = 360
+
+[survival]
+ledger_path = "runs/survival/ledger.jsonl"
+usage_path = "runs/survival/usage.jsonl"
+report_path = "runs/survival/reports.jsonl"
+pricing_path = "config/survival-pricing.toml"
+daily_report_time = "06:30"
+timezone_name = "Asia/Tokyo"
+bind_host = "127.0.0.1"
+external_sending_enabled = false
+external_billing_enabled = false
+human_auth_required = false
+human_auth_status = "TODO_OWNER_APPROVAL"
 ```
 
 自己開発を有効にする場合は、S3_ALLOCATOR、S4_SCANNER、S5_POLICY、S3STAR_AUDITOR、S1_WORKER の
@@ -232,6 +245,10 @@ Run 終了時に破棄され、Run 間では引き継がれない。
 
 空文字を割り当てたロールには AgentRuntime を注入しない。未認識のバックエンドや不正な
 設定値は起動時エラーとなり、別バックエンドへの暗黙の切り替えは行わない。
+
+`[survival]` は Wave 0〜2 の安全境界と保存先を明示する。価格・為替の TOML はオーナー確認前に
+作成せず、雛形の `要オーナー確定` を推測値へ置き換えない。Human 認証は `TODO_OWNER_APPROVAL`
+表示のみで、この Wave では実装しない。
 
 決定論 fake はテスト・デモで明示した場合だけ使用する。全ての割り当て済みロールを fake に
 するには `NANIHOLD_USE_FAKE_LLM=1` を設定するか、`[agents.roles]` の対象ロールへ `fake`

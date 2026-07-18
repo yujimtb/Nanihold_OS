@@ -1,6 +1,7 @@
 import {
   ArrowLeft,
   ArrowUpRight,
+  Banknote,
   Bot,
   CircleStop,
   CornerDownLeft,
@@ -24,6 +25,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as
 import ReactMarkdown from "react-markdown";
 import { api } from "./api";
 import { SelfDevView } from "./SelfDevView";
+import { BusinessDashboard } from "./BusinessDashboard";
 import {
   isRecentlyActive,
   layoutTopology,
@@ -116,7 +118,7 @@ function formatDate(value: string) {
 }
 
 function App() {
-  const [view, setView] = useState<"home" | "chat" | "run" | "selfdev">("home");
+  const [view, setView] = useState<"home" | "business" | "chat" | "run" | "selfdev">("home");
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [selected, setSelected] = useState<RunDetail | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -192,6 +194,9 @@ function App() {
           <button className={`nav-tab ${view === "home" ? "active" : ""}`} onClick={() => { setSelected(null); setView("home"); }}>
             ダッシュボード
           </button>
+          <button className={`nav-tab ${view === "business" ? "active" : ""}`} onClick={() => { setSelected(null); setView("business"); }}>
+            <Banknote size={15} /> 事業状況
+          </button>
           <button className={`nav-tab ${view === "chat" ? "active" : ""}`} onClick={() => setView("chat")}>
             <MessageCircle size={15} /> 対話
           </button>
@@ -219,6 +224,8 @@ function App() {
 
       {view === "chat" ? (
         <ChatView runs={runs} onRunCreated={handleCreated} onOpenRun={openRun} />
+      ) : view === "business" ? (
+        <BusinessDashboard />
       ) : view === "selfdev" ? (
         <SelfDevView />
       ) : selected && view === "run" ? (

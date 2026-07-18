@@ -1,0 +1,27 @@
+# 円換算の正本はオーナーが請求書・公式価格・確定FXを確認して作成する。
+# 数値を推測して埋めず、approval_status と approved_by を必ず更新すること。
+# この例は placeholder のため、実行時の価格解決には使用できない。
+
+# [profiles.openai_example]
+# provider = "openai"
+# billing_mode = "api"
+# model = "owner-confirmed-model"
+# currency = "USD"
+# input_rate_per_million = "要オーナー確定"
+# output_rate_per_million = "要オーナー確定"
+# cache_read_rate_per_million = "要オーナー確定"
+# cache_write_rate_per_million = "要オーナー確定"
+# tool_rate = "要オーナー確定"
+# wall_clock_rate_per_hour = "要オーナー確定"
+# valid_from = "2026-07-01"
+# source_url = "要オーナー確定"
+# approved_by = "要オーナー確定"
+# approval_status = "TODO_OWNER_APPROVAL"
+
+# [fx_rates.usd_jpy_example]
+# base_currency = "USD"
+# quote_currency = "JPY"
+# rate = "要オーナー確定"
+# effective_on = "2026-07-01"
+# source = "要オーナー確定"
+# retrieved_at = 2026-07-01T00:00:00+09:00
