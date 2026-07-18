@@ -259,6 +259,7 @@ class Platform:
         context_view_hook: ContextViewHook | None = None,
         human_statement_waiter: HumanStatementWaiter | None = None,
         lethe_bridge: LetheBridge,
+        metering_hook: Callable[[str, str, AgentResult], Any] | None = None,
     ) -> None:
         self.run_id: str = run_id
         self.run_dir: Path = run_dir
@@ -271,6 +272,7 @@ class Platform:
         self.lethe_context_records: tuple[SupplementalRecord, ...] = ()
         self.manifest = manifest
         self.workspace_controller = workspace_controller
+        self.metering_hook = metering_hook
         if workdir is None:
             raise ValueError("Platform の workdir は明示的に指定しなければなりません")
         self.workdir: Path = workdir.resolve(strict=False)
@@ -469,6 +471,7 @@ class Platform:
         lethe_transport: LetheTransport | None = None,
         lethe_context_query: str | None = None,
         lethe_context_injector: LetheContextInjector | None = None,
+        metering_hook: Callable[[str, str, AgentResult], Any] | None = None,
         resume: bool = False,
     ) -> "Platform":
         """Construct and bootstrap a :class:`Platform` for a new Run.
@@ -704,6 +707,7 @@ class Platform:
             context_view_hook=context_view_hook,
             human_statement_waiter=human_statement_waiter,
             lethe_bridge=LetheBridge(config=rc.lethe, transport=lethe_transport),
+            metering_hook=metering_hook,
         )
 
         try:
@@ -1406,6 +1410,8 @@ class Platform:
             node_id=node_id,
             actor_id=node_id,
         )
+        if self.metering_hook is not None:
+            self.metering_hook(self.run_id, node_id, result)
         if result.quota_exhausted and self.run_config.quota.suspend_on_exhausted:
             message = pending_message if isinstance(pending_message, Message) else None
             reset_at = await self.quota_monitor.suspend(
@@ -1995,6 +2001,7 @@ async def start_run(
     lethe_transport: LetheTransport | None = None,
     lethe_context_query: str | None = None,
     lethe_context_injector: LetheContextInjector | None = None,
+    metering_hook: Callable[[str, str, AgentResult], Any] | None = None,
     resume: bool = False,
 ) -> Platform:
     """Top-level coroutine to start a new Run.
@@ -2054,6 +2061,7 @@ async def start_run(
         lethe_transport=lethe_transport,
         lethe_context_query=lethe_context_query,
         lethe_context_injector=lethe_context_injector,
+        metering_hook=metering_hook,
         resume=resume,
     )
     await platform.start()

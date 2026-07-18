@@ -1,4 +1,4 @@
-import type { AppConfig, ChatResponse, ChatSession, RunDetail, RunSummary, SelfDevProposalDetail, SelfDevProposalSummary, Topology } from "./types";
+import type { AppConfig, ChatResponse, ChatSession, RunDetail, RunSummary, SelfDevProposalDetail, SelfDevProposalSummary, SurvivalDashboard, Topology } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
@@ -14,6 +14,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   config: () => request<AppConfig>("/api/config"),
+  survivalDashboard: (reportDate?: string) => request<SurvivalDashboard>(
+    `/api/survival/dashboard${reportDate ? `?report_date=${encodeURIComponent(reportDate)}` : ""}`,
+  ),
   createChat: (backend: "claude-code" | "codex", model?: string) =>
     request<ChatSession>("/api/chat", {
       method: "POST",

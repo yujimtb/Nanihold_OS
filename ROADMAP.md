@@ -24,6 +24,14 @@
 
 ## 次の一歩(短期、2026-07-18 再基線化後)
 
+### 2026-07-18 D30 Survival Wave 0〜2
+
+- Wave 0〜2の円建て operational ledger、runtime usage metering、日次 survival report、
+  `/api/survival/dashboard`、Web UI「事業状況」タブを追加した。
+- 実価格・為替の登録、全量の Docker Compose pytest/frontend build は未実行であり、
+  `config/survival-pricing.toml.example` の `要オーナー確定` を埋めるまで usage は unpriced として表示する。
+- 外部送信・実請求・Human認証はこのレーンの対象外で、loopback安全境界を維持する。
+
 ### 自己開発ループ Wave 3/4 (2026-07-13 以降)
 
 Proposal の Domain / State / Event / Store 基盤、workspace / GateRunner v2 / candidate commit、headless controller、Consortium、durable Human waiter、S3★ audit、repair 1回制限、scheduler、および Wave 4 の API / CLI / WebUI / FastAPI lifespan 配線を接続済み。詳細は [Wave 3 実装結果](openspec/changes/selfdev-loop/wave3-result.md) と [Wave 4 実装結果](openspec/changes/selfdev-loop/wave4-result.md) を参照する。

@@ -78,6 +78,49 @@ export interface AppConfig {
   native_runs_enabled: boolean;
 }
 
+export interface SurvivalDashboard {
+  schema_version: number;
+  as_of: string;
+  baseline: {
+    schema_version: number;
+    role_counts: Record<string, number>;
+    mandatory_roles: string[];
+    s1_hard_max: number;
+    s1_dynamic_max: number;
+    fixed: boolean;
+  };
+  safety: {
+    bind_host: string;
+    external_sending_enabled: boolean;
+    external_billing_enabled: boolean;
+    human_auth_required: boolean;
+    human_auth_status: string;
+  };
+  report: {
+    report_date: string;
+    available_cash: number;
+    burn_30d_cash: number;
+    burn_30d_economic: number;
+    runway_months: number | null;
+    runway_days: number | null;
+    runway_reason: string | null;
+    R_cash: number | null;
+    R_cash_reason: string | null;
+    R_economic: number | null;
+    R_economic_reason: string | null;
+    owner_dependency: number;
+    unpriced_usage: { count: number; tokens: number };
+    daily_trend: Array<{ date: string; revenue_jpy: number; expense_jpy: number }>;
+    gross_margin_by_job: Array<{ job_id: string; gross_margin_jpy: number }>;
+  };
+  daily_trend: Array<{ date: string; revenue_jpy: number; expense_jpy: number }>;
+  ledger: {
+    entry_count: number;
+    usage_count: number;
+    balance_jpy: number;
+  };
+}
+
 export type ChatRole = "user" | "assistant";
 
 export interface ChatMessage {

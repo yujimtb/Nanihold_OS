@@ -52,7 +52,7 @@ def _quota_wait_is_open(events: list[dict[str, Any]]) -> bool:
 
 
 class RunManager:
-    def __init__(self, runs_root: Path) -> None:
+    def __init__(self, runs_root: Path, metering_hook=None) -> None:
         self.store = RunStore(runs_root)
         self._runs: dict[str, WebRun] = {run.run_id: run for run in self.store.list()}
         self._tasks: dict[str, asyncio.Task[None]] = {}
@@ -60,6 +60,7 @@ class RunManager:
         self._lock = asyncio.Lock()
         self._active_run_id: str | None = None
         self._closing = False
+        self._metering_hook = metering_hook
         for run in self._runs.values():
             if run.status in {
                 WebRunStatus.QUEUED,
@@ -502,6 +503,7 @@ class RunManager:
                 lethe_context_query=" ".join(
                     value for value in (run.description, instruction) if value.strip()
                 ),
+                metering_hook=self._metering_hook,
             )
             self._platforms[run.run_id] = platform
 
