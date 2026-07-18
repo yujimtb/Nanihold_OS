@@ -36,6 +36,7 @@ import pytest
 from vsm.config import (
     LITELLM_PROVIDER_ENV,
     LLMConfig,
+    ResidencyConfig,
     RunConfig,
     load_config,
 )
@@ -284,6 +285,32 @@ class TestLoadConfig:
             assert run_config.count(role) == defaults.count(role)
         assert run_config.s1_max == defaults.s1_max
         assert run_config.s1_dynamic_max == defaults.s1_dynamic_max
+        assert run_config.residency.native_runs_enabled is False
+
+    def test_residency_flag_can_explicitly_enable_native_runs(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(LITELLM_PROVIDER_ENV, raising=False)
+        toml_path = tmp_path / "vsm.toml"
+        toml_path.write_text(
+            "[residency]\n"
+            "native_runs_enabled = true\n",
+            encoding="utf-8",
+        )
+
+        _llm_config, run_config = load_config(toml_path)
+
+        assert run_config.residency == ResidencyConfig(native_runs_enabled=True)
+
+    def test_residency_flag_rejects_non_boolean(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(LITELLM_PROVIDER_ENV, raising=False)
+        toml_path = tmp_path / "vsm.toml"
+        toml_path.write_text(
+            "[residency]\n"
+            'native_runs_enabled = "true"\n',
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ConfigError, match="native_runs_enabled must be a boolean"):
+            load_config(toml_path)
 
     def test_load_config_none_picks_up_env_when_no_file(
         self, tmp_path, monkeypatch

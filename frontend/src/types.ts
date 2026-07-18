@@ -75,6 +75,7 @@ export interface AppConfig {
   }>;
   demo_mode: boolean;
   single_run: boolean;
+  native_runs_enabled: boolean;
 }
 
 export type ChatRole = "user" | "assistant";

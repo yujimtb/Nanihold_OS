@@ -258,6 +258,7 @@ function Home({
   const activeRun = runs.find(isRunActive);
   const preferredRunId = activeRun?.run_id || runs[0]?.run_id || "";
   const selectedRun = runs.find((run) => run.run_id === selectedRunId) || null;
+  const nativeRunBlocked = config?.native_runs_enabled === false;
 
   useEffect(() => {
     if (!selectedRunId || !runs.some((run) => run.run_id === selectedRunId)) {
@@ -334,6 +335,11 @@ function Home({
           <p>依頼を入力すると、環境分析から方針決定、実行、監査までを複数の役割が引き継ぎます。</p>
         </div>
         <div className="composer">
+          {nativeRunBlocked && (
+            <div className="demo-note">
+              native Run は D0契約により封鎖中です。設定を変更するまで起動できません。
+            </div>
+          )}
           {config?.demo_mode && (
             <div className="demo-note">
               <Sparkles size={16} />
@@ -345,14 +351,14 @@ function Home({
             onChange={(event) => setDescription(event.target.value)}
             placeholder="何を進めますか？ 日本語で具体的に書いてください。"
             rows={7}
-            disabled={Boolean(activeRun)}
+            disabled={Boolean(activeRun) || nativeRunBlocked}
           />
           <div className="composer-footer">
             <span className="composer-hint">ローカル API から安全に投入されます</span>
             <button
               className="primary-button"
               onClick={submit}
-              disabled={!description.trim() || submitting || Boolean(activeRun)}
+              disabled={!description.trim() || submitting || Boolean(activeRun) || nativeRunBlocked}
             >
               {submitting ? <LoaderCircle className="spin" size={18} /> : <ArrowUpRight size={18} />}
               {activeRun ? "実行中のタスクがあります" : "実行する"}

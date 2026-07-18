@@ -12,7 +12,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from vsm.agents.runtime import AgentRuntimeError
-from vsm.config import load_config
+from vsm.config import load_config, require_native_runs_enabled
+from vsm.errors import NativeRunDisabledError
 from vsm.runtime.lifecycle import describe_role_runtimes
 from vsm.web.chat import ChatBusyError, ChatManager, ChatTimeoutError
 from vsm.web.manager import RunManager
@@ -179,7 +180,15 @@ def config() -> dict:
         "runtimes": runtimes,
         "demo_mode": any(runtime["backend"] == "fake" for runtime in runtimes),
         "single_run": True,
+        "native_runs_enabled": run_config.residency.native_runs_enabled,
     }
+
+
+def _require_native_run_entry_enabled() -> None:
+    """REST の native Run 起動入口を設定フラグで封鎖する。"""
+
+    _llm_config, run_config = load_config(None)
+    require_native_runs_enabled(run_config)
 
 
 @app.get("/api/runs")
@@ -192,6 +201,7 @@ async def create_run(
     body: CreateRunBody,
 ) -> dict:
     try:
+        _require_native_run_entry_enabled()
         run = await manager.create_run(
             description=body.goal,
             title=None,
@@ -200,6 +210,8 @@ async def create_run(
             budget_override=(body.budget.model_dump(exclude_none=True) if body.budget else None),
         )
         return manager.detail(run.run_id)
+    except NativeRunDisabledError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=409 if isinstance(exc, RuntimeError) else 422, detail=str(exc)) from exc
 
@@ -228,8 +240,11 @@ def stream_run(run_id: str) -> StreamingResponse:
 @app.post("/api/runs/{run_id}/interrupt")
 async def interrupt(run_id: str, body: InstructionBody) -> dict:
     try:
+        _require_native_run_entry_enabled()
         run = await manager.interrupt(run_id, body.instruction)
         return manager.detail(run.run_id)
+    except NativeRunDisabledError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -290,11 +305,15 @@ def budget(run_id: str) -> dict:
 @app.post("/api/runs/{run_id}/nodes/{node_id}/control")
 async def control_node(run_id: str, node_id: str, body: NodeControlBody) -> dict:
     try:
+        if body.action == "resume":
+            _require_native_run_entry_enabled()
         return await manager.control_node(run_id, node_id, body.action)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except NativeRunDisabledError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -320,8 +339,11 @@ async def cancel(run_id: str) -> dict:
 @app.post("/api/runs/{run_id}/retry")
 async def retry(run_id: str) -> dict:
     try:
+        _require_native_run_entry_enabled()
         run = await manager.retry(run_id)
         return manager.detail(run.run_id)
+    except NativeRunDisabledError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

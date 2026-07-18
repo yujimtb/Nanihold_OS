@@ -10,7 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from vsm.cli import app as cli_app
-from vsm.config import AgentsConfig, LLMConfig, RunConfig
+from vsm.config import AgentsConfig, LLMConfig, ResidencyConfig, RunConfig
 from vsm.eventlog.reader import read_all
 from vsm.roles import SystemRole
 from vsm.runtime.lifecycle import Platform
@@ -55,6 +55,14 @@ class FakeManager:
 def test_wave5_rest_endpoints(monkeypatch):
     manager = FakeManager()
     monkeypatch.setattr(web_app_module, "manager", manager)
+    monkeypatch.setattr(
+        web_app_module,
+        "load_config",
+        lambda _path=None: (
+            LLMConfig(),
+            RunConfig(residency=ResidencyConfig(native_runs_enabled=True)),
+        ),
+    )
     client = TestClient(web_app_module.app)
     run_id = "run-1234567890abcdef1234567890abcdef"
 
@@ -93,9 +101,17 @@ def test_web_run_api_returns_configuration_failure(monkeypatch, tmp_path):
     roles = {role: "fake" for role in SystemRole}
     roles[SystemRole.S5_POLICY] = "litellm"
     roles[SystemRole.S3_ALLOCATOR] = ""
-    run_config = RunConfig(agents=AgentsConfig(default_backend="fake", roles=roles))
+    run_config = RunConfig(
+        agents=AgentsConfig(default_backend="fake", roles=roles),
+        residency=ResidencyConfig(native_runs_enabled=True),
+    )
     monkeypatch.setattr(
         "vsm.web.manager.load_config",
+        lambda _path=None: (LLMConfig(), run_config),
+    )
+    monkeypatch.setattr(
+        web_app_module,
+        "load_config",
         lambda _path=None: (LLMConfig(), run_config),
     )
     monkeypatch.setattr(web_app_module, "manager", RunManager(tmp_path))
@@ -110,6 +126,56 @@ def test_web_run_api_returns_configuration_failure(monkeypatch, tmp_path):
     assert body["generation"] == 0
     assert "S5_POLICY" in body["error"]
     assert "LITELLM_PROVIDER" in body["error"]
+
+
+def test_web_run_creation_returns_403_when_native_runs_are_disabled(
+    monkeypatch, tmp_path
+):
+    run_config = RunConfig()
+    monkeypatch.setattr(
+        "vsm.web.manager.load_config",
+        lambda _path=None: (LLMConfig(), run_config),
+    )
+    monkeypatch.setattr(
+        web_app_module,
+        "load_config",
+        lambda _path=None: (LLMConfig(), run_config),
+    )
+    guarded_manager = RunManager(tmp_path)
+    monkeypatch.setattr(web_app_module, "manager", guarded_manager)
+
+    response = TestClient(web_app_module.app).post(
+        "/api/runs", json={"goal": "起動されてはいけない"}
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "D0契約によりnative Runは封鎖中"}
+    assert not list(tmp_path.iterdir())
+
+
+def test_web_resume_is_blocked_but_suspend_remains_available(monkeypatch):
+    manager = FakeManager()
+    monkeypatch.setattr(web_app_module, "manager", manager)
+    monkeypatch.setattr(
+        web_app_module,
+        "load_config",
+        lambda _path=None: (LLMConfig(), RunConfig()),
+    )
+    client = TestClient(web_app_module.app)
+
+    resume = client.post(
+        "/api/runs/run-1234567890abcdef1234567890abcdef/nodes/node-s5/control",
+        json={"action": "resume"},
+    )
+    suspend = client.post(
+        "/api/runs/run-1234567890abcdef1234567890abcdef/nodes/node-s5/control",
+        json={"action": "suspend"},
+    )
+
+    assert resume.status_code == 403
+    assert resume.json() == {"detail": "D0契約によりnative Runは封鎖中"}
+    assert suspend.status_code == 200
+    assert suspend.json()["status"] == "SUSPENDED"
 
 
 def test_topology_and_budget_are_rebuilt_from_events():

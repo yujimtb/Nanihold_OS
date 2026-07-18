@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from vsm.config import BudgetConfig, load_config
+from vsm.config import BudgetConfig, load_config, require_native_runs_enabled
 from vsm.errors import ConfigError
 from vsm.eventlog.reader import read_all
 from vsm.ids import generate_run_id, generate_uuid
@@ -143,6 +143,7 @@ class RunManager:
 
         try:
             llm_config, run_config = load_config(None)
+            require_native_runs_enabled(run_config)
             if budget_override:
                 run_config = replace(
                     run_config,
@@ -211,6 +212,9 @@ class RunManager:
         raise KeyError(f"consortium is not waiting for human: {consortium_id}")
 
     async def control_node(self, run_id: str, node_id: str, action: str) -> dict[str, Any]:
+        if action == "resume":
+            _llm_config, run_config = load_config(None)
+            require_native_runs_enabled(run_config)
         status = await self._active_platform(run_id).control_node(node_id, action)
         return {"run_id": run_id, "node_id": node_id, "status": status.value}
 
@@ -247,6 +251,8 @@ class RunManager:
         return run
 
     async def interrupt(self, run_id: str, instruction: str) -> WebRun:
+        _llm_config, run_config = load_config(None)
+        require_native_runs_enabled(run_config)
         run = self.get_run(run_id)
         cleaned = instruction.strip()
         if not cleaned:
@@ -282,6 +288,8 @@ class RunManager:
         return run
 
     async def retry(self, run_id: str) -> WebRun:
+        _llm_config, run_config = load_config(None)
+        require_native_runs_enabled(run_config)
         run = self.get_run(run_id)
         if run.status not in {WebRunStatus.FAILED, WebRunStatus.WAITING_FOR_USER}:
             raise RuntimeError("再試行できる状態ではありません")

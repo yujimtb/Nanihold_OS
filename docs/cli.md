@@ -27,6 +27,15 @@ PowerShell の例。`cmd.exe` では `.\vsm.ps1` の代わりに `vsm.cmd`、Doc
 | `.\vsm.ps1 replay <run_id>` | 完了済み Run の全イベントを append 順で表示し、主な payload を短く要約する。 |
 | `.\vsm.ps1 replay <run_id> --raw` | 旧来の1イベント1行形式で表示する。 |
 
+`vsm submit` は native Run の起動入口です。`vsm.toml` の `[residency] native_runs_enabled` が省略または
+`false` の場合、入力検証後・実行開始前に `D0契約によりnative Runは封鎖中` を stderr へ出して非0で終了
+します。実行を許可する場合だけ、明示的に次を設定してください。
+
+```toml
+[residency]
+native_runs_enabled = true
+```
+
 `cmd.exe` の例:
 
 ```bat
