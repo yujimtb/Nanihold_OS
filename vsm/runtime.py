@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from vsm.config import LoadedConfig, load_config
-from vsm.interface.claude import ClaudeInterfacePilot
+from vsm.interface.pilot_host import PilotHostInterfacePilot
 from vsm.interface.service import InterfaceService
 from vsm.kernel.service import Kernel, utc_now
 from vsm.lethe.client import LetheOperationalLedger
@@ -26,6 +26,7 @@ class Runtime:
     state: AppState
 
     def close(self) -> None:
+        self.interface.pilot.close()
         self.ledger.close()
 
 
@@ -37,6 +38,7 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
         bearer_token=loaded.lethe_bearer_token,
         data_space_id=config.kernel.data_space.data_space_id,
         timeout_seconds=config.kernel.lethe.timeout_seconds,
+        max_page_size=config.kernel.lethe.max_page_size,
     )
     kernel = Kernel(
         data_space=config.kernel.data_space,
@@ -66,10 +68,11 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
             == interface_config.environment_fingerprint
         )
     )
-    pilot = ClaudeInterfacePilot(
+    pilot = PilotHostInterfacePilot(
         candidate=interface_candidate,
-        policy=config.pilot.policy(),
-        timeout_seconds=config.kernel.lethe.timeout_seconds,
+        base_url=interface_config.pilot_host_base_url,
+        bearer_token=loaded.pilot_host_bearer_token,
+        timeout_seconds=interface_config.timeout_seconds,
     )
     interface = InterfaceService(
         kernel=kernel,

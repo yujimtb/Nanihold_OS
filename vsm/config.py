@@ -5,6 +5,7 @@ import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -26,6 +27,7 @@ class LetheConfig(StrictConfig):
     base_url: str = Field(min_length=1)
     bearer_token_env: str = Field(min_length=1)
     timeout_seconds: float = Field(gt=0)
+    max_page_size: int = Field(gt=0, le=1000)
 
 
 class KernelConfig(StrictConfig):
@@ -33,6 +35,10 @@ class KernelConfig(StrictConfig):
     lethe: LetheConfig
     audit_policy: AuditPolicy
     control_policy: ControlPolicy
+
+
+class DeploymentConfig(StrictConfig):
+    mode: Literal["production", "local_verification"]
 
 
 class SandboxConfig(StrictConfig):
@@ -49,7 +55,7 @@ class PilotConfig(StrictConfig):
     mode: PilotMode
     permission_classifier_enabled: bool
     writes_allowed: bool
-    sandbox: SandboxConfig | None
+    sandbox: SandboxConfig | None = None
     pilot_host_id: str = Field(min_length=1)
     device_id: str = Field(min_length=1)
     device_certificate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -96,14 +102,26 @@ class PilotConfig(StrictConfig):
 class InterfacePilotConfig(StrictConfig):
     node_id: str = Field(min_length=1)
     pilot_id: str = Field(min_length=1)
-    adapter: Literal["claude-code"]
+    adapter: str = Field(min_length=1)
     adapter_version: str = Field(min_length=1)
-    provider: Literal["anthropic"]
-    model_snapshot: Literal["claude-fable-5"]
-    effort: Literal["high"]
+    provider: str = Field(min_length=1)
+    model_snapshot: str = Field(min_length=1)
+    effort: Literal["low", "medium", "high", "xhigh", "max"]
     toolset: tuple[str, ...]
     sandbox_fingerprint: str = Field(min_length=1)
     environment_fingerprint: str = Field(min_length=1)
+    pilot_host_base_url: str = Field(min_length=1)
+    pilot_host_bearer_token_env: str = Field(min_length=1)
+    timeout_seconds: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def pilot_host_url_is_explicit_http(self) -> "InterfacePilotConfig":
+        parsed = urlparse(self.pilot_host_base_url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError(
+                "interface_pilot.pilot_host_base_url must be an explicit HTTP(S) URL"
+            )
+        return self
 
 
 class CandidateRegistration(StrictConfig):
@@ -128,6 +146,7 @@ class ServerConfig(StrictConfig):
 
 
 class NaniholdConfig(StrictConfig):
+    deployment: DeploymentConfig
     kernel: KernelConfig
     pilot: PilotConfig
     interface_pilot: InterfacePilotConfig
@@ -173,9 +192,40 @@ class NaniholdConfig(StrictConfig):
         ]
         if len(interface_matches) != 1:
             raise ValueError(
-                "the claude-fable-5/high Interface candidate must appear exactly once "
-                "in the model registry"
+                "the configured Interface candidate must appear exactly once in the "
+                "model registry"
             )
+        if self.deployment.mode == "production":
+            if any(
+                prior.source == "local-verification"
+                for registration in self.routing.candidates
+                for prior in registration.priors
+            ):
+                raise ValueError(
+                    "production routing cannot use local-verification priors"
+                )
+            if (
+                interface.adapter != "claude-code"
+                or interface.provider != "anthropic"
+                or interface.model_snapshot != "claude-fable-5"
+                or interface.effort != "high"
+            ):
+                raise ValueError(
+                    "the production Interface Pilot default is "
+                    "claude-code/anthropic/claude-fable-5/high"
+                )
+        else:
+            lowered = interface.model_snapshot.lower()
+            if interface.effort != "low":
+                raise ValueError("local verification requires Interface effort low")
+            if "fable" in lowered or "opus" in lowered:
+                raise ValueError(
+                    "local verification forbids Fable and Opus Interface models"
+                )
+            if self.pilot.mode is not PilotMode.OBSERVE_ONLY:
+                raise ValueError("local verification requires observe_only Pilot mode")
+            if self.pilot.writes_allowed:
+                raise ValueError("local verification cannot allow write Effects")
         return self
 
 
@@ -183,6 +233,7 @@ class LoadedConfig(StrictConfig):
     config: NaniholdConfig
     lethe_bearer_token: str
     api_bearer_token: str
+    pilot_host_bearer_token: str
 
 
 def _required_env(name: str) -> str:
@@ -212,4 +263,7 @@ def load_config(path: Path) -> LoadedConfig:
         config=config,
         lethe_bearer_token=_required_env(config.kernel.lethe.bearer_token_env),
         api_bearer_token=_required_env(config.server.api_bearer_token_env),
+        pilot_host_bearer_token=_required_env(
+            config.interface_pilot.pilot_host_bearer_token_env
+        ),
     )

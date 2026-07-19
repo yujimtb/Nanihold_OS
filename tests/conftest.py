@@ -17,7 +17,7 @@ from vsm.kernel.models import (
     VSMFunction,
 )
 from vsm.kernel.service import Kernel
-from vsm.pilot.models import StructuredInterfaceResponse
+from vsm.pilot.models import InterfacePilotUsage, StructuredInterfaceResponse
 
 
 NOW = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
@@ -40,6 +40,17 @@ class FakePilot:
             decisions=(),
             commitment_updates=(),
             provider_session_id="provider-session",
+            pilot_usage=InterfacePilotUsage(
+                candidate_key="fake@1:test",
+                actual_provider="test",
+                actual_model_snapshot="fake",
+                input_tokens=10,
+                cache_creation_input_tokens=0,
+                cache_read_input_tokens=0,
+                output_tokens=5,
+                cost_usd=0.001,
+                duration_ms=50,
+            ),
         )
 
 

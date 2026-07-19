@@ -167,12 +167,25 @@ class InterfaceTurn(StrictModel):
     provider_session_id: NonBlank | None
 
 
+class InterfacePilotUsage(StrictModel):
+    candidate_key: NonBlank
+    actual_provider: NonBlank
+    actual_model_snapshot: NonBlank
+    input_tokens: Annotated[int, Field(ge=0)]
+    cache_creation_input_tokens: Annotated[int, Field(ge=0)]
+    cache_read_input_tokens: Annotated[int, Field(ge=0)]
+    output_tokens: Annotated[int, Field(ge=0)]
+    cost_usd: Annotated[float, Field(ge=0)]
+    duration_ms: Annotated[int, Field(ge=0)]
+
+
 class StructuredInterfaceResponse(StrictModel):
     display_text: NonBlank
     work_directives: tuple[dict[str, object], ...]
     decisions: tuple[dict[str, object], ...]
     commitment_updates: tuple[dict[str, object], ...]
     provider_session_id: NonBlank
+    pilot_usage: InterfacePilotUsage
 
 
 class JudgeKind(StrEnum):

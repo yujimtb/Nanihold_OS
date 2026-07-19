@@ -2,6 +2,9 @@
 # Replace every EXAMPLE benchmark result with versioned, verified evidence before
 # publishing the RouteSnapshot. Nanihold intentionally refuses missing fields.
 
+[deployment]
+mode = "production"
+
 [kernel.data_space]
 data_space_id = "space:personal-primary"
 owner_id = "owner:primary"
@@ -12,6 +15,7 @@ lethe_location = "https://lethe.example.invalid/lakes/personal-primary"
 base_url = "https://lethe.example.invalid"
 bearer_token_env = "LETHE_BEARER_TOKEN"
 timeout_seconds = 30.0
+max_page_size = 100
 
 [kernel.audit_policy]
 policy_id = "policy:audit-primary"
@@ -55,6 +59,9 @@ effort = "high"
 toolset = ["nanihold-api"]
 sandbox_fingerprint = "sandbox-profile-sha256:replace"
 environment_fingerprint = "pilot-host-image-sha256:replace"
+pilot_host_base_url = "https://pilot-host.example.invalid"
+pilot_host_bearer_token_env = "PILOT_HOST_BEARER_TOKEN"
+timeout_seconds = 120.0
 
 [routing]
 active_route_snapshot_id = "route:coding-production"

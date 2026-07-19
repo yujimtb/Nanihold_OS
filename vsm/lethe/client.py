@@ -20,10 +20,18 @@ class LetheOperationalLedger:
         bearer_token: str,
         data_space_id: str,
         timeout_seconds: float,
+        max_page_size: int,
     ) -> None:
-        if not base_url or not bearer_token or not data_space_id or timeout_seconds <= 0:
+        if (
+            not base_url
+            or not bearer_token
+            or not data_space_id
+            or timeout_seconds <= 0
+            or max_page_size <= 0
+        ):
             raise InvariantViolation("LETHE connection fields must be explicit and valid")
         self.data_space_id = data_space_id
+        self.max_page_size = max_page_size
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {bearer_token}"},
@@ -130,9 +138,10 @@ class LetheOperationalLedger:
         return StoredEvent(cursor=raw["cursor"], event=event)
 
     def page(self, after_cursor: int, limit: int) -> list[StoredEvent]:
+        requested_limit = min(limit, self.max_page_size)
         response = self._client.get(
             "/api/operational-events",
-            params={"after_cursor": after_cursor, "limit": limit},
+            params={"after_cursor": after_cursor, "limit": requested_limit},
         )
         self._raise(response)
         return [self._stored(item) for item in response.json()["events"]]
@@ -140,11 +149,12 @@ class LetheOperationalLedger:
     def stream(
         self, stream_id: str, after_stream_version: int, limit: int
     ) -> list[StoredEvent]:
+        requested_limit = min(limit, self.max_page_size)
         response = self._client.get(
             f"/api/operational-streams/{stream_id}",
             params={
                 "after_stream_version": after_stream_version,
-                "limit": limit,
+                "limit": requested_limit,
             },
         )
         self._raise(response)

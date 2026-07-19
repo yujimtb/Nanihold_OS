@@ -24,9 +24,13 @@ class BenchmarkPrior(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     source: Literal[
-        "artificial-analysis", "terminal-bench", "swe-bench", "bfcl"
+        "artificial-analysis",
+        "terminal-bench",
+        "swe-bench",
+        "bfcl",
+        "local-verification",
     ]
-    benchmark_family: Literal["coding", "tool_use"]
+    benchmark_family: Literal["coding", "tool_use", "interface"]
     version: str = Field(min_length=1)
     sample_count: int = Field(gt=0)
     harness: str = Field(min_length=1)
@@ -156,6 +160,13 @@ class BayesianRouter:
         {"artificial-analysis", "terminal-bench", "swe-bench"}
     )
     PUBLIC_TOOL_PRIORS = frozenset({"bfcl"})
+    PRIOR_FAMILIES = {
+        "artificial-analysis": "coding",
+        "terminal-bench": "coding",
+        "swe-bench": "coding",
+        "bfcl": "tool_use",
+        "local-verification": "interface",
+    }
 
     def __init__(
         self,
@@ -179,7 +190,7 @@ class BayesianRouter:
         if candidate.key in self._posteriors:
             raise InvariantViolation("ModelCandidate is already registered")
         if not priors:
-            raise InvariantViolation("ModelCandidate requires an explicit public prior")
+            raise InvariantViolation("ModelCandidate requires an explicit prior")
         alpha = 1.0
         beta = 1.0
         posterior = CandidatePosterior(
@@ -187,9 +198,7 @@ class BayesianRouter:
             success=BetaPosterior(alpha=alpha, beta=beta),
         )
         for prior in priors:
-            expected_family = (
-                "tool_use" if prior.source in self.PUBLIC_TOOL_PRIORS else "coding"
-            )
+            expected_family = self.PRIOR_FAMILIES[prior.source]
             if prior.benchmark_family != expected_family:
                 raise InvariantViolation(
                     f"benchmark source/family mismatch: {prior.source}"

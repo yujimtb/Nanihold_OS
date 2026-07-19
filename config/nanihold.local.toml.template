@@ -1,0 +1,86 @@
+[deployment]
+mode = "local_verification"
+
+[kernel.data_space]
+data_space_id = "space:local-verification"
+owner_id = "owner:local"
+kind = "personal"
+lethe_location = "http://lethe:8080/lakes/local-verification"
+
+[kernel.lethe]
+base_url = "http://lethe:8080"
+bearer_token_env = "LETHE_NANIHOLD_TOKEN"
+timeout_seconds = 30.0
+max_page_size = 100
+
+[kernel.audit_policy]
+policy_id = "policy:audit-local"
+data_space_id = "space:local-verification"
+independent_s3_star_required = true
+raw_drill_down_required = true
+retention_days = 30
+
+[kernel.control_policy]
+policy_id = "policy:control-local"
+data_space_id = "space:local-verification"
+stop_scope = "affected_work_and_effects"
+severe_finding_requires_s5_risk_acceptance = true
+completion_requires_remote_push = true
+
+[pilot]
+mode = "observe_only"
+permission_classifier_enabled = false
+writes_allowed = false
+pilot_host_id = "pilot-host:local"
+device_id = "device:local"
+device_certificate_sha256 = "c34b9617586870ddc5c2e82c0a9d9f194e09c4b1d0ed49480d676e2f950b5fb6"
+
+[interface_pilot]
+node_id = "node:local-interface"
+pilot_id = "pilot:local-haiku"
+adapter = "claude-code"
+adapter_version = "@@CLAUDE_VERSION@@"
+provider = "anthropic"
+model_snapshot = "claude-haiku-4-5-20251001"
+effort = "low"
+toolset = ["conversation-only"]
+sandbox_fingerprint = "observe-only:no-tools"
+environment_fingerprint = "@@ENVIRONMENT_FINGERPRINT@@"
+pilot_host_base_url = "http://host.docker.internal:@@PILOT_HOST_PORT@@"
+pilot_host_bearer_token_env = "PILOT_HOST_BEARER_TOKEN"
+timeout_seconds = 120.0
+
+[routing]
+active_route_snapshot_id = "route:local-verification"
+expected_utility_quality_weight = 10.0
+expected_utility_cost_weight = 1.0
+expected_utility_latency_weight = 0.001
+production_exploration_enabled = false
+
+[[routing.candidates]]
+[routing.candidates.candidate]
+adapter = "claude-code"
+adapter_version = "@@CLAUDE_VERSION@@"
+provider = "anthropic"
+model_snapshot = "claude-haiku-4-5-20251001"
+effort = "low"
+toolset = ["conversation-only"]
+sandbox_fingerprint = "observe-only:no-tools"
+environment_fingerprint = "@@ENVIRONMENT_FINGERPRINT@@"
+[[routing.candidates.priors]]
+source = "local-verification"
+benchmark_family = "interface"
+version = "local-verification-v1"
+sample_count = 2
+harness = "deterministic-structured-interface-v1"
+successes = 1
+failures = 1
+log_token_samples = [8.517193]
+log_cost_samples = [-5.521461]
+log_latency_samples = [7.313220]
+
+[server]
+bind_host = "0.0.0.0"
+bind_port = 8000
+api_bearer_token_env = "NANIHOLD_API_BEARER_TOKEN"
+allowed_origins = ["http://localhost:@@NANIHOLD_WEB_HOST_PORT@@"]
