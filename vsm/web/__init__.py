@@ -1,2 +1,3 @@
-"""Local web API for Nanihold OS."""
+from vsm.web.app import AppState, create_app
 
+__all__ = ["AppState", "create_app"]

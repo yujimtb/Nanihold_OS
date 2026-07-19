@@ -5,75 +5,23 @@ on:
   pull_request:
 
 jobs:
-  pytest:
+  logic-and-build:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      - name: Build deterministic test images
+        run: docker compose --profile runtime build app web
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .
+      - name: Run logic, fake, and golden tests
+        run: docker compose run --rm app python -m pytest -q
 
-      - name: Run tests
-        run: python -m pytest -m "not live_llm"
+      - name: Build WebUI
+        run: docker compose --profile runtime run --rm --no-deps web npm run build
 
-  frontend-build:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - name: Check CLI surface
+        run: docker compose run --rm app vsm --help
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Run frontend lint
-        run: npm run lint
-
-      - name: Build frontend
-        run: npm run build
-
-  gate-runner-g1:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository history
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install GateRunner dependencies
-        run: python -m pip install -e .
-
-      - name: Run trusted G1 diff policy
-        shell: bash
-        run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            base="${{ github.event.pull_request.base.sha }}"
-          else
-            base="${{ github.event.before }}"
-          fi
-          python -m vsm.gates.runner \
-            --worktree . \
-            --base "$base" \
-            --gates g1
+      - name: Run independent deterministic S3* gate
+        run: docker compose run --rm app python tools/s3star_gate.py

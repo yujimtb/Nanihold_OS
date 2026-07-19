@@ -4,16 +4,24 @@ services:
       context: .
       dockerfile: .devcontainer/Dockerfile
     working_dir: /workspace
-    command: uvicorn vsm.web.app:app --host 0.0.0.0 --port 8000 --workers 1
+    command: sleep infinity
+    volumes:
+      - .:/workspace:cached
+
+  api:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+    working_dir: /workspace
+    command: vsm serve --config /workspace/vsm.toml
     env_file:
       - path: .env
-        required: false
-    environment:
-      NANIHOLD_RUNS_DIR: /workspace/runs
+        required: true
     ports:
       - "8000:8000"
     volumes:
       - .:/workspace:cached
+    profiles: ["runtime"]
 
   web:
     build:
@@ -29,7 +37,8 @@ services:
       - ./frontend:/workspace:cached
       - frontend_node_modules:/workspace/node_modules
     depends_on:
-      - app
+      - api
+    profiles: ["runtime"]
 
 volumes:
   frontend_node_modules:

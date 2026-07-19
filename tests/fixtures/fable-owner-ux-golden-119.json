@@ -1,0 +1,1884 @@
+{
+  "schema_version": 1,
+  "privacy": "Raw owner text is intentionally excluded from the repository. SHA-256 fingerprints bind each case to the local/LETHE source.",
+  "source_sessions": [
+    "7216d27d-e7e2-4c8b-b091-b48c4929e979",
+    "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+    "a300d112-45ec-43e3-8a3f-8feb9b09c11a"
+  ],
+  "case_count": 119,
+  "short_le_40": 53,
+  "context_dependent": 67,
+  "dialogue_act_counts": {
+    "人間操作の進行を伝える": 16,
+    "仕事を依頼・委任する": 45,
+    "修正・制約を差し込む": 15,
+    "在席・生活状態を伝える": 7,
+    "承認・選択を返す": 14,
+    "状態を尋ねる": 14,
+    "環境観測・不具合を伝える": 20,
+    "継続・停止・待機": 23,
+    "資源状態を伝える": 28,
+    "非同期チャネルを扱う": 25
+  },
+  "cases": [
+    {
+      "case_id": "ux:7216d27d-001-5133cd2c33e6",
+      "session_id": "7216d27d-e7e2-4c8b-b091-b48c4929e979",
+      "ordinal": 1,
+      "timestamp": "2026-07-07T17:09:28.627Z",
+      "source": "console",
+      "text_sha256": "5133cd2c33e6d14e2812aaa364282fead8ef96343de2bd0dc3d8e5ad4950702a",
+      "utf8_bytes": 1404,
+      "characters": 602,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機",
+        "修正・制約を差し込む",
+        "資源状態を伝える",
+        "承認・選択を返す",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:7216d27d-002-1cbd4e724dad",
+      "session_id": "7216d27d-e7e2-4c8b-b091-b48c4929e979",
+      "ordinal": 2,
+      "timestamp": "2026-07-08T08:53:22.373Z",
+      "source": "console",
+      "text_sha256": "1cbd4e724dad5c392ab48b3d9bbe2c6ed5b3df16b21c4edd88add00958c21aa4",
+      "utf8_bytes": 1995,
+      "characters": 755,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "修正・制約を差し込む",
+        "資源状態を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:7216d27d-003-ea610fef1558",
+      "session_id": "7216d27d-e7e2-4c8b-b091-b48c4929e979",
+      "ordinal": 3,
+      "timestamp": "2026-07-08T15:36:40.173Z",
+      "source": "console",
+      "text_sha256": "ea610fef1558dfe4974e34f4d1a7cce0dea51c1a3a6f29d8933a43c1b6172aee",
+      "utf8_bytes": 21,
+      "characters": 7,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機"
+      ]
+    },
+    {
+      "case_id": "ux:7216d27d-004-ea610fef1558",
+      "session_id": "7216d27d-e7e2-4c8b-b091-b48c4929e979",
+      "ordinal": 4,
+      "timestamp": "2026-07-08T22:47:23.707Z",
+      "source": "console",
+      "text_sha256": "ea610fef1558dfe4974e34f4d1a7cce0dea51c1a3a6f29d8933a43c1b6172aee",
+      "utf8_bytes": 21,
+      "characters": 7,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機"
+      ]
+    },
+    {
+      "case_id": "ux:7216d27d-005-1d71bb9ddd30",
+      "session_id": "7216d27d-e7e2-4c8b-b091-b48c4929e979",
+      "ordinal": 5,
+      "timestamp": "2026-07-12T08:29:22.096Z",
+      "source": "console",
+      "text_sha256": "1d71bb9ddd30600dcd64c0c2675eb08dbc6b024b8ebed3b237f22f91f5056973",
+      "utf8_bytes": 258,
+      "characters": 92,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": []
+    },
+    {
+      "case_id": "ux:7216d27d-006-eed0d86f90df",
+      "session_id": "7216d27d-e7e2-4c8b-b091-b48c4929e979",
+      "ordinal": 6,
+      "timestamp": "2026-07-12T08:49:07.638Z",
+      "source": "console",
+      "text_sha256": "eed0d86f90dfda37d1194fa660289637a28b641285adaaf51bdf3de41f7c1590",
+      "utf8_bytes": 920,
+      "characters": 340,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "資源状態を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:7216d27d-007-717df70aa48d",
+      "session_id": "7216d27d-e7e2-4c8b-b091-b48c4929e979",
+      "ordinal": 7,
+      "timestamp": "2026-07-12T09:08:18.853Z",
+      "source": "console",
+      "text_sha256": "717df70aa48db650a4ed0c8fd285adbbe0bf91199e18ecb052674dd0b421e201",
+      "utf8_bytes": 1072,
+      "characters": 434,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機",
+        "資源状態を伝える",
+        "承認・選択を返す",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-001-29df73439fbe",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 1,
+      "timestamp": "2026-07-12T09:43:03.095Z",
+      "source": "console",
+      "text_sha256": "29df73439fbe44b37d61f102ada1413b67882fad56a434fe06cae6624cf48743",
+      "utf8_bytes": 556,
+      "characters": 200,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機",
+        "資源状態を伝える",
+        "承認・選択を返す",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-002-46043dc962bd",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 2,
+      "timestamp": "2026-07-12T09:55:32.689Z",
+      "source": "console",
+      "text_sha256": "46043dc962bdbfee9308d97e6d523323ea4878c377ba749167b722a4a1ddda77",
+      "utf8_bytes": 93,
+      "characters": 35,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "修正・制約を差し込む"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-003-31d6e3be4011",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 3,
+      "timestamp": "2026-07-12T10:03:59.353Z",
+      "source": "console",
+      "text_sha256": "31d6e3be401154e7c743d2c58a06465098dfeb99099f46dccb0fdd5c97e664c0",
+      "utf8_bytes": 39,
+      "characters": 13,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-004-93e37e2e98fb",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 4,
+      "timestamp": "2026-07-12T11:20:20.129Z",
+      "source": "console",
+      "text_sha256": "93e37e2e98fbe80d080077285da13233f2d02a04bed4333b58858edbb6802c78",
+      "utf8_bytes": 30,
+      "characters": 10,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": []
+    },
+    {
+      "case_id": "ux:cc606d8b-005-0141412daeff",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 5,
+      "timestamp": "2026-07-12T12:25:21.938Z",
+      "source": "console",
+      "text_sha256": "0141412daeffc877950db64214e9926682bb80c6ec4dc1493b8803c6208aea67",
+      "utf8_bytes": 1165,
+      "characters": 473,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "修正・制約を差し込む",
+        "人間操作の進行を伝える",
+        "資源状態を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-006-6cfef8039b28",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 6,
+      "timestamp": "2026-07-12T14:25:47.166Z",
+      "source": "console",
+      "text_sha256": "6cfef8039b28eef9a1d414feefeb2766dc972f69c62adbcba10559399a54b4a6",
+      "utf8_bytes": 40,
+      "characters": 14,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "状態を尋ねる"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-007-86bcfa416c82",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 7,
+      "timestamp": "2026-07-12T14:39:02.852Z",
+      "source": "console",
+      "text_sha256": "86bcfa416c82f43b27765d3e790890c48b03eb8c90ea6032a92d515721065c87",
+      "utf8_bytes": 72,
+      "characters": 24,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-008-6ff171cdbd31",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 8,
+      "timestamp": "2026-07-12T15:56:40.302Z",
+      "source": "console",
+      "text_sha256": "6ff171cdbd315623064c03b0ced51eece1ff27539eaf3cb09e928f3116ad8132",
+      "utf8_bytes": 50,
+      "characters": 26,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "環境観測・不具合を伝える"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-009-67d588178759",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 9,
+      "timestamp": "2026-07-12T16:03:02.516Z",
+      "source": "console",
+      "text_sha256": "67d588178759fb942f96e52033506d1ed137b1794d27ad543ee0966f8778175d",
+      "utf8_bytes": 117,
+      "characters": 95,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "環境観測・不具合を伝える"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-010-36e13dd11a52",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 10,
+      "timestamp": "2026-07-12T16:08:00.687Z",
+      "source": "console",
+      "text_sha256": "36e13dd11a52e208b2cdeb9c6ec87984aef7f4a8a50767cc27b59f56e513bd87",
+      "utf8_bytes": 162,
+      "characters": 54,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": []
+    },
+    {
+      "case_id": "ux:cc606d8b-011-5bc163381ae3",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 11,
+      "timestamp": "2026-07-12T17:04:53.003Z",
+      "source": "console",
+      "text_sha256": "5bc163381ae35951e8d880097dd1241c96143d10b278180c9a9607b9de68a1e6",
+      "utf8_bytes": 1369,
+      "characters": 521,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機",
+        "環境観測・不具合を伝える",
+        "資源状態を伝える",
+        "承認・選択を返す",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-012-547013d55e40",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 12,
+      "timestamp": "2026-07-13T02:44:35.631Z",
+      "source": "console",
+      "text_sha256": "547013d55e401ca607ef65857a31d28a39198565b5abf124ae976fb9112c3a26",
+      "utf8_bytes": 167,
+      "characters": 59,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "在席・生活状態を伝える",
+        "資源状態を伝える",
+        "承認・選択を返す"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-013-b1cb3aff7b86",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 13,
+      "timestamp": "2026-07-13T06:53:53.087Z",
+      "source": "console",
+      "text_sha256": "b1cb3aff7b86bb1cfd63bd074a383adc128bea59c77e8e9421ce365672058109",
+      "utf8_bytes": 174,
+      "characters": 66,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "状態を尋ねる"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-014-6af4f8a9511c",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 14,
+      "timestamp": "2026-07-13T07:00:57.353Z",
+      "source": "console",
+      "text_sha256": "6af4f8a9511c75a735be9d907ce0193286a6f735388cf3e99e168aebdff0d970",
+      "utf8_bytes": 506,
+      "characters": 182,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "資源状態を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-015-f7e570189196",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 15,
+      "timestamp": "2026-07-13T07:43:40.375Z",
+      "source": "console",
+      "text_sha256": "f7e5701891966678e087f65fc072e27584a9c07ecfa1214815c986dea1faca05",
+      "utf8_bytes": 1613,
+      "characters": 749,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "人間操作の進行を伝える",
+        "非同期チャネルを扱う",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-016-8ed3f600339d",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 16,
+      "timestamp": "2026-07-13T09:15:41.531Z",
+      "source": "console",
+      "text_sha256": "8ed3f600339d23ce92b9456b56c9aecb95f33ae959ebbe45f80405c54ff98a31",
+      "utf8_bytes": 1108,
+      "characters": 438,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "状態を尋ねる",
+        "修正・制約を差し込む",
+        "資源状態を伝える",
+        "非同期チャネルを扱う",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-017-ef4f31f68a04",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 17,
+      "timestamp": "2026-07-13T09:21:01.093Z",
+      "source": "console",
+      "text_sha256": "ef4f31f68a04b6b705773ee69f26604717ddda1998a52f19329df105b0460901",
+      "utf8_bytes": 254,
+      "characters": 128,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": []
+    },
+    {
+      "case_id": "ux:cc606d8b-018-ffc5b8286d84",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 18,
+      "timestamp": "2026-07-13T09:26:40.640Z",
+      "source": "console",
+      "text_sha256": "ffc5b8286d84bae93528cb056eec3a774c5067e9ca1a1155200a01d1789b8c6b",
+      "utf8_bytes": 232,
+      "characters": 84,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "環境観測・不具合を伝える",
+        "人間操作の進行を伝える",
+        "在席・生活状態を伝える"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-019-b09c7f1e5e68",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 19,
+      "timestamp": "2026-07-13T09:32:52.564Z",
+      "source": "console",
+      "text_sha256": "b09c7f1e5e68b224a3b07f5c0d31f13472a2d3ee196bdf16d60b0599367305a6",
+      "utf8_bytes": 646,
+      "characters": 244,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "修正・制約を差し込む",
+        "環境観測・不具合を伝える",
+        "非同期チャネルを扱う",
+        "承認・選択を返す",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-020-8bbbe046a106",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 20,
+      "timestamp": "2026-07-13T10:49:27.453Z",
+      "source": "console",
+      "text_sha256": "8bbbe046a10629b150fd5259a590c3a63dcaef7961e35656607c5830296a13c9",
+      "utf8_bytes": 61,
+      "characters": 21,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "人間操作の進行を伝える",
+        "在席・生活状態を伝える"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-021-957c674ab62b",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 21,
+      "timestamp": "2026-07-13T10:56:10.471Z",
+      "source": "console",
+      "text_sha256": "957c674ab62b43f35899e5f05d89b2914a19900e43d3574dea57804156ab5739",
+      "utf8_bytes": 72,
+      "characters": 28,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "人間操作の進行を伝える",
+        "非同期チャネルを扱う"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-022-d06b3d8e293d",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 22,
+      "timestamp": "2026-07-13T10:59:00.513Z",
+      "source": "console",
+      "text_sha256": "d06b3d8e293d4f348d9b4ff12b90e26b81280e678d9c99b586c7681f207ab219",
+      "utf8_bytes": 316,
+      "characters": 108,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "人間操作の進行を伝える"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-023-dd68ba78f476",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 23,
+      "timestamp": "2026-07-13T11:00:47.391Z",
+      "source": "console",
+      "text_sha256": "dd68ba78f476627613be0b9e38cbf76bdf7fab0779fe1df383e8bb908687e147",
+      "utf8_bytes": 88,
+      "characters": 34,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "環境観測・不具合を伝える",
+        "人間操作の進行を伝える",
+        "非同期チャネルを扱う",
+        "承認・選択を返す"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-024-9687c68641fc",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 24,
+      "timestamp": "2026-07-13T11:03:02.395Z",
+      "source": "console",
+      "text_sha256": "9687c68641fc6d2de2d2ca22e56d427984e05ba2de5d352d4deedaeb25391dac",
+      "utf8_bytes": 93,
+      "characters": 45,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "環境観測・不具合を伝える",
+        "非同期チャネルを扱う"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-025-9cb1dbc9fdd3",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 25,
+      "timestamp": "2026-07-13T11:14:55.793Z",
+      "source": "console",
+      "text_sha256": "9cb1dbc9fdd35b118af4fde8540635b17924956225ed43791b5c259223296641",
+      "utf8_bytes": 118,
+      "characters": 62,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "環境観測・不具合を伝える",
+        "非同期チャネルを扱う",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-026-a8317b87d0a6",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 26,
+      "timestamp": "2026-07-13T11:21:15.809Z",
+      "source": "console",
+      "text_sha256": "a8317b87d0a6be85946711b920095791db2745793ee26ec9b13902f8a055b989",
+      "utf8_bytes": 156,
+      "characters": 60,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "継続・停止・待機",
+        "環境観測・不具合を伝える",
+        "人間操作の進行を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-027-d33c08a06d98",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 27,
+      "timestamp": "2026-07-13T11:22:24.586Z",
+      "source": "console",
+      "text_sha256": "d33c08a06d98774708d0cfb4f1ca555a78a8d74c32f24734cc25be8aeffec62c",
+      "utf8_bytes": 24,
+      "characters": 8,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "人間操作の進行を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-028-2a403ccd7f31",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 28,
+      "timestamp": "2026-07-13T11:41:11.798Z",
+      "source": "console",
+      "text_sha256": "2a403ccd7f31a23244d6e5fbfbae6494ab48196a486e2c421cafcfe41f4629e6",
+      "utf8_bytes": 21,
+      "characters": 7,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "人間操作の進行を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-029-7ee41e1cc2ae",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 29,
+      "timestamp": "2026-07-13T11:49:31.012Z",
+      "source": "console",
+      "text_sha256": "7ee41e1cc2aec58eeb9cebb744450c6870f3347936789e70a1aeda89ea680821",
+      "utf8_bytes": 164,
+      "characters": 68,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "環境観測・不具合を伝える",
+        "非同期チャネルを扱う"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-030-1a046a54c709",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 30,
+      "timestamp": "2026-07-13T11:53:06.899Z",
+      "source": "console",
+      "text_sha256": "1a046a54c70994630cb4197a675232244c3c4426906c7aff3f5ef88485d8f16a",
+      "utf8_bytes": 95,
+      "characters": 33,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "状態を尋ねる",
+        "環境観測・不具合を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-031-59ac990db626",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 31,
+      "timestamp": "2026-07-13T14:47:12.115Z",
+      "source": "console",
+      "text_sha256": "59ac990db6262f17c18ad44c424f5db36bf470438a00fc466e398e738652d618",
+      "utf8_bytes": 42,
+      "characters": 14,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "修正・制約を差し込む"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-032-1e30d60eaf0a",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 32,
+      "timestamp": "2026-07-13T15:12:19.210Z",
+      "source": "console",
+      "text_sha256": "1e30d60eaf0ad76821f2b447d9026f66441da44ab8997423b0bb1967490854bc",
+      "utf8_bytes": 108,
+      "characters": 48,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "環境観測・不具合を伝える",
+        "非同期チャネルを扱う"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-033-572a50152b25",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 33,
+      "timestamp": "2026-07-13T15:16:36.509Z",
+      "source": "console",
+      "text_sha256": "572a50152b256a6a6470b93ad727a7b9453a4536bf9219a14a9c8b5a2b158a55",
+      "utf8_bytes": 66,
+      "characters": 28,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "資源状態を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-034-edb5aee37f37",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 34,
+      "timestamp": "2026-07-13T15:39:30.330Z",
+      "source": "console",
+      "text_sha256": "edb5aee37f3723ebdeff4f2b4481190d5fef14ee0aa6f8dd6df97de2c1632919",
+      "utf8_bytes": 18,
+      "characters": 6,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "人間操作の進行を伝える"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-035-064377a8f0f0",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 35,
+      "timestamp": "2026-07-13T15:39:54.806Z",
+      "source": "console",
+      "text_sha256": "064377a8f0f0b3ffb0a6bfef71990bc473e91f86e3dc4f421c3fb2ade19ec85c",
+      "utf8_bytes": 48,
+      "characters": 16,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": []
+    },
+    {
+      "case_id": "ux:cc606d8b-036-bf37528a3b07",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 36,
+      "timestamp": "2026-07-13T16:59:46.101Z",
+      "source": "console",
+      "text_sha256": "bf37528a3b077dc7131369756c2f95b5a591563c71e6e10388485d6266f23939",
+      "utf8_bytes": 141,
+      "characters": 61,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機",
+        "環境観測・不具合を伝える",
+        "資源状態を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-037-cfd6ccce3bd2",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 37,
+      "timestamp": "2026-07-14T03:04:07.452Z",
+      "source": "console",
+      "text_sha256": "cfd6ccce3bd2295f4a3b4f554a20d6ab3e9c111dd17dd2fc0d0b4b9377e79ac9",
+      "utf8_bytes": 58,
+      "characters": 20,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "状態を尋ねる",
+        "在席・生活状態を伝える"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-038-2f26815cbf45",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 38,
+      "timestamp": "2026-07-14T03:11:00.192Z",
+      "source": "console",
+      "text_sha256": "2f26815cbf4579ba973a0e94016c2951cb03bcbbfa7ec49686b58592b166dc24",
+      "utf8_bytes": 670,
+      "characters": 230,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "承認・選択を返す",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-039-af2cd04a169f",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 39,
+      "timestamp": "2026-07-14T03:13:19.934Z",
+      "source": "console",
+      "text_sha256": "af2cd04a169f64c73290b2be9e9538afcdcc6790628ece8d4f6d29056b33fd65",
+      "utf8_bytes": 50,
+      "characters": 24,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "修正・制約を差し込む",
+        "資源状態を伝える"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-040-46ba7e63b003",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 40,
+      "timestamp": "2026-07-14T03:36:16.570Z",
+      "source": "console",
+      "text_sha256": "46ba7e63b0037745d60e1ef59bc66435b8e28cb8915e3a6d284559d99d0b5394",
+      "utf8_bytes": 202,
+      "characters": 84,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "修正・制約を差し込む",
+        "資源状態を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-041-a63849733a25",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 41,
+      "timestamp": "2026-07-14T08:00:31.283Z",
+      "source": "console",
+      "text_sha256": "a63849733a25737e0964d3ad866555b06ee3e7fe9ef91e305e52c7a58cd129bc",
+      "utf8_bytes": 13,
+      "characters": 5,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "状態を尋ねる"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-042-9f75dd8c571d",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 42,
+      "timestamp": "2026-07-14T09:34:11.105Z",
+      "source": "console",
+      "text_sha256": "9f75dd8c571d4fdcc15df015be7e2365f158f7de3e09fcd7a41b7864e9575472",
+      "utf8_bytes": 99,
+      "characters": 35,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "環境観測・不具合を伝える"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-043-c31dfea66093",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 43,
+      "timestamp": "2026-07-14T09:44:57.206Z",
+      "source": "console",
+      "text_sha256": "c31dfea66093d54934add4375045bbb772cb5c43bb5bcc83073dc222509eb7bf",
+      "utf8_bytes": 132,
+      "characters": 48,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "環境観測・不具合を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-044-1240a5023974",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 44,
+      "timestamp": "2026-07-14T11:06:34.717Z",
+      "source": "console",
+      "text_sha256": "1240a5023974a9a95704e0413c46b325a93e83bfe082d1ea5ffa784d86d554c0",
+      "utf8_bytes": 337,
+      "characters": 117,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "環境観測・不具合を伝える"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-045-7904ee7df939",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 45,
+      "timestamp": "2026-07-14T11:08:26.591Z",
+      "source": "console",
+      "text_sha256": "7904ee7df9390281e921646b85df31cc0a50f37722e2df5b0ddd56856c7c1d68",
+      "utf8_bytes": 21,
+      "characters": 7,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "承認・選択を返す"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-046-5bce374bc0f9",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 46,
+      "timestamp": "2026-07-14T14:01:35.245Z",
+      "source": "console",
+      "text_sha256": "5bce374bc0f9e40b729c84a8426c24240e9c6518906af1a027c3dbb3cf23a0f8",
+      "utf8_bytes": 21,
+      "characters": 7,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-047-5b13e04b8d0d",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 47,
+      "timestamp": "2026-07-14T14:09:39.534Z",
+      "source": "console",
+      "text_sha256": "5b13e04b8d0de6db836647f83279791480de83220219d73c1a9c95b072cbd135",
+      "utf8_bytes": 585,
+      "characters": 265,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "資源状態を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-048-cad089965fde",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 48,
+      "timestamp": "2026-07-14T14:26:16.575Z",
+      "source": "console",
+      "text_sha256": "cad089965fde6299ccdbb1d28cd4c3474b0fa9528c16652654d044c70fe0495c",
+      "utf8_bytes": 4400,
+      "characters": 1907,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "人間操作の進行を伝える",
+        "非同期チャネルを扱う"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-049-59c03dc19e2b",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 49,
+      "timestamp": "2026-07-14T14:43:01.097Z",
+      "source": "console",
+      "text_sha256": "59c03dc19e2b4d554eb591506b981ee7778bff796c415fc7a0caf0ebf51c142b",
+      "utf8_bytes": 135,
+      "characters": 49,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": []
+    },
+    {
+      "case_id": "ux:cc606d8b-050-93a09b69da66",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 50,
+      "timestamp": "2026-07-14T14:53:28.731Z",
+      "source": "console",
+      "text_sha256": "93a09b69da666345435768196a296645afce759512dc9bffa1396659ffb2c638",
+      "utf8_bytes": 265,
+      "characters": 103,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "継続・停止・待機",
+        "資源状態を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-051-72dbbe3e3622",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 51,
+      "timestamp": "2026-07-14T14:57:02.967Z",
+      "source": "console",
+      "text_sha256": "72dbbe3e36229be275a2a878983acff0bfbd0fe44a02968c8d689f39825107b5",
+      "utf8_bytes": 136,
+      "characters": 48,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "資源状態を伝える",
+        "承認・選択を返す"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-052-bb507e9d1ec6",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 52,
+      "timestamp": "2026-07-14T14:58:53.673Z",
+      "source": "console",
+      "text_sha256": "bb507e9d1ec6ee9c2a8d03e7132f8802bdfab499e205f93380703d6e14c9677a",
+      "utf8_bytes": 74,
+      "characters": 26,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "状態を尋ねる",
+        "人間操作の進行を伝える"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-053-64da84f361f8",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 53,
+      "timestamp": "2026-07-14T15:18:54.289Z",
+      "source": "console",
+      "text_sha256": "64da84f361f85cc33234a9daca6ff829dbc9e4824ff04e8d91d491a937f5997f",
+      "utf8_bytes": 1243,
+      "characters": 725,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "状態を尋ねる",
+        "資源状態を伝える",
+        "承認・選択を返す"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-054-26be31dda2ff",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 54,
+      "timestamp": "2026-07-14T15:23:49.218Z",
+      "source": "console",
+      "text_sha256": "26be31dda2ffde6280a748894a81121ec60ed10ef2ce5bb5f94362d116dd16f1",
+      "utf8_bytes": 168,
+      "characters": 56,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "承認・選択を返す",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-055-dbd4e91af047",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 55,
+      "timestamp": "2026-07-14T15:37:01.446Z",
+      "source": "console",
+      "text_sha256": "dbd4e91af04782adddf6a72cea58134de0a96f76a5ee6cac7b53df03e27fd32d",
+      "utf8_bytes": 25,
+      "characters": 9,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "非同期チャネルを扱う"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-056-e22e9dd7192b",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 56,
+      "timestamp": "2026-07-14T16:07:27.799Z",
+      "source": "console",
+      "text_sha256": "e22e9dd7192b273ec0e0aa9f318bb9bc8f940db3093637c7eb489cdf4a1dbdc7",
+      "utf8_bytes": 24,
+      "characters": 8,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "人間操作の進行を伝える",
+        "非同期チャネルを扱う"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-057-e6620136f7d3",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 57,
+      "timestamp": "2026-07-14T16:22:16.232Z",
+      "source": "console",
+      "text_sha256": "e6620136f7d3593d4a72b1725952aa78996ea55a05933a82b57f07f42831fd58",
+      "utf8_bytes": 249,
+      "characters": 83,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": []
+    },
+    {
+      "case_id": "ux:cc606d8b-058-c3e31341265e",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 58,
+      "timestamp": "2026-07-14T16:33:25.753Z",
+      "source": "console",
+      "text_sha256": "c3e31341265e30b309ea03ce6dd0376ed658c4db8bc9b40497a64ca51dccef93",
+      "utf8_bytes": 577,
+      "characters": 221,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "非同期チャネルを扱う",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-059-d15d788e4142",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 59,
+      "timestamp": "2026-07-14T16:43:53.427Z",
+      "source": "console",
+      "text_sha256": "d15d788e4142b7a9e273331d04a07219ad116e2d99bec5cfdbe96c16a4563f4b",
+      "utf8_bytes": 69,
+      "characters": 25,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "状態を尋ねる",
+        "環境観測・不具合を伝える"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-060-4291461a600e",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 60,
+      "timestamp": "2026-07-14T16:56:31.456Z",
+      "source": "console",
+      "text_sha256": "4291461a600ee74a40fb6482f37480432c8e39f5deaf8fd887f7074798c02aaa",
+      "utf8_bytes": 63,
+      "characters": 21,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "承認・選択を返す"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-061-43801714cb4b",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 61,
+      "timestamp": "2026-07-14T17:18:34.396Z",
+      "source": "console",
+      "text_sha256": "43801714cb4bbe0a7369037713e62c456f6b36008ac82c29177dec082a476566",
+      "utf8_bytes": 59,
+      "characters": 25,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "人間操作の進行を伝える"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-062-adcf3aaab3d7",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 62,
+      "timestamp": "2026-07-14T17:34:42.075Z",
+      "source": "console",
+      "text_sha256": "adcf3aaab3d71ab210da1e711d6e4825f541e908dfa1e2c70610b78991086740",
+      "utf8_bytes": 143,
+      "characters": 51,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-063-629c9f0d03ec",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 63,
+      "timestamp": "2026-07-14T17:47:04.510Z",
+      "source": "console",
+      "text_sha256": "629c9f0d03ec0a33c91b8bc4f7ef4352ef0e8d8ccdab0d048b54260db47b9684",
+      "utf8_bytes": 212,
+      "characters": 80,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "資源状態を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-064-104c41d7d4f2",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 64,
+      "timestamp": "2026-07-15T00:03:15.849Z",
+      "source": "console",
+      "text_sha256": "104c41d7d4f26251ad9aa7e024a821b1a46be2ed88b0f4dad9de8ad4f6ba3b8d",
+      "utf8_bytes": 128,
+      "characters": 46,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "在席・生活状態を伝える",
+        "非同期チャネルを扱う"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-065-21b4fd5aaf7a",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 65,
+      "timestamp": "2026-07-15T00:12:56.159Z",
+      "source": "console",
+      "text_sha256": "21b4fd5aaf7adafb369b4c2fead34343b6202abedec7ba9f4eae2beb0324608e",
+      "utf8_bytes": 730,
+      "characters": 382,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "修正・制約を差し込む",
+        "非同期チャネルを扱う"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-066-658189260e76",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 66,
+      "timestamp": "2026-07-15T00:22:53.594Z",
+      "source": "console",
+      "text_sha256": "658189260e76c6fb77c39619d7f1e3a6c90c1973554fbc929736ce2b7b4d764b",
+      "utf8_bytes": 140,
+      "characters": 64,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "状態を尋ねる"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-067-82a908899383",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 67,
+      "timestamp": "2026-07-15T00:31:14.598Z",
+      "source": "console",
+      "text_sha256": "82a908899383de42ceb572003b24c74eab22486d80ed209dba56b9d5e926abf3",
+      "utf8_bytes": 85,
+      "characters": 31,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-068-680d2a233081",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 68,
+      "timestamp": "2026-07-15T01:33:29.210Z",
+      "source": "console",
+      "text_sha256": "680d2a233081cd0104284568075b72d8643b86c53a7a12f68f395611204ef3a8",
+      "utf8_bytes": 933,
+      "characters": 543,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "環境観測・不具合を伝える",
+        "非同期チャネルを扱う"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-069-e2f3838fd121",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 69,
+      "timestamp": "2026-07-15T01:39:37.881Z",
+      "source": "console",
+      "text_sha256": "e2f3838fd1211090f2935d8416978cd3d6340923856d8de2ba488a5d161f61ff",
+      "utf8_bytes": 218,
+      "characters": 86,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-070-27827a79c849",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 70,
+      "timestamp": "2026-07-15T04:38:30.621Z",
+      "source": "console",
+      "text_sha256": "27827a79c849368fb2e6e27cceddd17e7f3ec785e8c715145aa15996cd365434",
+      "utf8_bytes": 150,
+      "characters": 64,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "資源状態を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-071-c25c4947c6b9",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 71,
+      "timestamp": "2026-07-15T04:47:23.777Z",
+      "source": "console",
+      "text_sha256": "c25c4947c6b972117cd0c3c12d88575db6c046e170be95e640faa16139e8c791",
+      "utf8_bytes": 113,
+      "characters": 51,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": []
+    },
+    {
+      "case_id": "ux:cc606d8b-072-96f212a3c588",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 72,
+      "timestamp": "2026-07-15T04:53:25.365Z",
+      "source": "console",
+      "text_sha256": "96f212a3c5881a632ca355dc422e120ad47b9edc64d8c62beaf55f93dd51a7f5",
+      "utf8_bytes": 512,
+      "characters": 470,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": []
+    },
+    {
+      "case_id": "ux:cc606d8b-073-7ffc46dbf718",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 73,
+      "timestamp": "2026-07-15T04:59:13.576Z",
+      "source": "console",
+      "text_sha256": "7ffc46dbf7189bcc0ac6f3a3fccdb370d16e0e8bf633ed8018888f1a1c9cedda",
+      "utf8_bytes": 107,
+      "characters": 59,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": []
+    },
+    {
+      "case_id": "ux:cc606d8b-074-0dd02b55d36a",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 74,
+      "timestamp": "2026-07-15T05:03:12.791Z",
+      "source": "console",
+      "text_sha256": "0dd02b55d36addd41c448d71cf3ec56c2af8027b365a0deadaefbbb01b4d250f",
+      "utf8_bytes": 61,
+      "characters": 25,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "状態を尋ねる"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-075-bff1de48e512",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 75,
+      "timestamp": "2026-07-15T05:05:17.245Z",
+      "source": "console",
+      "text_sha256": "bff1de48e512d21fefe80ffc0ee83d31bec8ac4b25d96f6a3707b86e0c49ffcc",
+      "utf8_bytes": 36,
+      "characters": 12,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": []
+    },
+    {
+      "case_id": "ux:cc606d8b-076-54c9b268382c",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 76,
+      "timestamp": "2026-07-15T05:05:59.016Z",
+      "source": "console",
+      "text_sha256": "54c9b268382c62190cd09e787336ce85df6227d7f47938a7cd3920d0eaaa63f9",
+      "utf8_bytes": 80,
+      "characters": 30,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": []
+    },
+    {
+      "case_id": "ux:cc606d8b-077-49750076d0dc",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 77,
+      "timestamp": "2026-07-15T05:25:44.568Z",
+      "source": "console",
+      "text_sha256": "49750076d0dcab302dc6535676ffbd3e60239f834d139a30df4abf857a16c147",
+      "utf8_bytes": 300,
+      "characters": 118,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "資源状態を伝える",
+        "非同期チャネルを扱う",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-078-327c2deeca9d",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 78,
+      "timestamp": "2026-07-15T08:37:20.628Z",
+      "source": "console",
+      "text_sha256": "327c2deeca9d9b32055872e4de523e0a0881e81944912eba306cd3409cecbcb7",
+      "utf8_bytes": 116,
+      "characters": 116,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": []
+    },
+    {
+      "case_id": "ux:cc606d8b-079-ea610fef1558",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 79,
+      "timestamp": "2026-07-15T08:44:02.778Z",
+      "source": "console",
+      "text_sha256": "ea610fef1558dfe4974e34f4d1a7cce0dea51c1a3a6f29d8933a43c1b6172aee",
+      "utf8_bytes": 21,
+      "characters": 7,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-080-1c53ba7969c0",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 80,
+      "timestamp": "2026-07-15T09:22:11.562Z",
+      "source": "console",
+      "text_sha256": "1c53ba7969c08b1ee03e0b4905335ac98d40c271ddb6b3ee62b1201e44baed3e",
+      "utf8_bytes": 228,
+      "characters": 174,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "資源状態を伝える"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-081-9ca9726c43be",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 81,
+      "timestamp": "2026-07-15T11:37:00.631Z",
+      "source": "console",
+      "text_sha256": "9ca9726c43be46e9f22880f1caf7a9b37ec721f86326ff095b7e391667f7e702",
+      "utf8_bytes": 70,
+      "characters": 28,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "状態を尋ねる",
+        "非同期チャネルを扱う"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-082-b1e838a036cb",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 82,
+      "timestamp": "2026-07-15T13:09:31.187Z",
+      "source": "console",
+      "text_sha256": "b1e838a036cb04d2bdd6bbd2b53569da6cefb77ee39a881ed0acc40ade35fb59",
+      "utf8_bytes": 1346,
+      "characters": 836,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "環境観測・不具合を伝える"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-083-4cd0df519fd6",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 83,
+      "timestamp": "2026-07-15T15:10:22.954Z",
+      "source": "console",
+      "text_sha256": "4cd0df519fd6dc7552ea58432d2317b29b0029094cdce1d3bf993487b2337509",
+      "utf8_bytes": 32,
+      "characters": 16,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "非同期チャネルを扱う"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-084-aa1c9d3bd368",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 84,
+      "timestamp": "2026-07-15T15:13:29.385Z",
+      "source": "console",
+      "text_sha256": "aa1c9d3bd368798dde60e70f3e1553158d89b9f7323e5e43dee3a59a5f5a8dc3",
+      "utf8_bytes": 37,
+      "characters": 17,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "非同期チャネルを扱う"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-085-64d89f2599c5",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 85,
+      "timestamp": "2026-07-17T07:29:09.363Z",
+      "source": "console",
+      "text_sha256": "64d89f2599c50b015c612f682c7157b0de574e2bd78717c616dcf674dfce6491",
+      "utf8_bytes": 416,
+      "characters": 186,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "資源状態を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-086-8177dbc6527c",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 86,
+      "timestamp": "2026-07-17T07:55:28.308Z",
+      "source": "console",
+      "text_sha256": "8177dbc6527c0db853f676b74d712aa469baf2a585780722b51a9bf678ad5406",
+      "utf8_bytes": 36,
+      "characters": 16,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": []
+    },
+    {
+      "case_id": "ux:cc606d8b-087-2928f2764356",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 87,
+      "timestamp": "2026-07-17T07:58:06.072Z",
+      "source": "console",
+      "text_sha256": "2928f2764356138ed44de1c4ddaeb3317734b7b3476e20593da5d910dfcdd3ef",
+      "utf8_bytes": 361,
+      "characters": 135,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-088-bc79a32939b9",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 88,
+      "timestamp": "2026-07-17T08:00:08.088Z",
+      "source": "console",
+      "text_sha256": "bc79a32939b9050a1be84e389a817c11c84dbeddadfb821462026d42505a1d8f",
+      "utf8_bytes": 197,
+      "characters": 71,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "修正・制約を差し込む",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-089-482a329c8a69",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 89,
+      "timestamp": "2026-07-17T10:31:08.282Z",
+      "source": "console",
+      "text_sha256": "482a329c8a6970d78d94214e960aca1f81669d9fe1febe95cfafc4da7fdb9792",
+      "utf8_bytes": 228,
+      "characters": 98,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "状態を尋ねる",
+        "修正・制約を差し込む",
+        "非同期チャネルを扱う"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-090-0603d0bfbbc6",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 90,
+      "timestamp": "2026-07-17T14:35:01.089Z",
+      "source": "console",
+      "text_sha256": "0603d0bfbbc6244eb197faa0ae89c0dfcb784ee9c45e12d55837ba43b11d2de9",
+      "utf8_bytes": 60,
+      "characters": 30,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": []
+    },
+    {
+      "case_id": "ux:cc606d8b-091-1fc56e920596",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 91,
+      "timestamp": "2026-07-17T15:34:20.722Z",
+      "source": "console",
+      "text_sha256": "1fc56e920596c4253dad3ffbf0894fd61586bf58c6ce5b0aba6d76e506a66760",
+      "utf8_bytes": 65,
+      "characters": 25,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "在席・生活状態を伝える",
+        "承認・選択を返す"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-092-aebcd3a5dbb6",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 92,
+      "timestamp": "2026-07-17T15:38:39.269Z",
+      "source": "console",
+      "text_sha256": "aebcd3a5dbb6a0fe3e37c45f0e78f0742d2ff5e344653cd99bc550230ab22eaf",
+      "utf8_bytes": 30,
+      "characters": 10,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "人間操作の進行を伝える"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-093-c2ec5eb7d2e4",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 93,
+      "timestamp": "2026-07-17T15:57:05.075Z",
+      "source": "console",
+      "text_sha256": "c2ec5eb7d2e4171e6b99bf62fdaa991194378256ee5e71b5651a09a00965394c",
+      "utf8_bytes": 98,
+      "characters": 40,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "環境観測・不具合を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-094-ecf36aba0132",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 94,
+      "timestamp": "2026-07-17T16:14:35.322Z",
+      "source": "console",
+      "text_sha256": "ecf36aba013272a6426584e741ea219d5b77c5cb60755a3016de4641403eaddd",
+      "utf8_bytes": 112,
+      "characters": 42,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機",
+        "資源状態を伝える"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-095-8520765d7db2",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 95,
+      "timestamp": "2026-07-17T17:21:00.512Z",
+      "source": "console",
+      "text_sha256": "8520765d7db2894d84c61803b5025ee9aa1125bcc22be2d7f45105480ee4163e",
+      "utf8_bytes": 468,
+      "characters": 250,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機",
+        "資源状態を伝える",
+        "非同期チャネルを扱う",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-096-ea610fef1558",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 96,
+      "timestamp": "2026-07-17T17:23:55.164Z",
+      "source": "console",
+      "text_sha256": "ea610fef1558dfe4974e34f4d1a7cce0dea51c1a3a6f29d8933a43c1b6172aee",
+      "utf8_bytes": 21,
+      "characters": 7,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-097-ea610fef1558",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 97,
+      "timestamp": "2026-07-17T17:46:02.138Z",
+      "source": "console",
+      "text_sha256": "ea610fef1558dfe4974e34f4d1a7cce0dea51c1a3a6f29d8933a43c1b6172aee",
+      "utf8_bytes": 21,
+      "characters": 7,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-098-11aaa3df5ea3",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 98,
+      "timestamp": "2026-07-17T17:47:02.517Z",
+      "source": "console",
+      "text_sha256": "11aaa3df5ea3a6fe0b8b3996999e8938a9deea16a40d040213eebec04de88dce",
+      "utf8_bytes": 651,
+      "characters": 255,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "修正・制約を差し込む",
+        "資源状態を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-099-9501d32f6477",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 99,
+      "timestamp": "2026-07-17T17:56:01.191Z",
+      "source": "console",
+      "text_sha256": "9501d32f6477f74faa41eaf6e3481e952940a1d934cad033b9fb75422358ab86",
+      "utf8_bytes": 359,
+      "characters": 127,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-100-03e78d91e858",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 100,
+      "timestamp": "2026-07-17T18:05:22.616Z",
+      "source": "console",
+      "text_sha256": "03e78d91e858db92f548860d233fd4fd8e3ec251e848430129f14354b921653a",
+      "utf8_bytes": 537,
+      "characters": 227,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "修正・制約を差し込む",
+        "在席・生活状態を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-101-ea610fef1558",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 101,
+      "timestamp": "2026-07-18T03:06:05.866Z",
+      "source": "console",
+      "text_sha256": "ea610fef1558dfe4974e34f4d1a7cce0dea51c1a3a6f29d8933a43c1b6172aee",
+      "utf8_bytes": 21,
+      "characters": 7,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-102-ea610fef1558",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 102,
+      "timestamp": "2026-07-18T04:08:00.834Z",
+      "source": "console",
+      "text_sha256": "ea610fef1558dfe4974e34f4d1a7cce0dea51c1a3a6f29d8933a43c1b6172aee",
+      "utf8_bytes": 21,
+      "characters": 7,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-103-ea610fef1558",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 103,
+      "timestamp": "2026-07-18T04:08:22.166Z",
+      "source": "console",
+      "text_sha256": "ea610fef1558dfe4974e34f4d1a7cce0dea51c1a3a6f29d8933a43c1b6172aee",
+      "utf8_bytes": 21,
+      "characters": 7,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-104-e216a499158e",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 104,
+      "timestamp": "2026-07-18T04:10:03.582Z",
+      "source": "console",
+      "text_sha256": "e216a499158efdc09c73e09a5c1270a4493f6ed6efae5d6a0d6874e19621793a",
+      "utf8_bytes": 49,
+      "characters": 21,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "非同期チャネルを扱う"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-105-9ccc75e893f7",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 105,
+      "timestamp": "2026-07-18T04:11:13.270Z",
+      "source": "console",
+      "text_sha256": "9ccc75e893f7b6e0545a5a9ed9198d4aaf68af8230da20b69f1be32147f385eb",
+      "utf8_bytes": 24,
+      "characters": 8,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-106-1a741eabaeaf",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 106,
+      "timestamp": "2026-07-18T04:12:52.779Z",
+      "source": "console",
+      "text_sha256": "1a741eabaeafe48d4f4cceb017cc7a2b78a82b61feb9574395533bcfa5e75653",
+      "utf8_bytes": 147,
+      "characters": 49,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:cc606d8b-107-f33f8ac87d37",
+      "session_id": "cc606d8b-b603-4523-adbc-2bf3366cc8cf",
+      "ordinal": 107,
+      "timestamp": "2026-07-18T04:16:49.897Z",
+      "source": "console",
+      "text_sha256": "f33f8ac87d37070e65975ca181913df61604227c748ba728309810a55af7e3f6",
+      "utf8_bytes": 78,
+      "characters": 26,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:a300d112-001-25b40f220652",
+      "session_id": "a300d112-45ec-43e3-8a3f-8feb9b09c11a",
+      "ordinal": 1,
+      "timestamp": "2026-07-18T04:24:10.904Z",
+      "source": "console",
+      "text_sha256": "25b40f2206526743b61724d0c03b970ffce4841f29119141d5cd1e79eab7eed7",
+      "utf8_bytes": 292,
+      "characters": 208,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機",
+        "非同期チャネルを扱う",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:a300d112-002-597477c78570",
+      "session_id": "a300d112-45ec-43e3-8a3f-8feb9b09c11a",
+      "ordinal": 2,
+      "timestamp": "2026-07-18T04:44:27.733Z",
+      "source": "intercom",
+      "text_sha256": "597477c78570a365340414330a535dfe9d1b4b933959c961e1f390e52edc865f",
+      "utf8_bytes": 52,
+      "characters": 22,
+      "short_le_40": true,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "非同期チャネルを扱う"
+      ]
+    },
+    {
+      "case_id": "ux:a300d112-003-653b83620471",
+      "session_id": "a300d112-45ec-43e3-8a3f-8feb9b09c11a",
+      "ordinal": 3,
+      "timestamp": "2026-07-18T05:58:55.853Z",
+      "source": "intercom",
+      "text_sha256": "653b83620471c2b34a775ec326c9890564b3bd9032d7abb361caaf5bdfc1ac6a",
+      "utf8_bytes": 237,
+      "characters": 99,
+      "short_le_40": false,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "継続・停止・待機",
+        "修正・制約を差し込む",
+        "資源状態を伝える",
+        "仕事を依頼・委任する"
+      ]
+    },
+    {
+      "case_id": "ux:a300d112-004-ca3f36215b8e",
+      "session_id": "a300d112-45ec-43e3-8a3f-8feb9b09c11a",
+      "ordinal": 4,
+      "timestamp": "2026-07-18T11:17:09.545Z",
+      "source": "intercom",
+      "text_sha256": "ca3f36215b8e2050cd7d1c959db2ba709402946c8aa057bde9a2eb3d01f427c5",
+      "utf8_bytes": 226,
+      "characters": 84,
+      "short_le_40": false,
+      "context_dependent": false,
+      "dialogue_acts": [
+        "資源状態を伝える"
+      ]
+    },
+    {
+      "case_id": "ux:a300d112-005-e048c2418374",
+      "session_id": "a300d112-45ec-43e3-8a3f-8feb9b09c11a",
+      "ordinal": 5,
+      "timestamp": "2026-07-18T11:19:54.492Z",
+      "source": "intercom",
+      "text_sha256": "e048c24183747220f768464fdb759963cc59a6d44f6b0ae67ba6b2d1576fa61c",
+      "utf8_bytes": 99,
+      "characters": 35,
+      "short_le_40": true,
+      "context_dependent": true,
+      "dialogue_acts": [
+        "状態を尋ねる"
+      ]
+    }
+  ]
+}

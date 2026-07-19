@@ -4,7 +4,7 @@
   "service": "app",
   "workspaceFolder": "/workspace",
   "remoteUser": "vscode",
-  "postCreateCommand": "python -m pip install --upgrade pip && python -m pip install -e .",
+  "postCreateCommand": "python -m pip install --upgrade pip && python -m pip install -e \".[dev]\"",
   "customizations": {
     "vscode": {
       "settings": {

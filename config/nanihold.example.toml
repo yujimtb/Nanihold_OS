@@ -1,0 +1,136 @@
+# This file is a schema template, not a production routing decision.
+# Replace every EXAMPLE benchmark result with versioned, verified evidence before
+# publishing the RouteSnapshot. Nanihold intentionally refuses missing fields.
+
+[kernel.data_space]
+data_space_id = "space:personal-primary"
+owner_id = "owner:primary"
+kind = "personal"
+lethe_location = "https://lethe.example.invalid/lakes/personal-primary"
+
+[kernel.lethe]
+base_url = "https://lethe.example.invalid"
+bearer_token_env = "LETHE_BEARER_TOKEN"
+timeout_seconds = 30.0
+
+[kernel.audit_policy]
+policy_id = "policy:audit-primary"
+data_space_id = "space:personal-primary"
+independent_s3_star_required = true
+raw_drill_down_required = true
+retention_days = 3650
+
+[kernel.control_policy]
+policy_id = "policy:control-primary"
+data_space_id = "space:personal-primary"
+stop_scope = "affected_work_and_effects"
+severe_finding_requires_s5_risk_acceptance = true
+completion_requires_remote_push = true
+
+[pilot]
+mode = "sandboxed_bypass"
+permission_classifier_enabled = false
+writes_allowed = true
+pilot_host_id = "pilot-host:primary"
+device_id = "device:primary"
+device_certificate_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[pilot.sandbox]
+profile_id = "sandbox:primary"
+certificate_file = "/run/secrets/nanihold-sandbox-profile"
+certificate_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+filesystem_write_roots = ["/workspace"]
+network_destinations = ["github.com", "api.anthropic.com", "api.openai.com"]
+issued_at = 2026-07-19T00:00:00Z
+expires_at = 2027-07-19T00:00:00Z
+
+[interface_pilot]
+node_id = "node:owner-interface"
+pilot_id = "pilot:fable"
+adapter = "claude-code"
+adapter_version = "1.0.0"
+provider = "anthropic"
+model_snapshot = "claude-fable-5"
+effort = "high"
+toolset = ["nanihold-api"]
+sandbox_fingerprint = "sandbox-profile-sha256:replace"
+environment_fingerprint = "pilot-host-image-sha256:replace"
+
+[routing]
+active_route_snapshot_id = "route:coding-production"
+expected_utility_quality_weight = 10.0
+expected_utility_cost_weight = 1.0
+expected_utility_latency_weight = 0.001
+production_exploration_enabled = false
+
+[[routing.candidates]]
+[routing.candidates.candidate]
+adapter = "claude-code"
+adapter_version = "1.0.0"
+provider = "anthropic"
+model_snapshot = "claude-fable-5"
+effort = "high"
+toolset = ["nanihold-api"]
+sandbox_fingerprint = "sandbox-profile-sha256:replace"
+environment_fingerprint = "pilot-host-image-sha256:replace"
+[[routing.candidates.priors]]
+source = "bfcl"
+benchmark_family = "tool_use"
+version = "EXAMPLE-REPLACE"
+sample_count = 2
+harness = "EXAMPLE-REPLACE"
+successes = 1
+failures = 1
+log_token_samples = [6.907755]
+log_cost_samples = [-2.302585]
+log_latency_samples = [4.605170]
+
+[[routing.candidates]]
+[routing.candidates.candidate]
+adapter = "codex"
+adapter_version = "1.0.0"
+provider = "openai"
+model_snapshot = "gpt-5.6-luna"
+effort = "xhigh"
+toolset = ["filesystem", "git", "tests"]
+sandbox_fingerprint = "sandbox-profile-sha256:replace"
+environment_fingerprint = "app-image-sha256:replace"
+[[routing.candidates.priors]]
+source = "swe-bench"
+benchmark_family = "coding"
+version = "EXAMPLE-REPLACE"
+sample_count = 2
+harness = "EXAMPLE-REPLACE"
+successes = 1
+failures = 1
+log_token_samples = [6.907755]
+log_cost_samples = [-2.302585]
+log_latency_samples = [4.605170]
+
+[[routing.candidates]]
+[routing.candidates.candidate]
+adapter = "codex"
+adapter_version = "1.0.0"
+provider = "openai"
+model_snapshot = "gpt-5.6-sol"
+effort = "xhigh"
+toolset = ["filesystem", "git", "tests"]
+sandbox_fingerprint = "sandbox-profile-sha256:replace"
+environment_fingerprint = "app-image-sha256:replace"
+[[routing.candidates.priors]]
+source = "terminal-bench"
+benchmark_family = "coding"
+version = "EXAMPLE-REPLACE"
+sample_count = 2
+harness = "EXAMPLE-REPLACE"
+successes = 1
+failures = 1
+log_token_samples = [6.907755]
+log_cost_samples = [-2.302585]
+log_latency_samples = [4.605170]
+
+[server]
+bind_host = "0.0.0.0"
+bind_port = 8000
+api_bearer_token_env = "NANIHOLD_API_BEARER_TOKEN"
+allowed_origins = ["http://localhost:5173"]

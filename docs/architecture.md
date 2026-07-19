@@ -1,719 +1,76 @@
-# アーキテクチャ
+# Nanihold OS architecture
 
-Nanihold OS の構造・責務・履歴・権限・実行境界に関する正式な設計リファレンスです。
+## 1. 最上位要件
 
-> この文書は、作業文書 `docs/archive/refactor_20260608.md`(リファクタリング基礎文書 改訂版)と
-> 旧 README のアーキテクチャ節を統合して正式化したものです。設計指針の出典としては
-> アーカイブ版を残していますが、現行の正は本文書です。実装の到達状況は
-> [implementation-status.md](implementation-status.md) を参照してください。
+ユーザーが同じ相手との長期的な会話として仕事を操縦でき、短い訂正、離席・再開、複数の仕事、停止、完了確認を追加説明なしに扱えることを最上位要件とします。token、費用、latency はこの UX を壊さない範囲で最適化します。
 
----
+Fable は永続人格ではなく Claude Adapter が提供する現在の Interface Pilot です。永続主体は personal DataSpace に属するユーザー所有 Interface Node です。
 
-## 0. 位置づけ
+## 2. 層と依存方向
 
-本書は Nanihold OS を「常時稼働する VSM 実行基盤」として扱うための構造の取り決めを定める。
-実装手順ではなく、構造、責務、履歴、権限、実行境界の契約を記述する。
-
-VSM 自体は長期稼働する前提とし、**Run は Platform 全体の起動停止ではなく**、外部入力、
-業務依頼、定期処理、監査要求などに対応する実行・観測・会計の単位として扱う。永続する
-責任、履歴、権限、状態は Node が保持し、Agent は Execution ごとに生成される一時的な
-実行主体として扱う。
-
----
-
-## 1. 基本原則
-
-**Architecture / Role / Agent / Tool / Node を分離する。**
-
-- Architecture は VSM の骨格を表す。
-- Role は Node の責任契約を表す。
-- Agent は Role を一時的に実行する主体である。
-- Tool は具体的な手続きである。
-- Node は責任、履歴、権限、状態を保持する永続的な単位である。
-
-**履歴は Node に帰属し、Agent はステートレスとする。** Agent は Execution ごとに生成され、
-応答後に破棄される。文脈は Node の履歴と Projection から構成される view として Agent に渡す。
-
-**判断は局所化する。** ただし、必要な場合は理由を Event_Log に記録したうえで、親 Node、S4、
-または許可された knowledge index へ検索範囲を広げられる。
-
-**Node 型は単一にする。** StaticNode / DynamicNode は実装型ではなく、Node 属性の組み合わせに
-対する通称である。
-
----
-
-## 2. 中核概念
-
-```text
-Run:
-  外部入力、業務依頼、定期処理、監査要求に対応する実行、観測、会計の単位。
-  Run の終了は StaticNode の停止を意味しない。
-
-Node:
-  組織上の責任、履歴、権限、状態を持つ永続的な単位。
-
-NodeRunState:
-  Node が特定 Run で持つ status, budget, cost_consumed, context_view, output を表す。
-
-Execution:
-  ある Node が、ある Run において Agent を起動し、判断または Tool 実行を行う一回の処理単位。
-
-Agent:
-  Role を一時的に実行する主体。LLM、Codex、Claude Code、人間を同じ抽象で扱う。
+```mermaid
+flowchart LR
+  UI["Interface<br/>WebUI / CLI / limited chat"] --> K["Nanihold Kernel<br/>u-VSM invariants"]
+  P["Agent / Pilot<br/>adapter / model / session / routing"] --> K
+  K --> L["LETHE<br/>Event Ledger / blob / Projection"]
+  PH["PilotHost<br/>device identity / cursor / ack"] --> P
 ```
 
----
+Kernel は provider の CLI flag、permission classifier、WebUI 表示型を知りません。Claude 固有機能は Claude Pilot Adapter の mode に、表示は Interface に隔離します。LETHE は唯一の運用正本です。
 
-## 3. 四層構造
+## 3. 永続モデル
 
-### Architecture 層
+### DataSpace
 
-VSM の構造を表す。System、Channel、Message、Event_Log、Node Tree、coordination graph、
-再帰構造を扱う。LLM や Codex の存在を知らない。
+個人、会社、sandbox は別 DataSpace です。SQLite は別ファイル、PostgreSQL は専用 schema と role を使います。実行中の二重書きと backend fallback は禁止です。
 
-### Role 層
+個人と会社の横断参照は期限、用途、対象を持つ ReferenceGrant だけです。個人の生会話を company Lake へ複製しません。
 
-Node の VSM 上の位置に紐づく契約定義である。YAML / JSON として保持する。
+### UVSMNode
 
-```text
-Role:
-  id
-  vsm_position
-  responsibility
-  input_schema
-  output_schema
-  allowed_tools
-  escalation_contract
-  prompt_template
-```
+Node Tree は永続します。各 Node は外部から S1 として見え、内部には resident S1、S2、S3、S3*、S4、S5 を持ちます。Interface Node は company Node の子にはせず、CapabilityGrant で会社 u-VSM に参加します。S5 の配下に resident S3 を持つため、方針と現在運用を同じ主体の中でつなげられます。
 
-`escalation_contract` には条件だけを書く。宛先と許可範囲は ParentAuthority からランタイムで
-注入する。
+### WorkItem と Execution
 
-### Agent 層
+WorkItem は約束と仕事を保持し、Execution は一時的な Pilot の試行です。同じ Node と WorkItem に複数 Execution を持てますが、一つの Execution は一つの Pilot だけです。
 
-Role を実行する一時的主体である。
+Work Graph edge:
 
-```text
-Agent:
-  model_spec
-  system_prompt
-  tools
-  budget
-```
+- `DELEGATED_TO`: 親から子への委任
+- `INTEGRATED_BY`: 子から統合責任を持つ親への逆参照
+- `DEPENDS_ON`: 実行順の依存
 
-人間も HumanAgent として扱う。人間から AI への置き換えは Agent 差し替えで完結させる。
+Pilot が終了しても Node、WorkItem、約束、会話、記憶は残ります。
 
-### Tool 層
+### Event と Projection
 
-具体的な手続きである。Tool は Role と ParentAuthority によって許可される。
+すべての状態変更は Event Ledger へ optimistic version と idempotency key 付きで append してからメモリ view を変更します。長文、owner message、生ログは content-addressed blob です。Projection は cursor 順序と stream version の連続性を検証し、Kernel、Interface、routing posterior、Token Lab を再構築します。
 
-```text
-Tool examples:
-  llm_call
-  codex_run
-  claude_code_run
-  web_crawl
-  file_io
-  spawn_child
-  differentiate
-  search_past_subtasks
-  request_coordination
-  request_escalation
-  request_human_review
-  terminate_node
-  suspend_node
-  resume_node
-```
+## 4. 制御不変条件
 
-Tool は effect type を持つ。
+- LETHE append が失敗した Effect は開始しない。
+- Effect 結果が不明なら `UNKNOWN` とし、同じ Effect idempotency key で照合する。
+- 人間介入は対象 WorkItem、その active Execution、その Effect Lease だけを止める。
+- severe S3* finding は同階層 S5 の明示承認まで WorkItem を block する。
+- PilotHost 切断時、接続先の active Execution は `PAUSED` になる。
+- requested provider/model と actual provider/model が違う応答は採用しない。
+- production route は現在の verified evidence cursor と一致する公開済み RouteSnapshot だけ。
+- AI Judge の証拠だけで高リスク production route へ昇格しない。
 
-```text
-ToolEffect:
-  PURE_READ
-  LOCAL_WRITE
-  EXTERNAL_READ
-  EXTERNAL_WRITE
-  CONTROL
-  HUMAN
-```
+## 5. Fable UX と token
 
-`EXTERNAL_WRITE` と `CONTROL` は `idempotency_key` を必須とする。idempotency は、同じ要求が
-重複実行されても結果が一回分と同じになる性質である。Event sourcing では projection や副作用
-処理の idempotency が重要になるため、この制約を Tool 契約に含める。
-[Microsoft Azure Architecture Center: Event Sourcing pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing)
+owner message は Pilot 呼出し前に personal Lake の blob と Event へ保存します。通常応答は一回の Interface Pilot 呼出しから表示文、Work directive、decision、commitment update を取得します。
 
----
+status、keepalive、quota 表示、Event tail、routing score は Projection と決定論的ロジックで返し、モデルを呼びません。継続中は provider resume と Event delta を使います。Pilot 交代時は Node memory、未完 WorkItem、未解決 commitment、直近 Event delta だけから resume pack を作り、全 transcript は送信しません。
 
-## 4. Node
+## 6. グランドデザインから採用した原則
 
-Node はタスク、組織骨格、再帰的 VSM を単一の抽象で表す。
+古い設計資料から次を採用しています。
 
-```text
-Node:
-  id
-  parent_id
-  vsm_position
+- 持続する Node 記憶と交換可能な処理モデルの分離
+- 可逆な委任
+- 人間が任意階層へ参加できる制御
+- 時間的 u-VSM と Event への drill-down
+- 生データまでたどれる監査
 
-  goal
-  input_data
-  constraints
-  termination_condition
-  terminable
-
-  differentiation_level
-  predefined_children
-
-  role_spec
-  agent_spec
-  parent_authority
-
-  child_ids
-  artifact_refs
-  summary_refs
-
-  status
-  output
-```
-
-Run ごとの状態は Node 本体ではなく NodeRunState に分離する。
-
-```text
-NodeRunState:
-  run_id
-  node_id
-  status
-  budget
-  cost_consumed
-  context_view_ref
-  output_ref
-```
-
-### Lifecycle
-
-```text
-CREATED
-  -> RUNNING
-  -> IDLE
-  -> WAITING_ESCALATION
-  -> SUSPENDED
-  -> COMPLETED
-  -> TERMINATED
-  -> FAILED
-```
-
-- `COMPLETED` は termination_condition を満たした正常終了である。
-- `TERMINATED` は authority による不可逆停止である。
-- `FAILED` は回復不能な失敗である。
-- `WAITING_ESCALATION` は親または authority Node の判断待ちである。
-
-永続 Node は削除されないが、常時 RUNNING である必要はない。入力待ち、周期待ち、予算待ち、
-人間待ちの Node は IDLE または SUSPENDED として休眠できる。
-
-### Node の通称分類
-
-| 通称 | terminable | termination_condition | 生成経路 |
-|---|---:|---|---|
-| StaticNode | False | None | config |
-| 永続 DynamicNode | True | None | spawn |
-| 通常 DynamicNode | True | あり | spawn |
-
-`terminable=False` な Node は config 由来に限定する。
-
----
-
-## 5. u-VSM と分化
-
-すべての Node は u-VSM として扱う。u-VSM はまず `COLLAPSED` 状態で spawn される。そこから
-分化を選択した主体 Agent は、その u-VSM の S5 として残り続ける。展開度
-(`differentiation_level`)は、S5 以外の System がどこまで実体化しているかを表す。まだ
-実体化していない System の責任は、分化主体である S5 Agent が兼ねる。
-
-```text
-COLLAPSED:
-  spawn 直後の未分化 u-VSM。まだ S5 と他 System の展開を開始していない。
-
-S5_ONLY:
-  分化を選択した主体 Agent が S5 となり、VSM 全体を兼ねる。
-  S1, S2, S3, S3*, S4 はまだ実体化していない。
-
-PARTIAL:
-  S5 以外の一部 System のみ実体化している。
-  実体化していない部分は S5 Agent が兼ねる。
-
-FULL:
-  S1, S2, S3, S3*, S4, S5 が実体化している。
-```
-
-分化は `differentiate` Tool を通じて行い、`ParentAuthority.may_differentiate_to` を超えられ
-ない。`differentiate` は分化主体を別の System に置き換える操作ではなく、S5 である主体のもとに
-S1 / S2 / S3 / S3* / S4 を実体化していく操作である。分化は `COLLAPSED` → `S5_ONLY` →
-`PARTIAL` → `FULL` の一方向に進み、いちど分化した u-VSM が未分化へ戻ることはない。構造変更は
-`node_created` / `node_differentiated` / lifecycle event として Event_Log に残り、`LiveTopology`
-や graph は Event_Log から再構成される projection として扱う。
-
----
-
-## 6. Topology
-
-`static_topology` は config 由来の初期構造であり、Run 中に変更しない。
-
-`live_topology` は Event_Log から再構成される実行時構造であり、`spawn_child`、`differentiate`、
-`suspend`、`terminate` によって変化する。
-
-```text
-static_topology:
-  - id: root_s5
-    role: S5_POLICY
-    terminable: false
-    differentiation_level: COLLAPSED
-    delegates_to: [s3_main, s4_main]
-
-  - id: s3_main
-    role: S3_ALLOCATOR
-    parent: root_s5
-    delegates_to: [sales_dept]
-    fallback: spawn_dynamic
-
-  - id: sales_dept
-    role: S1_WORKER
-    parent: s3_main
-    specialization: 営業
-    differentiation_level: COLLAPSED
-```
-
-`static_topology` は seed topology であり、実行時の成長は `live_topology` に記録する。
-
----
-
-## 7. ParentAuthority
-
-ParentAuthority は、親が子に発行する capability として扱う。capability は、ある主体が特定
-条件内で特定操作を行えることを示す、期限付き・取消可能な権限である。
-
-```text
-ParentAuthority:
-  authority_id
-  issuer_node_id
-  subject_node_id
-  issued_at
-  expires_at
-
-  may_differentiate_to
-  max_depth
-  max_spawn_count
-  budget_envelope
-
-  allowed_tool_classes
-  denied_tool_classes
-
-  data_scope
-  secret_scope
-  network_scope
-  filesystem_scope
-
-  termination_authority
-  escalation_contract
-```
-
-Role は静的な職務契約を表し、ParentAuthority は動的な制約を表す。
-
----
-
-## 8. Event_Log
-
-Event_Log は append-only な Source of Truth である。Node Tree、Graph、Markdown home view、
-検索 index はすべて projection であり、Event_Log から再生成可能でなければならない。
-
-Event sourcing では append-only event store から現在状態や materialized view を再構成する。
-projection は遅延更新されるため eventual consistency を持つ。
-[AWS Prescriptive Guidance: Event sourcing pattern](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/event-sourcing.html)
-
-```text
-EventEnvelope:
-  event_id
-  seq
-  run_id
-  node_id
-  stream_id
-  stream_version
-  event_type
-  schema_version
-  ts
-  actor_type
-  actor_id
-  correlation_id
-  causation_id
-  payload
-```
-
-`stream_id` は整合性境界を表す。`correlation_id` は一連の業務上の流れを束ねる ID である。
-`causation_id` は直接の原因になった event_id である。`schema_version` は payload の構造
-バージョンである。
-
-主要イベント型は次の通り。
-
-```text
-node_created
-node_started
-node_idled
-node_suspended
-node_resumed
-node_completed
-node_terminated
-node_failed
-node_differentiated
-
-agent_attached
-spec_revised
-
-tool_invoked
-tool_completed
-tool_failed
-
-budget_consumed
-authority_granted
-authority_revised
-
-coordination_requested
-coordination_decided
-algedonic_raised
-algedonic_handled
-algedonic_human_notification
-consortium_convened
-consortium_statement
-consortium_waiting
-consortium_human_timeout
-consortium_aborted
-consortium_decided
-escalation_requested
-human_review_requested
-
-summary_generated
-artifact_created
-```
-
-LLM / Codex / Claude Code 呼び出しは Tool invocation として記録する。replay 時には外部 Tool を
-再実行せず、`tool_completed` event に保存された result を参照する。Temporal の workflow
-determinism に関する文書でも、LLM / AI invocation や外部 API 呼び出しは replay path の外へ置く
-べき操作として扱われている。
-[Temporal: Workflow Definition determinism and constraints](https://docs.temporal.io/workflow-definition)
-
----
-
-### 自己開発 Proposal projection (Wave 1)
-
-自己開発ループは通常 Run の lifecycle と混ぜず、`vsm.selfdev` の Proposal aggregate と `runs/selfdev/controller/events.jsonl` を正本とする。Proposal の主状態 (`ProposalPhase`) と pause cause (`SUSPEND` / `QUOTA_WAIT`) は直交し、projection は Event Log から再生成できる。自己開発 Event Store の append は strict schema 検証後に durable commit される。
-
-### 自己開発 headless controller (Wave 3)
-
-Wave 3 の controller は通常 Web Run の lifecycle と分離したまま、同じ `vsm.selfdev` Event Store を単一 writer として使用する。`ControllerLease` は `controller.lock` を process lifetime で保持し、起動時に Event Log、ProposalManifest、immutable artifact、in-doubt effect を strict reconcile する。
-
-副作用は `tool_invoked` を durable append してから実行し、成果物を保存して `tool_completed` を append する。開始だけが残った副作用は外部事実を証明できない限り再実行せず、Proposal を SUSPEND する。これにより gate、candidate commit、cleanup の二重実行を防ぐ。
-
-Consortium は `SelfDevConsortiumAdapter` で既存の Node/round/convener 抽象へ載せ、S3_ALLOCATOR → S4_SCANNER → S5_POLICY の順序を固定する。Human waiter は Event Log-backed request/response で、deadline を再起動時に延長しない。S3★監査は S1 と session を共有せず、valid な negative audit も final Consortium の審議材料に含める。
-
-## 9. Projection と Graph
-
-Projection は Event_Log から再生成可能な派生ビューである。
-
-```text
-Projection:
-  projection_name
-  projection_version
-  last_seq
-  last_event_id
-```
-
-Projection は同じ event_id を二度処理しても結果が変わらない idempotent な更新のみを行う。
-
-成果物と知識は Node Tree とは別の graph として表現する。
-
-```text
-Graph node:
-  Node
-  Artifact
-  Concept
-  Decision
-  Question
-  ExternalRef
-  TaskSummary
-
-Graph edge:
-  PRODUCED_BY
-  SPAWNED
-  DIFFERENTIATED_INTO
-  DECIDED
-  SUPERSEDES
-  REFERENCES
-  DEPENDS_ON
-  AUTHORIZED_BY
-  REVIEWED_BY
-  COORDINATED_BY
-```
-
-初期実装は JSONL + SQLite の adjacency list とする。スキーマが安定した後、Kùzu / Neo4j などへ
-移行できるようにする。Kùzu は embedded property graph database として Cypher と property graph
-model を提供するため、後段の候補になる。[Kùzu documentation](https://kuzudb.github.io/docs/)
-
----
-
-## 10. 履歴、文脈、検索
-
-Event_Log の生ログは保持する。ただし Agent に渡すのは生ログではなく、Event_Log、TaskSummary、
-Artifact、Decision から構成した context view とする。
-
-秘密情報、個人情報、大容量本文は Event_Log に直接埋め込まず、Artifact store または Secret store
-への object_ref として記録する。append-only log は削除要求や秘匿要求と衝突しうるため、個人情報を
-event store 外に置く設計が推奨される。
-[Microsoft Azure Architecture Center: Personal data and regulatory compliance](https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing)
-
-```text
-TaskSummary:
-  goal_achieved
-  approach
-  preconditions
-  output_pointer
-  dead_ends
-  open_questions
-  reusability_hints
-```
-
-検索の既定範囲は、自分が過去に spawn した直接 child の TaskSummary とする。Agent は必要な場合、
-理由を Event_Log に記録したうえで、親 Node、S4 Node、または許可された knowledge index へ検索
-範囲を広げられる。広域検索は ParentAuthority の data_scope に従う。
-
----
-
-## 11. S2 Coordination
-
-S2_Coordinator は Node として存在し、調停履歴と判断履歴を保持する。
-
-他 Node は `request_coordination` Tool を通じて S2_Coordinator に調停を依頼できる。
-`request_coordination` Tool は S2 Node への facade であり、調停判断そのものは S2 Node の Agent が
-行う。
-
-```text
-request_coordination:
-  coordination_key
-  scope
-  participants
-  issue
-  requested_by
-  claims
-```
-
-`coordination_key` は idempotency key として扱う。同じ `coordination_key` の要求が重複した場合、
-S2 は既存の `coordination_decided` を返す。
-
-Node Tree は authority と delegation の縦構造を表す。Sibling Node 間の横方向調停は coordination
-graph として表現する。VSM において S2 は operational units 間の衝突や振動を抑える coordination
-機能を担うため、この扱いは VSM の役割分担に対応する。
-[Viable Systems Model Documentation: Five Subsystems](https://viable-systems.github.io/vsm-docs/overview/what-is-vsm/)
-
----
-
-## 11.1 Algedonic channel と Consortium
-
-`ALGEDONIC` は通常の階層ルートを通らず、任意の Node または Human から S5 へ直接届く。
-signal は `severity = pain | pleasure`、`reason`、`source_node_id` を持つ。S5 は AgentRuntime で
-`suspend`、`consortium`、`escalate` のいずれかを選び、判断根拠を `algedonic_handled` に残す。
-`[algedonic] notify_human = true` の場合は `algedonic_human_notification` も記録する。
-
-Consortium は System role を固定せず、Node 参照のリストを参加者とする。各 AI 参加者は自身の
-AgentRuntime と注入された context view hook を使ってラウンドごとに発言し、招集者が `decision`、
-`reason`、`dissent_summary` を統合する。Human の statement 待ちは `WAITING` としてイベント化し、
-timeout 時は `[consortium] human_timeout_policy = proceed | abort` に厳密に従う。招集入口は S5 任意、
-Algedonic 連動、人間発の3種類で、すべて同じプロトコルを利用する。
-
----
-
-## 12. Escalation と Lease
-
-`request_escalation` は Tool として実装する。ただし escalation の条件は
-`Role.escalation_contract` に定義し、宛先と許可範囲は ParentAuthority から注入する。
-
-```text
-request_escalation:
-  escalation_key
-  reason
-  blocking_issue
-  requested_by
-  target_authority
-```
-
-Node または Tool invocation が外部資源を占有する場合は lease を持つ。
-
-```text
-Lease:
-  lease_id
-  owner_node_id
-  resource_ref
-  lease_expires_at
-```
-
-lease 期限を超えた場合、親 Node、S2、または S3 は recovery policy に従って
-release / retry / escalate / terminate を選ぶ。
-
----
-
-## 13. Spec versioning
-
-RoleSpec、AgentSpec、PromptTemplate は `spec_id` と `spec_version` を持つ。
-
-```text
-Spec:
-  spec_id
-  spec_version
-  body
-  created_at
-```
-
-Node 作成時に参照した Spec は Node に snapshot される。既存 Node は Spec 更新に自動追従しない。
-Spec を差し替える場合は `spec_revised` または `agent_attached` event を残す。
-
----
-
-## 14. Budget
-
-予算は Node Tree に沿って階層的に分配する。
-
-```text
-Budget:
-  tokens_in
-  tokens_out
-  tokens_cache_read
-  wall_clock_ms
-  node_running_ms
-```
-
-`[budget]` の Run envelope と `[budget.roles]` のロール別 envelope を
-`ParentAuthority.budget_envelope` / `NodeRunState.budget` に注入する。AgentRuntime の応答ごとに
-3種のトークン、応答 latency、Node の RUNNING 経過時間を `NodeRunState.cost_consumed` と
-`budget_consumed` event に累算する。次回 invocation の開始前に、Node の直近実績と設定済み初期値の
-大きい方へ安全倍率を掛けた予約見積を算出する。Node/Run のいずれかの残余が見積未満なら
-AgentRuntime を起動せず、`budget_exceeded` と `request_escalation` を発行する。
-
-quota 枯渇時は `five_hour` / `weekly` の種別と正確な reset 時刻を quota-state v2 に永続化し、
-確定済み時刻にだけ自動復帰する。種別不明または時刻不明なら `human_review_required` を永続化して
-Node を `FAILED` にし、timer を作らず人間判断を要求する。
-MessageBus は当該 Node の処理中 Message と休眠中に到着した Message を保留し、`quota_resumed`
-発行時に同じ購読キューへ再投入する。QuotaMonitor の timer は Platform shutdown で全て cancel する。
-Quota と Algedonic の suspend は同じ検証付き Node lifecycle 操作を通し、Node と
-`NodeRunState` を一度だけ同時更新する。既に `SUSPENDED` の Node への二重 suspend は失敗させる。
-
-Human の追加指示は対象 Node の `INSTRUCTION` queue にFIFOで保持する。指示配送と LLM invocation
-開始点は Node 単位の同一 lock で直列化し、invocation 側は未適用指示を全件プロンプトへ注入してから
-`instruction_applied` を指示ごとに記録する。`instruction_applied.payload.invocation_id` と直後の
-`tool_invoked.payload.tool_invocation_id` は一致し、`tool_invoked` を invocation 開始点と定義する。
-したがって開始点より前に受理済みの指示は必ずその invocation に入り、開始点より後の指示は次の
-invocation に入る。実行中 invocation の process interrupt はこの経路では行わない。
-
-EventLogWriter の受付状態変更と終端 sentinel 投入は同一 lock 内で原子的に行う。`append` が先に
-受付を完了した event は sentinel より前に置かれて全件排水され、停止開始後の `append` は明示的に
-失敗する。Platform shutdown は一度だけ実行され、cancel した System の受信子 Task、Web generation
-Task、AgentRuntime の CLI process を終了確認まで await してから EventLogWriter を停止する。
-
----
-
-## 15. LETHE Run間会計・長期記憶
-
-`vsm.lethe_bridge` は Run lifecycle の2点だけに接続する。Run 開始時はタスク記述を単語 query として
-`GET /api/v2/search?query=...` へ渡し、返された Nanihold supplemental record を Consortium の
-context view に追記する。Run 終了時は EventLogWriter を drain した後、次を出力する。
-
-- `run_accounting`: Run header（開始・終了・Task）、Node 別 `cost_consumed`、Run 合計、結果状態
-- `run_memory`: `policy_decision`、`consortium_decided`、`coordination_decided` / directive、
-  `audit_finding`、Human review / owner instruction から抽出した知見
-
-両レコードは `schema_version=1`、決定論的 `record_id`、`record_kind`、`source=nanihold`、
-`run_id`、`occurred_at`、検索用 `text`、型別 `payload` を持つ。live write は
-`POST /api/supplemental` を1レコードずつ呼び、`record_id` を `Idempotency-Key` に使う。検索応答は
-`{"records": [...]}` 以外を受理しない。
-
-`[lethe] enabled=false` が既定で、この場合はファイル・HTTP・注入のすべてが no-op になる。
-`mode="dry-run"` は共有 JSONL だけを読み書きし、HTTP transport を構築しない。
-`mode="live"` は endpoint と token の明示注入を必須とし、欠落・不正応答・非2xxを fail fast する。
-live への切替は LETHE write 契約承認後の運用操作であり、コード上の silent fallback はない。
-
----
-
-## 16. Observability
-
-Event_Log は domain event と control event の Source of Truth である。OpenTelemetry は運用観測用
-telemetry として使う。
-
-```text
-Telemetry correlation:
-  event_id
-  run_id
-  node_id
-  tool_invocation_id
-  trace_id
-  span_id
-```
-
-OpenTelemetry は traces、metrics、logs、resources の semantic conventions を定義しており、複数
-コンポーネント間の観測データ名を揃えるために使える。
-[OpenTelemetry: Semantic Conventions](https://opentelemetry.io/docs/concepts/semantic-conventions/)
-
-Event_Log と telemetry は相互参照できるようにするが、役割は混ぜない。
-
----
-
-## 17. ディレクトリ構成
-
-```text
-vsm/
-  architecture/        # Channel, Bus, Event_Log
-  roles/               # RoleSpec
-  agents/              # Agent 抽象と実装
-  tools/               # Tool 実装
-  nodes/               # Node, NodeRunState, lifecycle
-  authority/           # ParentAuthority, capability
-  budget/              # BudgetContext, Ledger
-  graph/               # Projection, Artifact/Concept/Decision graph
-  memory/              # context view, summary, search policy
-  lethe_bridge/        # Run間会計・長期記憶の supplemental export/search
-  telemetry/           # OpenTelemetry integration
-  runtime/             # orchestrator, config loader
-```
-
----
-
-## 17. スコープ外
-
-当面は以下を実装しない。
-
-```text
-ハッシュベースのキャッシュ判定
-Agent 内部の長期コンテキスト保持
-無制限のグローバル過去タスク検索
-StaticNode / DynamicNode の別型実装
-外部 Tool の replay 時再実行
-Event_Log への秘密情報本文の直接保存
-```
-
----
-
-## 18. 未決の設計論点
-
-以下は構造としてまだ確定していない論点である。
-
-```text
-無期限 Node の context view 圧縮の発動基準
-Event_Log の長期保管、圧縮、暗号化方針
-Secret store / Artifact store の具体実装
-広域検索を許可する data_scope の粒度
-S2 coordination graph の最小スキーマ
-lease timeout 後の recovery policy
-Run をまたぐ budget accounting の扱い
-```
-
----
-
-## 関連ドキュメント
-
-- [implementation-status.md](implementation-status.md) — 本アーキテクチャの実装到達状況
-- [roadmap.md](roadmap.md) — 製品化までの実行計画
-- [archive/refactor_20260608.md](archive/refactor_20260608.md) — 本書の元になった作業文書(非公式)
+FSX は Kernel metric や自動目的関数にはせず、主体性、監査可能性、強制への抵抗を評価する設計原則として扱います。

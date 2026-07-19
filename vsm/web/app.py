@@ -1,503 +1,490 @@
-"""FastAPI application for the local Nanihold OS dashboard."""
-
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from datetime import date, datetime, timezone
-from decimal import Decimal
-from pathlib import Path
-from typing import Literal
-from uuid import uuid4
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Annotated, Any
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field
-
-from vsm.agents.runtime import AgentRuntimeError
-from vsm.config import load_config, require_native_runs_enabled
-from vsm.errors import NativeRunDisabledError
-from vsm.runtime.lifecycle import describe_role_runtimes
-from vsm.survival import LedgerEntry, LedgerEntryKind, SurvivalService
-from vsm.web.chat import ChatBusyError, ChatManager, ChatTimeoutError
-from vsm.web.manager import RunManager
-from vsm.web.selfdev import router as selfdev_router
-
-RUNS_ROOT = Path("runs") / "web"
-_, survival_run_config = load_config(None)
-survival_service = SurvivalService(run_config=survival_run_config)
-manager = RunManager(RUNS_ROOT, metering_hook=survival_service.meter.record_agent_result)
-chat_manager = ChatManager(RUNS_ROOT / "chat")
-selfdev_service = None
-
-
-@asynccontextmanager
-async def _lifespan(application: FastAPI):
-    """selfdev controller を app と同じ single-worker loop で管理する。"""
-
-    service = getattr(application.state, "selfdev_service", None)
-    if service is None:
-        service = selfdev_service
-    if service is None and getattr(application.state, "selfdev_autobuild", True):
-        from vsm.web.selfdev_runtime import build_selfdev_service
-
-        try:
-            service = build_selfdev_service()
-        except Exception as exc:
-            application.state.selfdev_startup_error = exc
-    if service is not None:
-        application.state.selfdev_service = service
-        await service.start()
-    try:
-        yield
-    finally:
-        try:
-            await manager.shutdown()
-        finally:
-            if service is not None:
-                await service.stop()
-
-
-app = FastAPI(title="Nanihold OS", version="0.1.0", lifespan=_lifespan)
-app.state.selfdev_service = None
-app.state.selfdev_startup_error = None
-app.state.selfdev_autobuild = True
-app.state.survival_service = survival_service
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    # 開発中はループバック上の任意ポート(予備の Vite ポート等)を許可する。
-    # ループバック以外のオリジンは引き続き拒否される。
-    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1):\d+$",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
 )
-app.include_router(selfdev_router)
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, ConfigDict, Field
+
+from vsm.errors import InvariantViolation, NaniholdError
+from vsm.interface.models import Conversation
+from vsm.interface.service import InterfaceService
+from vsm.kernel.models import Execution, RouteSnapshot, UVSMNode, WorkItem
+from vsm.kernel.service import Kernel
+from vsm.pilot.host import PilotHostCoordinator
+from vsm.pilot.models import (
+    DeviceIdentity,
+    ModelCandidate,
+    PilotHostState,
+)
+from vsm.routing.bayesian import (
+    BayesianRouter,
+    RoutingEvidenceService,
+    VerifiedRouteOutcome,
+)
+from vsm.token_lab.lab import (
+    TokenBaseline,
+    TokenEfficiencyLab,
+    TokenLabEventService,
+    TokenObservation,
+)
 
 
-def create_app(service=None, survival: SurvivalService | None = None) -> FastAPI:
-    """TestClient/運用配備用に selfdev service を明示注入した app を返す。
-
-    ``service`` に ``None`` を明示した app は selfdev mutation を 503 で拒否する。
-    モジュール本体の app は設定から自動配備する。FakeRuntime
-    を含む決定論テストは、ここへ ``SelfDevService`` を渡して lifespan の
-    start/stop と controller lock を実際に通過させる。
-    """
-
-    app.state.selfdev_service = service
-    app.state.selfdev_autobuild = False
-    app.state.survival_service = survival or survival_service
-    return app
+class StrictRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
-class InstructionBody(BaseModel):
-    instruction: str
-    target_node: str | None = None
-
-
-class BudgetOverrideBody(BaseModel):
-    tokens: int | None = Field(default=None, gt=0)
-    wall_clock_seconds: float | None = Field(default=None, gt=0)
-
-
-class CreateRunBody(BaseModel):
-    goal: str
-    constraints: dict = Field(default_factory=dict)
-    budget: BudgetOverrideBody | None = None
-
-
-class AlgedonicBody(BaseModel):
-    severity: str
-    reason: str
-    source_node_id: str
-
-
-class StatementBody(BaseModel):
-    statement: str
-
-
-class NodeControlBody(BaseModel):
-    action: str
-
-
-class HumanReviewBody(BaseModel):
-    review_key: str
-    response: str
-
-
-class RenameBody(BaseModel):
-    title: str
-
-
-class CreateChatBody(BaseModel):
-    backend: Literal["claude-code", "codex"]
-    model: str | None = None
-    workdir: str | None = None
-
-
-class ChatMessageBody(BaseModel):
-    text: str
-
-
-class SurvivalLedgerBody(BaseModel):
-    entry_id: str = Field(default_factory=lambda: str(uuid4()), min_length=1)
-    occurred_at: datetime
-    kind: Literal["expense", "revenue", "owner_contribution", "cash_adjustment"]
-    category: str = Field(min_length=1)
-    signed_amount_jpy: int
-    tax_jpy: int = Field(default=0, ge=0)
-    original_amount: Decimal
-    currency: str = Field(min_length=3, max_length=3)
-    fx_rate_id: str | None = None
-    source: str = Field(min_length=1)
-    source_id: str = Field(min_length=1)
+class CommandMetadata(StrictRequest):
+    actor_id: str
     idempotency_key: str = Field(min_length=1)
-    run_id: str | None = None
-    proposal_id: str | None = None
-    opportunity_id: str | None = None
-    evidence_ref: str | None = None
-    evidence_hash: str | None = None
-    reverses_entry_id: str | None = None
-    actor_id: str = Field(min_length=1)
-    metadata: dict = Field(default_factory=dict)
 
 
-@app.get("/api/health")
-def health() -> dict:
-    return {"status": "ok"}
+class CreateNodeRequest(CommandMetadata):
+    node: UVSMNode
 
 
-def _survival() -> SurvivalService:
-    service = getattr(app.state, "survival_service", None)
-    if service is None:
-        raise RuntimeError("survival service is not configured")
-    return service
+class CreateWorkItemRequest(CommandMetadata):
+    work_item: WorkItem
 
 
-@app.get("/api/survival/dashboard")
-def survival_dashboard(report_date: date | None = None) -> dict:
-    try:
-        return _survival().dashboard(report_date)
-    except (ValueError, FileNotFoundError) as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+class CreateExecutionRequest(CommandMetadata):
+    execution: Execution
 
 
-@app.get("/api/survival/config")
-def survival_config() -> dict:
-    service = _survival()
-    return {
-        "schema_version": 1,
-        "baseline": service.baseline(),
-        "safety": service.config.safety.to_dict(),
-        "pricing_path": str(service.config.pricing_path),
-    }
+class WorkInterventionRequest(CommandMetadata):
+    reason: str = Field(min_length=1)
 
 
-@app.get("/api/survival/ledger")
-def survival_ledger() -> dict:
-    service = _survival()
-    return {
-        "entries": [entry.to_dict() for entry in service.ledger.entries()],
-        "usages": [usage.to_dict() for usage in service.ledger.usages()],
-    }
+class CreateConversationRequest(StrictRequest):
+    conversation: Conversation
+    idempotency_key: str = Field(min_length=1)
 
 
-@app.post("/api/survival/ledger", status_code=201)
-def record_survival_ledger(body: SurvivalLedgerBody) -> dict:
-    service = _survival()
-    booked_at = datetime.now(timezone.utc)
-    try:
-        entry = LedgerEntry(
-            entry_id=body.entry_id,
-            occurred_at=body.occurred_at,
-            booked_at=booked_at,
-            kind=LedgerEntryKind(body.kind),
-            category=body.category,
-            signed_amount_jpy=body.signed_amount_jpy,
-            tax_jpy=body.tax_jpy,
-            original_amount=body.original_amount,
-            currency=body.currency.upper(),
-            fx_rate_id=body.fx_rate_id,
-            source=body.source,
-            source_id=body.source_id,
-            idempotency_key=body.idempotency_key,
-            run_id=body.run_id,
-            proposal_id=body.proposal_id,
-            opportunity_id=body.opportunity_id,
-            evidence_ref=body.evidence_ref,
-            evidence_hash=body.evidence_hash,
-            reverses_entry_id=body.reverses_entry_id,
-            actor_id=body.actor_id,
-            metadata=body.metadata,
-        )
-        return service.record_entry(entry)
-    except (ValueError, ArithmeticError) as exc:
-        status = 409 if "already exists" in str(exc) else 422
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+class OwnerMessageRequest(StrictRequest):
+    text: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1)
+    force_new_pilot: bool
 
 
-@app.get("/api/survival/reports/{report_date}")
-def survival_report(report_date: date) -> dict:
-    try:
-        return _survival().report(report_date)
-    except ValueError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+class PilotHostConnectRequest(StrictRequest):
+    identity: DeviceIdentity
+    acknowledged_cursor: int = Field(ge=0)
+    connected_at: datetime
 
 
-@app.post("/api/chat", status_code=201)
-def create_chat(body: CreateChatBody) -> dict:
-    try:
-        return chat_manager.create_session(
-            backend=body.backend,
-            model=body.model,
-            workdir=body.workdir,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+class PilotHostDisconnectRequest(StrictRequest):
+    disconnected_at: datetime
+    idempotency_key: str = Field(min_length=1)
 
 
-@app.get("/api/chat/{chat_id}")
-def get_chat(chat_id: str) -> dict:
-    try:
-        return chat_manager.history(chat_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="対話セッションが見つかりません") from exc
+class RouteApprovalRequest(CommandMetadata):
+    approval: str = Field(pattern=r"^(s3_star|owner)$")
 
 
-@app.post("/api/chat/{chat_id}/messages")
-async def send_chat_message(chat_id: str, body: ChatMessageBody) -> dict:
-    try:
-        return await chat_manager.send_message(chat_id, body.text)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="対話セッションが見つかりません") from exc
-    except ChatBusyError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ChatTimeoutError as exc:
-        raise HTTPException(status_code=504, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except (AgentRuntimeError, RuntimeError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+class RegisterRouteSnapshotRequest(CommandMetadata):
+    route_snapshot: RouteSnapshot
 
 
-@app.get("/api/config")
-def config() -> dict:
-    llm_config, run_config = load_config(None)
-    runtimes = describe_role_runtimes(run_config=run_config, llm_config=llm_config)
-    return {
-        "runtimes": runtimes,
-        "demo_mode": any(runtime["backend"] == "fake" for runtime in runtimes),
-        "single_run": True,
-        "native_runs_enabled": run_config.residency.native_runs_enabled,
-    }
+class VerifiedRouteOutcomeRequest(CommandMetadata):
+    outcome: VerifiedRouteOutcome
 
 
-def _require_native_run_entry_enabled() -> None:
-    """REST の native Run 起動入口を設定フラグで封鎖する。"""
-
-    _llm_config, run_config = load_config(None)
-    require_native_runs_enabled(run_config)
+class TokenObservationRequest(CommandMetadata):
+    observation: TokenObservation
 
 
-@app.get("/api/runs")
-def list_runs() -> list[dict]:
-    return manager.list_runs()
+class TokenBaselineRequest(CommandMetadata):
+    baseline: TokenBaseline
 
 
-@app.post("/api/runs", status_code=201)
-async def create_run(
-    body: CreateRunBody,
-) -> dict:
-    try:
-        _require_native_run_entry_enabled()
-        run = await manager.create_run(
-            description=body.goal,
-            title=None,
-            attachments=[],
-            constraints=body.constraints,
-            budget_override=(body.budget.model_dump(exclude_none=True) if body.budget else None),
-        )
-        return manager.detail(run.run_id)
-    except NativeRunDisabledError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(status_code=409 if isinstance(exc, RuntimeError) else 422, detail=str(exc)) from exc
+class TokenWeeklyReviewRequest(CommandMetadata):
+    reviewed_at: datetime
 
 
-@app.get("/api/runs/{run_id}")
-def get_run(run_id: str) -> dict:
-    try:
-        return manager.detail(run_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Runが見つかりません") from exc
+@dataclass
+class AppState:
+    kernel: Kernel
+    interface: InterfaceService
+    pilot_hosts: PilotHostCoordinator
+    router: BayesianRouter
+    routing_evidence: RoutingEvidenceService
+    token_lab: TokenEfficiencyLab
+    token_lab_events: TokenLabEventService
+    model_registry: dict[str, ModelCandidate]
+    api_bearer_token: str
 
 
-@app.get("/api/runs/{run_id}/events")
-def stream_run(run_id: str) -> StreamingResponse:
-    try:
-        manager.get_run(run_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Runが見つかりません") from exc
-    return StreamingResponse(
-        manager.stream(run_id),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
+    if not allowed_origins:
+        raise InvariantViolation("Interface allowed_origins must be explicit")
+    app = FastAPI(title="Nanihold OS", version="0.2.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(allowed_origins),
+        allow_credentials=False,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Authorization", "Content-Type"],
     )
 
+    def authorize(authorization: Annotated[str | None, Header()] = None) -> None:
+        if authorization != f"Bearer {state.api_bearer_token}":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="valid Bearer token required",
+            )
 
-@app.post("/api/runs/{run_id}/interrupt")
-async def interrupt(run_id: str, body: InstructionBody) -> dict:
-    try:
-        _require_native_run_entry_enabled()
-        run = await manager.interrupt(run_id, body.instruction)
-        return manager.detail(run.run_id)
-    except NativeRunDisabledError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    @app.exception_handler(NaniholdError)
+    async def nanihold_error_handler(_request: Any, exc: NaniholdError):
+        from fastapi.responses import JSONResponse
 
+        return JSONResponse(status_code=409, content={"error": str(exc)})
 
-@app.post("/api/runs/{run_id}/instructions")
-async def instruct(run_id: str, body: InstructionBody) -> dict:
-    try:
-        return await manager.instruct(run_id, body.instruction, body.target_node)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Runが見つかりません") from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    @app.get("/api/data-spaces", dependencies=[Depends(authorize)])
+    def data_spaces():
+        return [state.kernel.data_space]
 
+    @app.get("/api/nodes", dependencies=[Depends(authorize)])
+    def nodes():
+        return {
+            "items": list(state.kernel.nodes.values()),
+            "capability_grants": list(state.kernel.capability_grants.values()),
+            "reference_grants": list(state.kernel.reference_grants.values()),
+        }
 
-@app.post("/api/runs/{run_id}/algedonic")
-async def algedonic(run_id: str, body: AlgedonicBody) -> dict:
-    try:
-        return await manager.raise_algedonic(
-            run_id,
-            severity=body.severity,
-            reason=body.reason,
-            source_node_id=body.source_node_id,
+    @app.post("/api/nodes", dependencies=[Depends(authorize)], status_code=201)
+    def create_node(request: CreateNodeRequest):
+        state.kernel.register_node(
+            request.node,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
         )
-    except (ValueError, KeyError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return request.node
 
+    @app.get("/api/work-items", dependencies=[Depends(authorize)])
+    def work_items():
+        return {
+            "items": list(state.kernel.work_items.values()),
+            "edges": state.kernel.work_edges,
+        }
 
-@app.post("/api/consortium/{consortium_id}/statement")
-def consortium_statement(consortium_id: str, body: StatementBody) -> dict:
-    try:
-        return manager.submit_consortium_statement(consortium_id, body.statement)
-    except (KeyError, ValueError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    @app.post("/api/work-items", dependencies=[Depends(authorize)], status_code=201)
+    def create_work_item(request: CreateWorkItemRequest):
+        state.kernel.create_work_item(
+            request.work_item,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        return request.work_item
 
-
-@app.get("/api/runs/{run_id}/topology")
-def topology(run_id: str) -> dict:
-    try:
-        return manager.topology(run_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Runが見つかりません") from exc
-
-
-@app.get("/api/runs/{run_id}/budget")
-def budget(run_id: str) -> dict:
-    try:
-        return manager.budget(run_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Runが見つかりません") from exc
-
-
-@app.post("/api/runs/{run_id}/nodes/{node_id}/control")
-async def control_node(run_id: str, node_id: str, body: NodeControlBody) -> dict:
-    try:
-        if body.action == "resume":
-            _require_native_run_entry_enabled()
-        return await manager.control_node(run_id, node_id, body.action)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except NativeRunDisabledError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@app.post("/api/runs/{run_id}/human-review")
-async def human_review(run_id: str, body: HumanReviewBody) -> dict:
-    try:
-        return await manager.respond_human_review(run_id, body.review_key, body.response)
-    except KeyError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@app.post("/api/runs/{run_id}/cancel")
-async def cancel(run_id: str) -> dict:
-    run = await manager.cancel(run_id)
-    return manager.detail(run.run_id)
-
-
-@app.post("/api/runs/{run_id}/retry")
-async def retry(run_id: str) -> dict:
-    try:
-        _require_native_run_entry_enabled()
-        run = await manager.retry(run_id)
-        return manager.detail(run.run_id)
-    except NativeRunDisabledError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@app.post("/api/runs/{run_id}/use-partial")
-async def use_partial(run_id: str) -> dict:
-    run = await manager.use_partial_result(run_id)
-    return manager.detail(run.run_id)
-
-
-@app.patch("/api/runs/{run_id}")
-def rename(run_id: str, body: RenameBody) -> dict:
-    try:
-        return manager.detail(manager.rename(run_id, body.title).run_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@app.delete("/api/runs/{run_id}", status_code=204)
-def delete(run_id: str) -> None:
-    try:
-        manager.delete(run_id)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@app.get("/api/runs/{run_id}/attachments/{attachment_id}")
-def download_attachment(run_id: str, attachment_id: str) -> FileResponse:
-    run = manager.get_run(run_id)
-    attachment = next(
-        (item for item in run.attachments if item.attachment_id == attachment_id),
-        None,
+    @app.post(
+        "/api/work-items/{work_item_id}/interventions",
+        dependencies=[Depends(authorize)],
     )
-    if attachment is None:
-        raise HTTPException(status_code=404, detail="添付ファイルが見つかりません")
-    return FileResponse(attachment.path, filename=attachment.name, media_type=attachment.media_type)
+    def intervene_work_item(
+        work_item_id: str, request: WorkInterventionRequest
+    ):
+        state.kernel.intervene(
+            work_item_id,
+            actor_id=request.actor_id,
+            reason=request.reason,
+            idempotency_key=request.idempotency_key,
+        )
+        return state.kernel.work_items[work_item_id]
 
+    @app.get("/api/executions", dependencies=[Depends(authorize)])
+    def executions():
+        return {
+            "items": list(state.kernel.executions.values()),
+            "effect_leases": list(state.kernel.effect_leases.values()),
+            "budget_reservations": list(state.kernel.budget_reservations.values()),
+        }
 
-@app.get("/api/runs/{run_id}/artifacts/{name}")
-def download_artifact(run_id: str, name: str) -> FileResponse:
-    try:
-        path = manager.artifact_path(run_id, name)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="成果物が見つかりません") from exc
-    media_type = "text/markdown" if path.suffix == ".md" else "application/json"
-    return FileResponse(path, filename=path.name, media_type=media_type)
+    @app.post("/api/executions", dependencies=[Depends(authorize)], status_code=201)
+    def create_execution(request: CreateExecutionRequest):
+        state.kernel.create_execution(
+            request.execution,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        return request.execution
+
+    @app.get("/api/events", dependencies=[Depends(authorize)])
+    def events(
+        after_cursor: Annotated[int, Query(ge=0)],
+        limit: Annotated[int, Query(gt=0, le=1000)],
+    ):
+        items = state.kernel.ledger.page(after_cursor, limit)
+        return {
+            "events": items,
+            "next_cursor": items[-1].cursor if items else after_cursor,
+        }
+
+    @app.get("/api/conversations", dependencies=[Depends(authorize)])
+    def conversations():
+        visible_messages = {}
+        for conversation_id, items in state.interface.messages.items():
+            visible = []
+            for item in items:
+                payload = item.model_dump(mode="json")
+                if item.role == "owner":
+                    if item.blob_ref is None:
+                        raise InvariantViolation(
+                            "owner message is missing its LETHE BlobRef"
+                        )
+                    try:
+                        payload["display_text"] = state.kernel.ledger.get_blob(
+                            item.blob_ref
+                        ).decode("utf-8")
+                    except UnicodeDecodeError as exc:
+                        raise InvariantViolation(
+                            "owner message blob is not UTF-8"
+                        ) from exc
+                visible.append(payload)
+            visible_messages[conversation_id] = visible
+        return {
+            "items": list(state.interface.conversations.values()),
+            "messages": visible_messages,
+            "commitments": list(state.interface.commitments.values()),
+            "decisions": list(state.interface.decisions.values()),
+            "node_memories": list(state.interface.node_memories.values()),
+        }
+
+    @app.post("/api/conversations", dependencies=[Depends(authorize)], status_code=201)
+    def create_conversation(request: CreateConversationRequest):
+        return state.interface.create_conversation(
+            request.conversation, idempotency_key=request.idempotency_key
+        )
+
+    @app.get(
+        "/api/conversations/{conversation_id}", dependencies=[Depends(authorize)]
+    )
+    def conversation_status(conversation_id: str):
+        return state.interface.status(conversation_id)
+
+    @app.post(
+        "/api/conversations/{conversation_id}/messages",
+        dependencies=[Depends(authorize)],
+    )
+    def owner_message(conversation_id: str, request: OwnerMessageRequest):
+        return state.interface.turn(
+            conversation_id=conversation_id,
+            owner_text=request.text,
+            idempotency_key=request.idempotency_key,
+            force_new_pilot=request.force_new_pilot,
+        )
+
+    @app.get("/api/pilot-hosts", dependencies=[Depends(authorize)])
+    def pilot_hosts():
+        return list(state.pilot_hosts.hosts.values())
+
+    @app.post(
+        "/api/pilot-hosts/connect", dependencies=[Depends(authorize)], status_code=201
+    )
+    def connect_pilot_host(request: PilotHostConnectRequest):
+        return state.pilot_hosts.connect(
+            identity=request.identity,
+            acknowledged_cursor=request.acknowledged_cursor,
+            connected_at=request.connected_at,
+        )
+
+    @app.post(
+        "/api/pilot-hosts/{pilot_host_id}/disconnect",
+        dependencies=[Depends(authorize)],
+    )
+    def disconnect_pilot_host(
+        pilot_host_id: str, request: PilotHostDisconnectRequest
+    ):
+        return state.pilot_hosts.disconnect(
+            pilot_host_id,
+            disconnected_at=request.disconnected_at,
+            idempotency_key=request.idempotency_key,
+        )
+
+    @app.get("/api/model-registry", dependencies=[Depends(authorize)])
+    def model_registry():
+        return {
+            "candidates": list(state.model_registry.values()),
+            "verified_outcomes": list(state.routing_evidence.outcomes.values()),
+            "evidence_cursor": state.routing_evidence.evidence_cursor,
+        }
+
+    @app.post(
+        "/api/model-registry/outcomes",
+        dependencies=[Depends(authorize)],
+        status_code=201,
+    )
+    def record_model_outcome(request: VerifiedRouteOutcomeRequest):
+        state.routing_evidence.record(
+            request.outcome,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        return request.outcome
+
+    @app.get("/api/route-snapshots", dependencies=[Depends(authorize)])
+    def route_snapshots():
+        snapshots = list(state.kernel.route_snapshots.values())
+        return {
+            "items": snapshots,
+            "scores": {
+                snapshot.snapshot_id: state.router.scores(snapshot.candidate_keys)
+                for snapshot in snapshots
+            },
+        }
+
+    @app.post(
+        "/api/route-snapshots", dependencies=[Depends(authorize)], status_code=201
+    )
+    def register_route_snapshot(request: RegisterRouteSnapshotRequest):
+        snapshot = request.route_snapshot
+        if snapshot.evidence_cursor != state.routing_evidence.evidence_cursor:
+            raise InvariantViolation(
+                "RouteSnapshot evidence_cursor must equal current verified evidence cursor"
+            )
+        unknown = set(snapshot.candidate_keys) - set(state.model_registry)
+        if unknown:
+            raise InvariantViolation(
+                f"RouteSnapshot references unregistered ModelCandidates: {sorted(unknown)}"
+            )
+        state.kernel.register_route_snapshot(
+            snapshot,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        return snapshot
+
+    @app.post(
+        "/api/route-snapshots/{snapshot_id}/approvals",
+        dependencies=[Depends(authorize)],
+    )
+    def approve_route_snapshot(snapshot_id: str, request: RouteApprovalRequest):
+        state.kernel.approve_route_snapshot(
+            snapshot_id,
+            approval=request.approval,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        return state.kernel.route_snapshots[snapshot_id]
+
+    @app.post(
+        "/api/route-snapshots/{snapshot_id}/publish",
+        dependencies=[Depends(authorize)],
+    )
+    def publish_route_snapshot(snapshot_id: str, request: CommandMetadata):
+        state.kernel.publish_route_snapshot(
+            snapshot_id,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        return state.kernel.route_snapshots[snapshot_id]
+
+    @app.get("/api/token-lab", dependencies=[Depends(authorize)])
+    def token_lab():
+        return {
+            "baselines": list(state.token_lab.baselines.values()),
+            "observations": state.token_lab.observations,
+            "last_weekly_review_at": state.token_lab.last_weekly_review_at,
+            "weekly_due": state.token_lab.weekly_due(datetime.now(UTC)),
+        }
+
+    @app.post(
+        "/api/token-lab/baselines",
+        dependencies=[Depends(authorize)],
+        status_code=201,
+    )
+    def approve_token_baseline(request: TokenBaselineRequest):
+        state.token_lab_events.approve_baseline(
+            request.baseline,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        return request.baseline
+
+    @app.post(
+        "/api/token-lab/observations",
+        dependencies=[Depends(authorize)],
+        status_code=201,
+    )
+    def observe_tokens(request: TokenObservationRequest):
+        _, triggers = state.token_lab_events.observe(
+            request.observation,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        return {"triggers": triggers}
+
+    @app.post(
+        "/api/token-lab/weekly-reviews",
+        dependencies=[Depends(authorize)],
+        status_code=201,
+    )
+    def record_token_weekly_review(request: TokenWeeklyReviewRequest):
+        state.token_lab_events.record_weekly_review(
+            request.reviewed_at,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        return {"reviewed_at": request.reviewed_at}
+
+    @app.websocket("/api/pilot-hosts/{pilot_host_id}/stream")
+    async def pilot_stream(websocket: WebSocket, pilot_host_id: str):
+        if websocket.headers.get("authorization") != f"Bearer {state.api_bearer_token}":
+            await websocket.close(code=4401)
+            return
+        await websocket.accept()
+        connected = False
+        cursor = 0
+        try:
+            hello = await websocket.receive_json()
+            identity = DeviceIdentity.model_validate(hello["identity"])
+            if identity.pilot_host_id != pilot_host_id:
+                raise InvariantViolation("PilotHost identity mismatch")
+            cursor = int(hello["acknowledged_cursor"])
+            state.pilot_hosts.connect(
+                identity=identity,
+                acknowledged_cursor=cursor,
+                connected_at=datetime.fromisoformat(hello["connected_at"]),
+            )
+            connected = True
+            while True:
+                ledger_events = state.kernel.ledger.page(cursor, 100)
+                await websocket.send_json(
+                    {
+                        "events": [
+                            item.model_dump(mode="json") for item in ledger_events
+                        ],
+                        "cursor": ledger_events[-1].cursor if ledger_events else cursor,
+                    }
+                )
+                message = await websocket.receive_json()
+                if message.get("kind") not in ("ack", "tail"):
+                    raise InvariantViolation(
+                        "PilotHost stream accepts only ack or tail"
+                    )
+                if message.get("kind") == "ack":
+                    cursor = int(message["cursor"])
+                    state.pilot_hosts.acknowledge(pilot_host_id, cursor)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            if connected:
+                host = state.pilot_hosts.hosts.get(pilot_host_id)
+                if host is not None and host.state is PilotHostState.CONNECTED:
+                    state.pilot_hosts.disconnect(
+                        pilot_host_id,
+                        disconnected_at=datetime.now(UTC),
+                        idempotency_key=f"pilot-disconnect:{pilot_host_id}:{cursor}",
+                    )
+
+    return app
