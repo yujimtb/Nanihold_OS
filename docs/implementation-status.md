@@ -1,6 +1,6 @@
 # Implementation status
 
-基準日: 2026-07-19
+基準日: 2026-07-20
 
 ## 実装済み
 
@@ -43,4 +43,13 @@ legacy scan:
 - manifest SHA-256 `4fedffaab3ddff9c00267e64369ab051e1c484d202832451f3b0363d012af5d3`
 - 15 sourceの所有先が未確定のため、仕様どおりdry-run/importは停止
 
-production traffic の 50%/70% token 削減率は未測定であり、合格扱いにしません。commit、integration merge、remote pushは独立gate後に記録します。
+production traffic の 50%/70% token 削減率は未測定であり、合格扱いにしません。
+
+## 統合状況
+
+- Nanihold feature commit: `0883d7c`
+- Nanihold `main` integration merge: `0b97968`
+- LETHE feature commit: `b66ceae`
+- LETHE `master` integration merge: `046464d`
+- 2026-07-20、独立gate通過後に両integration branchの公開remote pushを確認
+- production deploy: 対象外、未実施
