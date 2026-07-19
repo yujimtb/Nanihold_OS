@@ -55,9 +55,7 @@ def test_local_pilot_host_uses_empty_strict_mcp_and_reports_exact_usage(
             "duration_ms": 100,
             "structured_output": {
                 "display_text": "確認",
-                "work_directives": [],
-                "decisions": [],
-                "commitment_updates": [],
+                "actions": [],
             },
             "session_id": "provider-session",
         }

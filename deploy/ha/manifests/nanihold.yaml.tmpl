@@ -1,0 +1,248 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nanihold-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nanihold
+  namespace: nanihold-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nanihold
+  template:
+    metadata:
+      labels:
+        app: nanihold
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: nanihold
+      containers:
+        - name: nanihold
+          image: "@@NANIHOLD_IMAGE@@"
+          imagePullPolicy: IfNotPresent
+          args: ["vsm", "serve", "--config", "/etc/nanihold/nanihold.toml"]
+          env:
+            - name: LETHE_BASE_URL
+              value: "https://@@LETHE_VIP@@"
+            - name: LETHE_DATA_SPACE_ID
+              value: "@@LETHE_DATA_SPACE_ID@@"
+            - name: NANIHOLD_API_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: nanihold-runtime
+                  key: api-bearer-token
+            - name: LETHE_HISTORY_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: nanihold-runtime
+                  key: lethe-history-bearer-token
+          ports:
+            - name: https
+              containerPort: 8443
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /health/ready
+              port: https
+            periodSeconds: 2
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /health/live
+              port: https
+            periodSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nanihold
+  namespace: nanihold-system
+  annotations:
+    kube-vip.io/loadbalancerIPs: "@@NANIHOLD_VIP@@"
+spec:
+  type: LoadBalancer
+  loadBalancerIP: "@@NANIHOLD_VIP@@"
+  externalTrafficPolicy: Cluster
+  selector:
+    app: nanihold
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nanihold
+  namespace: nanihold-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: nanihold
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pilot-host-a
+  namespace: nanihold-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pilot-host
+      instance: a
+  template:
+    metadata:
+      labels:
+        app: pilot-host
+        instance: a
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: nh-control-a
+      containers:
+        - name: pilot-host
+          image: "@@PILOT_HOST_IMAGE@@"
+          imagePullPolicy: IfNotPresent
+          args:
+            - python
+            - /app/scripts/production_pilot_host.py
+            - --config
+            - /etc/nanihold-pilot/config.json
+            - --log-file
+            - /var/log/nanihold-pilot/events.jsonl
+          envFrom:
+            - secretRef:
+                name: pilot-host-runtime
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nanihold-pilot
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/nanihold-pilot
+      volumes:
+        - name: config
+          configMap:
+            name: pilot-host-a
+        - name: state
+          persistentVolumeClaim:
+            claimName: pilot-host-a
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pilot-host-b
+  namespace: nanihold-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pilot-host
+      instance: b
+  template:
+    metadata:
+      labels:
+        app: pilot-host
+        instance: b
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: nh-control-b
+      containers:
+        - name: pilot-host
+          image: "@@PILOT_HOST_IMAGE@@"
+          imagePullPolicy: IfNotPresent
+          args:
+            - python
+            - /app/scripts/production_pilot_host.py
+            - --config
+            - /etc/nanihold-pilot/config.json
+            - --log-file
+            - /var/log/nanihold-pilot/events.jsonl
+          envFrom:
+            - secretRef:
+                name: pilot-host-runtime
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nanihold-pilot
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/nanihold-pilot
+      volumes:
+        - name: config
+          configMap:
+            name: pilot-host-b
+        - name: state
+          persistentVolumeClaim:
+            claimName: pilot-host-b
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pilot-host-a
+  namespace: nanihold-system
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 16Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pilot-host-b
+  namespace: nanihold-system
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 16Gi
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nanihold-default-deny
+  namespace: nanihold-system
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nanihold-allow-same-namespace
+  namespace: nanihold-system
+spec:
+  podSelector: {}
+  ingress:
+    - from:
+        - podSelector: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nanihold-allow-owner-network
+  namespace: nanihold-system
+spec:
+  podSelector:
+    matchLabels:
+      app: nanihold
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 172.31.100.0/24
+      ports:
+        - protocol: TCP
+          port: 8443

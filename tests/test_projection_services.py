@@ -126,12 +126,6 @@ def test_projection_rebuilds_routing_and_token_lab_services(system):
         control_policy=kernel.control_policy,
         clock=kernel.clock,
     )
-    rebuilt_interface = InterfaceService(
-        kernel=rebuilt_kernel,
-        ledger=ledger,
-        pilot=pilot,
-        clock=kernel.clock,
-    )
     rebuilt_router = make_router(candidate)
     rebuilt_routing = RoutingEvidenceService(
         router=rebuilt_router,
@@ -144,6 +138,13 @@ def test_projection_rebuilds_routing_and_token_lab_services(system):
         lab=rebuilt_lab,
         ledger=ledger,
         data_space_id=SPACE_ID,
+        clock=kernel.clock,
+    )
+    rebuilt_interface = InterfaceService(
+        kernel=rebuilt_kernel,
+        ledger=ledger,
+        pilot=pilot,
+        token_lab_events=rebuilt_lab_events,
         clock=kernel.clock,
     )
     projection = OperationalProjection(

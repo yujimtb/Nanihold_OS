@@ -6,7 +6,10 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from vsm.errors import InvariantViolation, ReconciliationRequired
-from vsm.ids import new_id
+from vsm.activation.service import ActivationService
+from vsm.activation.models import ActivationState, CurrentWorkGraphSnapshot
+from vsm.auth import OwnerBootstrapService
+from vsm.ids import deterministic_event_id
 from vsm.kernel.ledger import OperationalLedger
 from vsm.kernel.models import (
     AuditPolicy,
@@ -16,6 +19,7 @@ from vsm.kernel.models import (
     ControlPolicy,
     DataSpace,
     EffectLease,
+    EffectApproval,
     EffectLeaseState,
     EventEnvelope,
     Execution,
@@ -54,12 +58,29 @@ class Kernel:
         self.audit_policy = audit_policy
         self.control_policy = control_policy
         self.clock = clock
+        self.activation = ActivationService(
+            data_space_id=data_space.data_space_id,
+            ledger=ledger,
+            clock=clock,
+        )
+        self.owner_bootstrap = OwnerBootstrapService(
+            data_space_id=data_space.data_space_id,
+            owner_id=data_space.owner_id,
+            ledger=ledger,
+            clock=clock,
+            activation_state=lambda: self.activation.state,
+            owner_node_exists=lambda: any(
+                node.owner_id == data_space.owner_id and node.kind == "interface"
+                for node in self.nodes.values()
+            ),
+        )
         self.nodes: dict[str, UVSMNode] = {}
         self.work_items: dict[str, WorkItem] = {}
         self.work_edges: list[WorkEdge] = []
         self.executions: dict[str, Execution] = {}
         self.capability_grants: dict[str, CapabilityGrant] = {}
         self.effect_leases: dict[str, EffectLease] = {}
+        self.effect_approvals: dict[str, EffectApproval] = {}
         self.reference_grants: dict[str, ReferenceGrant] = {}
         self.budget_reservations: dict[str, BudgetReservation] = {}
         self.findings: dict[str, S3StarFinding] = {}
@@ -80,7 +101,11 @@ class Kernel:
     ) -> EventEnvelope:
         expected = self._versions.get(stream_id, 0)
         event = EventEnvelope(
-            event_id=new_id("event"),
+            event_id=deterministic_event_id(
+                data_space_id=self.data_space.data_space_id,
+                stream_id=stream_id,
+                idempotency_key=idempotency_key,
+            ),
             data_space_id=self.data_space.data_space_id,
             stream_id=stream_id,
             stream_version=expected + 1,
@@ -258,9 +283,198 @@ class Kernel:
         self.work_edges.append(edge)
         return event
 
+    def import_current_work_graph(
+        self,
+        snapshot: CurrentWorkGraphSnapshot,
+        *,
+        actor_id: str,
+        idempotency_key: str,
+    ) -> EventEnvelope:
+        if self.activation.work_graph_snapshot_id is not None:
+            if self.activation.work_graph_snapshot_id == snapshot.snapshot_id:
+                events = self.ledger.stream(snapshot.snapshot_id, 0, 1)
+                if not events:
+                    raise InvariantViolation(
+                        "imported Work Graph event cannot be reconciled"
+                    )
+                stored = CurrentWorkGraphSnapshot.model_validate(
+                    events[0].event.payload["snapshot"]
+                )
+                if stored != snapshot:
+                    raise InvariantViolation(
+                        "Work Graph snapshot identity collision"
+                    )
+                return events[0].event
+            raise InvariantViolation("current Work Graph was already imported")
+        if self.activation.state is not ActivationState.UNCOMMISSIONED:
+            raise InvariantViolation(
+                "current Work Graph import requires uncommissioned state"
+            )
+        if snapshot.data_space_id != self.data_space.data_space_id:
+            raise InvariantViolation("Work Graph snapshot DataSpace mismatch")
+        if snapshot.calculated_sha256() != snapshot.snapshot_sha256:
+            raise InvariantViolation("Work Graph snapshot digest mismatch")
+        nodes = {item.node_id: item for item in snapshot.nodes}
+        nodes.update(self.nodes)
+        if any(
+            node.data_space_id != self.data_space.data_space_id
+            for node in snapshot.nodes
+        ):
+            raise InvariantViolation("Work Graph snapshot Node DataSpace mismatch")
+        if any(
+            node_id in self.nodes and self.nodes[node_id] != node
+            for node_id, node in {
+                item.node_id: item for item in snapshot.nodes
+            }.items()
+        ):
+            raise InvariantViolation("Work Graph snapshot Node identity collision")
+        work_items = {item.work_item_id: item for item in snapshot.work_items}
+        if set(work_items) & set(self.work_items):
+            raise InvariantViolation("Work Graph snapshot WorkItem identity collision")
+        for work in snapshot.work_items:
+            if work.data_space_id != self.data_space.data_space_id:
+                raise InvariantViolation(
+                    "Work Graph snapshot WorkItem DataSpace mismatch"
+                )
+            if any(
+                node_id not in nodes
+                for node_id in (
+                    work.owner_node_id,
+                    work.delegated_to_node_id,
+                    work.integration_owner_node_id,
+                )
+            ):
+                raise InvariantViolation(
+                    "Work Graph snapshot WorkItem references an unknown Node"
+                )
+            if (
+                work.parent_work_item_id is not None
+                and work.parent_work_item_id not in work_items
+            ):
+                raise InvariantViolation(
+                    "Work Graph snapshot WorkItem parent is missing"
+                )
+        if any(
+            edge.source_work_item_id not in work_items
+            or edge.target_work_item_id not in work_items
+            for edge in snapshot.edges
+        ):
+            raise InvariantViolation(
+                "Work Graph snapshot edge references an unknown WorkItem"
+            )
+        event = self._record(
+            stream_id=snapshot.snapshot_id,
+            event_type="current_work_graph_imported",
+            payload={
+                "snapshot": snapshot.model_dump(mode="json"),
+            },
+            actor_type="human",
+            actor_id=actor_id,
+            idempotency_key=idempotency_key,
+            correlation_id=snapshot.snapshot_id,
+        )
+        self.nodes.update(
+            {item.node_id: item for item in snapshot.nodes}
+        )
+        self.work_items.update(work_items)
+        self.work_edges.extend(snapshot.edges)
+        self.activation.work_graph_snapshot_id = snapshot.snapshot_id
+        return event
+
+    def delegate_work_item(
+        self,
+        work_item_id: str,
+        *,
+        delegated_to_node_id: str,
+        actor_id: str,
+        idempotency_key: str,
+    ) -> EventEnvelope:
+        work = self.work_items.get(work_item_id)
+        if work is None:
+            raise InvariantViolation("WorkItem not found")
+        if delegated_to_node_id not in self.nodes:
+            raise InvariantViolation("delegated UVSMNode not found")
+        if work.state not in (WorkState.PROPOSED, WorkState.READY):
+            raise InvariantViolation("only proposed or ready WorkItem can be delegated")
+        if any(execution.work_item_id == work_item_id for execution in self.executions.values()):
+            raise InvariantViolation("WorkItem with Executions cannot be redelegated")
+        updated = work.model_copy(
+            update={
+                "delegated_to_node_id": delegated_to_node_id,
+                "state": WorkState.READY,
+            }
+        )
+        event = self._record(
+            stream_id=work_item_id,
+            event_type="work_item_delegated",
+            payload={"delegated_to_node_id": delegated_to_node_id},
+            actor_type="human",
+            actor_id=actor_id,
+            idempotency_key=idempotency_key,
+            correlation_id=work_item_id,
+        )
+        self.work_items[work_item_id] = updated
+        return event
+
+    def prepare_owner_confirmed_resume(
+        self,
+        work_item_id: str,
+        *,
+        actor_id: str,
+        idempotency_key: str,
+    ) -> EventEnvelope:
+        work = self.validate_owner_confirmed_resume(work_item_id)
+        event = self._record(
+            stream_id=work_item_id,
+            event_type="work_item_resume_prepared",
+            payload={"state": WorkState.READY},
+            actor_type="human",
+            actor_id=actor_id,
+            idempotency_key=idempotency_key,
+            correlation_id=work_item_id,
+        )
+        self.work_items[work_item_id] = work.model_copy(
+            update={"state": WorkState.READY}
+        )
+        return event
+
+    def validate_owner_confirmed_resume(self, work_item_id: str) -> WorkItem:
+        """Validate a proposed resume without appending an Event or mutating state."""
+        if self.activation.state.value != "AWAITING_OWNER_CONFIRMATION":
+            raise InvariantViolation(
+                "resume preparation requires awaiting owner confirmation"
+            )
+        assessment = self.activation.assessment
+        if (
+            assessment is None
+            or work_item_id not in assessment.resume_work_item_ids
+        ):
+            raise InvariantViolation(
+                "only assessed resume WorkItems may be prepared"
+            )
+        work = self.work_items.get(work_item_id)
+        if work is None:
+            raise InvariantViolation("resume WorkItem not found")
+        if work.blocking_s3_star_finding_ids:
+            raise InvariantViolation(
+                "blocking S3* finding prevents WorkItem resume"
+            )
+        if work.state not in (
+            WorkState.PROPOSED,
+            WorkState.READY,
+            WorkState.PAUSED,
+        ):
+            raise InvariantViolation(
+                "WorkItem state cannot be resumed after owner confirmation"
+            )
+        if work.delegated_to_node_id not in self.nodes:
+            raise InvariantViolation("resume WorkItem delegated Node not found")
+        return work
+
     def create_execution(
         self, execution: Execution, *, actor_id: str, idempotency_key: str
     ) -> EventEnvelope:
+        self.activation.require_active("Execution creation")
         if execution.data_space_id != self.data_space.data_space_id:
             raise InvariantViolation("Execution DataSpace mismatch")
         if execution.state not in (
@@ -307,6 +521,8 @@ class Kernel:
         allowed = {
             ExecutionState.REQUESTED: {
                 ExecutionState.ACTIVE,
+                ExecutionState.PAUSED,
+                ExecutionState.FAILED,
                 ExecutionState.CANCELLED,
             },
             ExecutionState.ACTIVE: {
@@ -345,6 +561,80 @@ class Kernel:
         self.executions[execution_id] = updated
         return event
 
+    def record_pilot_execution_receipt(
+        self,
+        execution_id: str,
+        *,
+        receipt_id: str,
+        receipt_status: str,
+        requested_model: str,
+        actual_model: str | None,
+        provider_session_id: str | None,
+        usage: dict[str, object] | None,
+        result: dict[str, object] | None,
+        error: dict[str, str] | None,
+        actor_id: str,
+        idempotency_key: str,
+    ) -> EventEnvelope:
+        execution = self.executions.get(execution_id)
+        if execution is None or execution.state is not ExecutionState.REQUESTED:
+            raise InvariantViolation(
+                "PilotHost receipt requires a requested Execution"
+            )
+        if receipt_status == "succeeded":
+            if (
+                actual_model is None
+                or provider_session_id is None
+                or usage is None
+                or result is None
+                or error is not None
+            ):
+                raise InvariantViolation("succeeded PilotHost receipt is incomplete")
+            next_state = ExecutionState.SUCCEEDED
+            pause_reason = None
+        elif receipt_status == "failed":
+            if result is not None or error is None:
+                raise InvariantViolation("failed PilotHost receipt is inconsistent")
+            next_state = ExecutionState.FAILED
+            pause_reason = None
+        elif receipt_status == "transport_unknown":
+            if result is not None or error is None:
+                raise InvariantViolation(
+                    "transport_unknown PilotHost receipt is inconsistent"
+                )
+            next_state = ExecutionState.PAUSED
+            pause_reason = "pilot_receipt_reconciliation_required"
+        else:
+            raise InvariantViolation("PilotHost receipt must be terminal")
+        event = self._record(
+            stream_id=execution_id,
+            event_type="pilot_execution_receipt_recorded",
+            payload={
+                "receipt_id": receipt_id,
+                "receipt_status": receipt_status,
+                "requested_model": requested_model,
+                "actual_model": actual_model,
+                "provider_session_id": provider_session_id,
+                "usage": usage,
+                "result": result,
+                "error": error,
+                "state": next_state,
+                "pause_reason": pause_reason,
+            },
+            actor_type="pilot",
+            actor_id=actor_id,
+            idempotency_key=idempotency_key,
+            correlation_id=execution.work_item_id,
+        )
+        self.executions[execution_id] = execution.model_copy(
+            update={
+                "state": next_state,
+                "provider_session_id": provider_session_id,
+                "pause_reason": pause_reason,
+            }
+        )
+        return event
+
     def reserve_budget(
         self,
         reservation: BudgetReservation,
@@ -371,6 +661,7 @@ class Kernel:
     def plan_effect(
         self, lease: EffectLease, *, actor_id: str, idempotency_key: str
     ) -> EventEnvelope:
+        self.activation.require_active("Effect planning")
         if lease.data_space_id != self.data_space.data_space_id:
             raise InvariantViolation("EffectLease DataSpace mismatch")
         if lease.state is not EffectLeaseState.PLANNED:
@@ -398,14 +689,43 @@ class Kernel:
         self.effect_leases[lease.lease_id] = lease
         return event
 
+    def approve_effect(
+        self, lease_id: str, *, actor_id: str, idempotency_key: str
+    ) -> EventEnvelope:
+        self.activation.require_active("Effect approval")
+        lease = self.effect_leases.get(lease_id)
+        if lease is None or lease.state is not EffectLeaseState.PLANNED:
+            raise InvariantViolation("only a planned EffectLease can be approved")
+        if lease_id in self.effect_approvals:
+            raise InvariantViolation("EffectLease is already approved")
+        approval = EffectApproval(
+            lease_id=lease_id,
+            approved_by=actor_id,
+            approved_at=self.clock(),
+        )
+        event = self._record(
+            stream_id=lease_id,
+            event_type="effect_approved",
+            payload={"approval": self._json(approval)},
+            actor_type="human",
+            actor_id=actor_id,
+            idempotency_key=idempotency_key,
+            correlation_id=lease.work_item_id,
+        )
+        self.effect_approvals[lease_id] = approval
+        return event
+
     def activate_effect(
         self, lease_id: str, *, actor_id: str, idempotency_key: str
     ) -> EventEnvelope:
+        self.activation.require_active("Effect activation")
         lease = self.effect_leases.get(lease_id)
         if lease is None or lease.state is not EffectLeaseState.PLANNED:
             raise InvariantViolation("only a LETHE-confirmed planned effect can activate")
         if lease.expires_at <= self.clock():
             raise InvariantViolation("expired EffectLease cannot activate")
+        if lease_id not in self.effect_approvals:
+            raise InvariantViolation("EffectLease requires explicit owner approval")
         event = self._record(
             stream_id=lease_id,
             event_type="effect_activated",

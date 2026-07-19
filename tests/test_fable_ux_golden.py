@@ -4,10 +4,16 @@ import json
 from pathlib import Path
 
 from conftest import INTERFACE_NODE_ID, OWNER_ID, SPACE_ID
-from vsm.interface.models import Conversation
+from vsm.interface.models import (
+    Conversation,
+    MessageSource,
+    OwnerMessageAction,
+    SurfaceBinding,
+)
 from vsm.interface.service import InterfaceService
 from vsm.kernel.service import Kernel
 from vsm.projection import OperationalProjection
+from vsm.token_lab.lab import TokenEfficiencyLab, TokenLabEventService
 
 
 GOLDEN = Path(__file__).parent / "fixtures" / "fable-owner-ux-golden-119.json"
@@ -25,9 +31,15 @@ def test_all_119_historical_owner_inputs_keep_the_continuous_interface_contract(
             data_space_id=SPACE_ID,
             interface_node_id=INTERFACE_NODE_ID,
             owner_id=OWNER_ID,
-            provider_session_id=None,
-            last_event_cursor=0,
-            status="active",
+            title="Golden",
+        ),
+        SurfaceBinding(
+            binding_id="binding:golden",
+            conversation_id="conversation:golden",
+            surface="web",
+            source_session_id="golden",
+            channel_id="owner",
+            device_id="device:test",
         ),
         idempotency_key="golden:conversation",
     )
@@ -35,17 +47,29 @@ def test_all_119_historical_owner_inputs_keep_the_continuous_interface_contract(
     passed = 0
     for case in manifest["cases"]:
         before = pilot.calls
-        response = interface.turn(
+        receipt = interface.perform_owner_action(
             conversation_id="conversation:golden",
-            owner_text=f"<owner-message sha256={case['text_sha256']}>",
-            idempotency_key=case["case_id"],
-            force_new_pilot=False,
+            action=OwnerMessageAction(
+                action_id=f"action:{case['case_id'].split(':', 1)[-1]}",
+                idempotency_key=case["case_id"],
+                kind="owner_message",
+                text=f"<owner-message sha256={case['text_sha256']}>",
+                source=MessageSource(
+                    surface="web",
+                    source_session_id="golden",
+                    source_message_id=case["case_id"],
+                    author_id=OWNER_ID,
+                    channel_id="owner",
+                    occurred_at=kernel.clock(),
+                ),
+            ),
+            device_id="device:test",
         )
         context = pilot.contexts[-1]
         if all(
             (
                 pilot.calls == before + 1,
-                response.provider_session_id == "provider-session",
+                receipt.status == "completed",
                 not hasattr(context, "full_history"),
                 context.owner_message_blob_ref.startswith("blob:sha256:"),
                 context.event_delta.event_count >= 1,
@@ -75,18 +99,26 @@ def test_all_119_historical_owner_inputs_keep_the_continuous_interface_contract(
         control_policy=kernel.control_policy,
         clock=kernel.clock,
     )
+    rebuilt_lab_events = TokenLabEventService(
+        lab=TokenEfficiencyLab(),
+        ledger=ledger,
+        data_space_id=SPACE_ID,
+        clock=kernel.clock,
+    )
     rebuilt_interface = InterfaceService(
         kernel=rebuilt_kernel,
         ledger=ledger,
         pilot=pilot,
+        token_lab_events=rebuilt_lab_events,
         clock=kernel.clock,
     )
     projection = OperationalProjection(
-        kernel=rebuilt_kernel, interface=rebuilt_interface
+        kernel=rebuilt_kernel,
+        interface=rebuilt_interface,
+        token_lab_events=rebuilt_lab_events,
     )
     projection.rebuild(page_size=17)
     assert len(rebuilt_interface.messages["conversation:golden"]) == 238
-    assert (
-        rebuilt_interface.conversations["conversation:golden"].provider_session_id
-        == "provider-session"
+    assert next(iter(rebuilt_interface.pilot_sessions.values())).provider_session_id == (
+        "provider-session"
     )

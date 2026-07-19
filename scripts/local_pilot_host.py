@@ -16,15 +16,11 @@ STRUCTURED_RESPONSE_SCHEMA = {
     "additionalProperties": False,
     "properties": {
         "display_text": {"type": "string", "minLength": 1},
-        "work_directives": {"type": "array", "items": {"type": "object"}},
-        "decisions": {"type": "array", "items": {"type": "object"}},
-        "commitment_updates": {"type": "array", "items": {"type": "object"}},
+        "actions": {"type": "array", "items": {"type": "object"}},
     },
     "required": [
         "display_text",
-        "work_directives",
-        "decisions",
-        "commitment_updates",
+        "actions",
     ],
 }
 
@@ -155,8 +151,7 @@ class PilotHost:
                     "You are the Interface Pilot for a local Nanihold verification. "
                     "Answer the owner in Japanese. Return the requested structured "
                     "object in one pass. Do not claim to execute work or side effects. "
-                    "work_directives may describe proposed work only. decisions and "
-                    "commitment_updates must use objects with explicit fields."
+                    "actions may describe proposed typed InterfaceAction values only."
                 ),
                 "owner_text": owner_text,
                 "context": context,
@@ -243,6 +238,16 @@ class PilotHost:
         if not isinstance(duration_ms, int) or duration_ms < 0:
             raise RuntimeError("Claude Code duration_ms is missing or invalid")
         pilot_usage["duration_ms"] = duration_ms
+        pilot_usage.update(
+            {
+                "classifier_triggered": False,
+                "model_substitution": False,
+                "full_history_resent": False,
+                "polling_call": False,
+                "false_complete": False,
+                "reedited_tokens": 0,
+            }
+        )
         structured = outer.get("structured_output")
         if not isinstance(structured, dict):
             raise RuntimeError("Claude Code structured_output is missing")

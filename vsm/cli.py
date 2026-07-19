@@ -10,7 +10,7 @@ import typer
 
 from vsm.errors import ConfigurationError, InvariantViolation
 from vsm.config import load_config
-from vsm.interface.models import Conversation
+from vsm.interface.models import Conversation, SurfaceBinding
 from vsm.migration.legacy import (
     MigrationPlan,
     archive_legacy,
@@ -19,6 +19,7 @@ from vsm.migration.legacy import (
     scan_legacy,
 )
 from vsm.runtime import bootstrap, build_app
+from vsm.tui import load_operational_snapshot, render_dashboard
 from vsm.kernel.models import (
     NodeKind,
     NodeStatus,
@@ -39,10 +40,32 @@ routes_app = typer.Typer(help="Commission and inspect approved Bayesian routes."
 verification_app = typer.Typer(
     help="Commission the isolated local verification environment."
 )
+fable_app = typer.Typer(help="Start and confirm Fable's owner-gated activation.")
 app.add_typer(events_app, name="events")
 app.add_typer(migration_app, name="migration")
 app.add_typer(routes_app, name="routes")
 app.add_typer(verification_app, name="verification")
+app.add_typer(fable_app, name="fable")
+
+
+@app.command("owner-bootstrap")
+def owner_bootstrap(
+    config: Path = typer.Option(..., exists=True, dir_okay=False, readable=True),
+    base_url: str = typer.Option(..., min=1),
+    lifetime_seconds: int = typer.Option(..., min=1, max=900),
+    idempotency_key: str = typer.Option(..., min=1),
+) -> None:
+    """Issue a one-time, short-lived owner bootstrap link."""
+    runtime = bootstrap(config, require_active_route=False)
+    try:
+        grant = runtime.kernel.owner_bootstrap.issue(
+            base_url=base_url,
+            lifetime_seconds=lifetime_seconds,
+            idempotency_key=idempotency_key,
+        )
+        _json(grant)
+    finally:
+        runtime.close()
 
 
 class InspectResource(StrEnum):
@@ -206,9 +229,15 @@ def verification_commission(
             data_space_id=data_space.data_space_id,
             interface_node_id=node.node_id,
             owner_id=data_space.owner_id,
-            provider_session_id=None,
-            last_event_cursor=0,
-            status="active",
+            title="Local verification",
+        )
+        surface_binding = SurfaceBinding(
+            binding_id="binding:local-verification",
+            conversation_id=conversation.conversation_id,
+            surface="discord",
+            source_session_id="local-verification",
+            channel_id="local-verification",
+            device_id="device:owner-local",
         )
         stored_conversation = runtime.interface.conversations.get(
             conversation.conversation_id
@@ -216,16 +245,11 @@ def verification_commission(
         if stored_conversation is None:
             runtime.interface.create_conversation(
                 conversation,
+                surface_binding,
                 idempotency_key="local-verification:conversation",
             )
         else:
-            immutable_existing = stored_conversation.model_copy(
-                update={
-                    "provider_session_id": None,
-                    "last_event_cursor": 0,
-                }
-            )
-            if immutable_existing != conversation:
+            if stored_conversation != conversation:
                 raise InvariantViolation(
                     "existing local Conversation differs from commissioning contract"
                 )
@@ -341,6 +365,7 @@ def inspect_control_plane(
     resource: InspectResource = typer.Argument(...),
     base_url: str = typer.Option(..., min=1),
     bearer_token_env: str = typer.Option(..., min=1),
+    device_id: str = typer.Option(..., min=1),
     after_cursor: int = typer.Option(0, min=0),
     limit: int = typer.Option(250, min=1, max=1000),
 ) -> None:
@@ -356,10 +381,153 @@ def inspect_control_plane(
         params = {"after_cursor": after_cursor, "limit": limit}
     with httpx.Client(
         base_url=base_url.rstrip("/"),
-        headers={"Authorization": f"Bearer {token}"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Nanihold-Device-Id": device_id,
+        },
         timeout=30.0,
     ) as client:
         response = client.get(path, params=params)
+    if not response.is_success:
+        raise InvariantViolation(
+            f"Nanihold API HTTP {response.status_code}: {response.text}"
+        )
+    _json(response.json())
+
+
+@app.command("tui")
+def tui_dashboard(
+    base_url: str = typer.Option(..., min=1),
+    bearer_token_env: str = typer.Option(..., min=1),
+    device_id: str = typer.Option(..., min=1),
+    width: int = typer.Option(88, min=60, max=240),
+) -> None:
+    """Render live model-free owner projections in a terminal."""
+    token = os.environ.get(bearer_token_env)
+    if token is None or not token.strip():
+        raise ConfigurationError(
+            f"required environment variable is missing: {bearer_token_env}"
+        )
+    with httpx.Client(
+        base_url=base_url.rstrip("/"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Nanihold-Device-Id": device_id,
+        },
+        timeout=30.0,
+    ) as client:
+        snapshot = load_operational_snapshot(client)
+    typer.echo(render_dashboard(snapshot, width=width), nl=False)
+
+
+def _owner_api_client(
+    *, base_url: str, bearer_token_env: str, device_id: str
+) -> httpx.Client:
+    token = os.environ.get(bearer_token_env)
+    if token is None or not token.strip():
+        raise ConfigurationError(
+            f"required environment variable is missing: {bearer_token_env}"
+        )
+    return httpx.Client(
+        base_url=base_url.rstrip("/"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Nanihold-Device-Id": device_id,
+        },
+        timeout=30.0,
+    )
+
+
+def _owner_id(client: httpx.Client) -> str:
+    response = client.get("/api/data-spaces")
+    if not response.is_success:
+        raise InvariantViolation(
+            f"Nanihold API HTTP {response.status_code}: {response.text}"
+        )
+    spaces = response.json()
+    if (
+        not isinstance(spaces, list)
+        or len(spaces) != 1
+        or not isinstance(spaces[0], dict)
+        or not isinstance(spaces[0].get("owner_id"), str)
+        or not spaces[0]["owner_id"]
+    ):
+        raise InvariantViolation("owner DataSpace projection is not exact")
+    return spaces[0]["owner_id"]
+
+
+@fable_app.command("catch-up")
+def fable_catch_up(
+    base_url: str = typer.Option(..., min=1),
+    bearer_token_env: str = typer.Option(..., min=1),
+    device_id: str = typer.Option(..., min=1),
+    idempotency_key: str = typer.Option(..., min=1),
+) -> None:
+    """Start or explicitly retry the bounded history reorientation."""
+    with _owner_api_client(
+        base_url=base_url,
+        bearer_token_env=bearer_token_env,
+        device_id=device_id,
+    ) as client:
+        response = client.post(
+            "/api/reorientation/start",
+            json={
+                "actor_id": _owner_id(client),
+                "idempotency_key": idempotency_key,
+            },
+        )
+    if not response.is_success:
+        raise InvariantViolation(
+            f"Nanihold API HTTP {response.status_code}: {response.text}"
+        )
+    _json(response.json())
+
+
+@fable_app.command("approve")
+def fable_approve(
+    base_url: str = typer.Option(..., min=1),
+    bearer_token_env: str = typer.Option(..., min=1),
+    device_id: str = typer.Option(..., min=1),
+    idempotency_key: str = typer.Option(..., min=1),
+    correction: list[str] | None = typer.Option(None, "--correction"),
+) -> None:
+    """Confirm the current assessment without asking for internal IDs."""
+    with _owner_api_client(
+        base_url=base_url,
+        bearer_token_env=bearer_token_env,
+        device_id=device_id,
+    ) as client:
+        status_response = client.get("/api/activation/status")
+        if not status_response.is_success:
+            raise InvariantViolation(
+                f"Nanihold API HTTP {status_response.status_code}: "
+                f"{status_response.text}"
+            )
+        status_document = status_response.json()
+        if not isinstance(status_document, dict):
+            raise InvariantViolation("activation status must be a JSON object")
+        assessment = status_document.get("assessment")
+        if (
+            status_document.get("state") != "AWAITING_OWNER_CONFIRMATION"
+            or not isinstance(assessment, dict)
+            or not isinstance(assessment.get("assessment_id"), str)
+            or not assessment["assessment_id"]
+            or not isinstance(assessment.get("conversation_id"), str)
+            or not assessment["conversation_id"]
+        ):
+            raise InvariantViolation(
+                "Fable has no owner-confirmable assessment"
+            )
+        response = client.post(
+            "/api/reorientation/approval",
+            json={
+                "assessment_id": assessment["assessment_id"],
+                "conversation_id": assessment["conversation_id"],
+                "corrections": correction or [],
+                "actor_id": _owner_id(client),
+                "idempotency_key": idempotency_key,
+            },
+        )
     if not response.is_success:
         raise InvariantViolation(
             f"Nanihold API HTTP {response.status_code}: {response.text}"

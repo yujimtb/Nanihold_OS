@@ -41,6 +41,48 @@ vsm migration dry-run \
 
 plan は source manifest digest、import 件数、kind 別件数、ownership assignment を固定します。既存 output の上書きは拒否します。
 
+Intercom、旧Nanihold、現況snapshotは、LETHEの一回限りimportへ渡す前に
+`HistoryRawRecord` JSONLへ変換する。producerはruntimeから参照されず、出力先の
+上書きもしない。
+
+```powershell
+python -m tools.history_source_export intercom `
+  --export-dir C:\cutover\intercom `
+  --require-cutover-ready `
+  --output C:\cutover\history\intercom.jsonl `
+  --report C:\cutover\history\intercom-report.json
+
+python -m tools.history_source_export nanihold-legacy `
+  --source-root C:\cutover\runs `
+  --assignment C:\cutover\ownership.json `
+  --output C:\cutover\history\nanihold-legacy.jsonl `
+  --report C:\cutover\history\nanihold-legacy-report.json
+
+python -m tools.history_source_export system-snapshot `
+  --snapshot C:\cutover\system-snapshot.json `
+  --output C:\cutover\history\system-snapshot.jsonl `
+  --report C:\cutover\history\system-snapshot-report.json
+```
+
+Intercomはmanifestの件数・digest・drain完了を検証する。旧Naniholdは全sourceの
+ownershipが過不足なく割り当てられるまで停止する。system snapshotは
+`captured_at`、`source_instance_id`、`states`だけのsecret-free JSONを要求する。
+各stateは`state_key`、表示用`text`、構造化`value`から成る。本文が同じ短文でも
+source-native IDが異なるrecordは保持し、ID衝突は停止する。
+
+現況snapshot自体は、cutover時刻を固定した明示specから作る。repositoryはHEAD、
+branch、作業ツリー差分を、HTTP endpointは`selected_fields`だけを、設定ファイルは
+本文ではなくbytes・digestだけを保存する。Bearer値は環境変数から読み、snapshotへ
+書かない。WorkItem、Pilot、quota、activation、service healthはそれぞれのread-only
+endpointをspecに列挙する。endpoint失敗やselected field欠落時は不完全なsnapshotを
+作らず停止する。
+
+```powershell
+python -m tools.capture_system_snapshot `
+  --spec C:\cutover\system-snapshot-spec.json `
+  --output C:\cutover\system-snapshot.json
+```
+
 ## 4. Import
 
 ```powershell

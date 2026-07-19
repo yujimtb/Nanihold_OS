@@ -1,0 +1,70 @@
+{
+  "pilot_host_id": "@@PILOT_HOST_ID@@",
+  "device_id": "@@DEVICE_ID@@",
+  "device_certificate_sha256": "@@DEVICE_CERTIFICATE_SHA256@@",
+  "bearer_token_env": "PILOT_HOST_BEARER_TOKEN",
+  "bind_host": "0.0.0.0",
+  "bind_port": 8444,
+  "receipt_store_path": "/var/lib/nanihold-pilot/receipts.sqlite3",
+  "claude": {
+    "candidate": {
+      "adapter": "claude-code",
+      "adapter_version": "@@CLAUDE_CLI_VERSION@@",
+      "provider": "anthropic",
+      "model_snapshot": "claude-fable-5",
+      "effort": "high",
+      "toolset": @@CLAUDE_TYPED_MCP_TOOLSET_JSON@@,
+      "sandbox_fingerprint": "sandbox:@@SANDBOX_CERTIFICATE_SHA256@@",
+      "environment_fingerprint": "@@PILOT_HOST_IMAGE_DIGEST@@"
+    },
+    "executable": "claude",
+    "cli_version": "@@CLAUDE_CLI_VERSION@@",
+    "working_directory": "/workspace",
+    "permission_mode": "sandboxed_bypass",
+    "sandbox_profile_certificate_sha256": "@@SANDBOX_CERTIFICATE_SHA256@@",
+    "mcp": {
+      "allowlist": ["history", "gateway"],
+      "servers": {
+        "history": {
+          "url": "@@LETHE_MCP_URL@@",
+          "bearer_token_env_var": "LETHE_HISTORY_BEARER_TOKEN"
+        },
+        "gateway": {
+          "url": "@@MCP_GATEWAY_URL@@",
+          "bearer_token_env_var": "MCP_GATEWAY_BEARER_TOKEN"
+        }
+      }
+    },
+    "max_budget_usd": @@CLAUDE_MAX_BUDGET_USD@@,
+    "timeout_seconds": @@PILOT_TIMEOUT_SECONDS@@
+  },
+  "codex": {
+    "candidate": {
+      "adapter": "codex-cli",
+      "adapter_version": "@@CODEX_CLI_VERSION@@",
+      "provider": "openai",
+      "model_snapshot": "@@CODEX_MODEL_SNAPSHOT@@",
+      "effort": "xhigh",
+      "toolset": @@CODEX_TYPED_MCP_TOOLSET_JSON@@,
+      "sandbox_fingerprint": "sandbox:workspace-write",
+      "environment_fingerprint": "@@PILOT_HOST_IMAGE_DIGEST@@"
+    },
+    "executable": "codex",
+    "cli_version": "@@CODEX_CLI_VERSION@@",
+    "working_directory_allowlist": ["/workspace"],
+    "sandbox": "workspace-write",
+    "mcp": {
+      "allowlist": ["gateway"],
+      "servers": {
+        "gateway": {
+          "url": "@@MCP_GATEWAY_URL@@",
+          "bearer_token_env_var": "MCP_GATEWAY_BEARER_TOKEN"
+        }
+      }
+    },
+    "max_input_tokens": @@CODEX_MAX_INPUT_TOKENS@@,
+    "max_output_tokens": @@CODEX_MAX_OUTPUT_TOKENS@@,
+    "max_total_tokens": @@CODEX_MAX_TOTAL_TOKENS@@,
+    "timeout_seconds": @@PILOT_TIMEOUT_SECONDS@@
+  }
+}

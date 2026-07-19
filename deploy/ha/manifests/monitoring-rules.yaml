@@ -1,0 +1,39 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: nanihold-ha-gates
+  namespace: monitoring
+spec:
+  groups:
+    - name: nanihold-ha
+      rules:
+        - alert: NaniholdVipUnavailable
+          expr: probe_success{job="nanihold-vip"} != 1
+          for: 30s
+          labels:
+            severity: critical
+        - alert: LetheVipUnavailable
+          expr: probe_success{job="lethe-vip"} != 1
+          for: 30s
+          labels:
+            severity: critical
+        - alert: LethePostgresNotSynchronous
+          expr: cnpg_pg_replication_in_recovery == 0 and cnpg_pg_replication_streaming_replicas < 1
+          for: 15s
+          labels:
+            severity: critical
+        - alert: LetheProjectionBehind
+          expr: lethe_projection_lag_events > 0
+          for: 60s
+          labels:
+            severity: warning
+        - alert: PilotHostTransportUnknown
+          expr: increase(nanihold_pilot_receipts_total{status="transport_unknown"}[5m]) > 0
+          for: 0s
+          labels:
+            severity: critical
+        - alert: NasBackupStale
+          expr: time() - nanihold_backup_last_verified_timestamp_seconds > 86400
+          for: 5m
+          labels:
+            severity: critical

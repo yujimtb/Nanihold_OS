@@ -6,7 +6,15 @@ import pytest
 
 from conftest import INTERFACE_NODE_ID, NOW, OWNER_ID, SPACE_ID
 from vsm.errors import InvariantViolation
-from vsm.interface.models import Conversation
+from vsm.interface.models import (
+    Conversation,
+    CreateWorkItemAction,
+    MessageSource,
+    OwnerMessageAction,
+    SurfaceBinding,
+)
+from vsm.kernel.models import NodeKind, WorkItem, WorkState
+from conftest import make_node
 from vsm.token_lab.lab import (
     TokenBaseline,
     TokenEfficiencyLab,
@@ -22,35 +30,65 @@ def conversation() -> Conversation:
         data_space_id=SPACE_ID,
         interface_node_id=INTERFACE_NODE_ID,
         owner_id=OWNER_ID,
-        provider_session_id=None,
-        last_event_cursor=0,
-        status="active",
+        title="Main",
+    )
+
+
+def binding() -> SurfaceBinding:
+    return SurfaceBinding(
+        binding_id="binding:main",
+        conversation_id="conversation:main",
+        surface="web",
+        source_session_id="web-main",
+        channel_id="owner",
+        device_id="device:test",
+    )
+
+
+def action(suffix: str, text: str) -> OwnerMessageAction:
+    return OwnerMessageAction(
+        action_id=f"action:{suffix}",
+        idempotency_key=f"turn:{suffix}",
+        kind="owner_message",
+        text=text,
+        source=MessageSource(
+            surface="web",
+            source_session_id="web-main",
+            source_message_id=f"source:{suffix}",
+            author_id=OWNER_ID,
+            channel_id="owner",
+            occurred_at=NOW,
+        ),
     )
 
 
 def test_owner_message_is_persisted_first_one_call_and_status_is_model_free(system):
     _, ledger, interface, pilot = system
-    interface.create_conversation(conversation(), idempotency_key="conversation:create")
-    first = interface.turn(
-        conversation_id="conversation:main",
-        owner_text="続けて",
-        idempotency_key="turn:one",
-        force_new_pilot=False,
+    interface.create_conversation(
+        conversation(), binding(), idempotency_key="conversation:create"
     )
-    second = interface.turn(
+    first = interface.perform_owner_action(
         conversation_id="conversation:main",
-        owner_text="そこではなくこちらです",
-        idempotency_key="turn:two",
-        force_new_pilot=False,
+        action=action("one", "続けて"),
+        device_id="device:test",
     )
-    assert first.display_text == "accepted:続けて"
-    assert second.display_text.startswith("accepted:")
+    second = interface.perform_owner_action(
+        conversation_id="conversation:main",
+        action=action("two", "そこではなくこちらです"),
+        device_id="device:test",
+    )
+    assert first.interface_message.display_text == "accepted:続けて"
+    assert second.interface_message.display_text.startswith("accepted:")
     assert pilot.calls == 2
     assert pilot.contexts[0].provider_session_id is None
     assert pilot.contexts[0].resume_pack is not None
     assert pilot.contexts[1].provider_session_id == "provider-session"
     assert pilot.contexts[1].resume_pack is None
-    assert pilot.contexts[1].event_delta.event_count == 1
+    assert pilot.contexts[1].event_delta.event_count == 2
+    assert pilot.contexts[1].event_delta.event_type_counts == {
+        "owner_message_received": 1,
+        "token_observation_recorded": 1,
+    }
     assert all(not hasattr(context, "full_history") for context in pilot.contexts)
     status = interface.status("conversation:main")
     assert status.model_calls == 0
@@ -61,24 +99,82 @@ def test_owner_message_is_persisted_first_one_call_and_status_is_model_free(syst
         if item.event.event_type == "owner_message_received"
     ]
     assert len(owner_events) == 2
+    assert len(interface.token_lab_events.lab.observations) == 2
 
 
 def test_lethe_failure_prevents_interface_pilot_call(system):
     _, ledger, interface, pilot = system
-    interface.create_conversation(conversation(), idempotency_key="conversation:create")
+    interface.create_conversation(
+        conversation(), binding(), idempotency_key="conversation:create"
+    )
 
     def fail(_data):
         raise InvariantViolation("LETHE unavailable")
 
     ledger.put_blob = fail  # type: ignore[method-assign]
     with pytest.raises(InvariantViolation):
-        interface.turn(
+        interface.perform_owner_action(
             conversation_id="conversation:main",
-            owner_text="do not lose this",
-            idempotency_key="turn:failure",
-            force_new_pilot=False,
+            action=action("failure", "do not lose this"),
+            device_id="device:test",
         )
     assert pilot.calls == 0
+
+
+def test_typed_work_directive_materializes_work_item(system):
+    kernel, _, interface, pilot = system
+    worker = make_node("node:directive-worker", name="Worker", kind=NodeKind.UNIT)
+    kernel.register_node(
+        worker, actor_id=OWNER_ID, idempotency_key="node:directive-worker"
+    )
+    item = WorkItem(
+        work_item_id="work:from-interface",
+        data_space_id=SPACE_ID,
+        title="Materialized",
+        description="Created from one Fable response.",
+        owner_node_id=INTERFACE_NODE_ID,
+        delegated_to_node_id=worker.node_id,
+        integration_owner_node_id=INTERFACE_NODE_ID,
+        parent_work_item_id=None,
+        acceptance_criteria=("exists",),
+        route_key="coding_s1",
+        state=WorkState.READY,
+        blocking_s3_star_finding_ids=(),
+        completion_evidence=None,
+    )
+    pilot.actions = (
+        CreateWorkItemAction(
+            action_id="interface-action:create-work",
+            kind="work_item.create",
+            work_item=item,
+            depends_on_work_item_ids=(),
+        ),
+    )
+    interface.create_conversation(
+        conversation(), binding(), idempotency_key="directive:conversation"
+    )
+    receipt = interface.perform_owner_action(
+        conversation_id="conversation:main",
+        action=action("directive", "実装してください"),
+        device_id="device:test",
+    )
+    assert receipt.status == "completed"
+    assert kernel.work_items[item.work_item_id] == item
+
+
+def test_interface_usage_automatically_records_classifier_incident(system):
+    _, _, interface, pilot = system
+    pilot.classifier_triggered = True
+    interface.create_conversation(
+        conversation(), binding(), idempotency_key="classifier:conversation"
+    )
+    interface.perform_owner_action(
+        conversation_id="conversation:main",
+        action=action("classifier", "確認"),
+        device_id="device:test",
+    )
+    observation = interface.token_lab_events.lab.observations[-1]
+    assert TokenIncidentKind.PERMISSION_CLASSIFIER in observation.incident_kinds
 
 
 def observation(index: int, tokens: int, incidents=()):

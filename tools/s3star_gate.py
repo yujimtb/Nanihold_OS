@@ -28,7 +28,6 @@ def main() -> None:
     tracked = tracked_files()
     forbidden_prefixes = (
         "bot/",
-        "deploy/",
         "openspec/changes/",
         "vsm/agents/",
         "vsm/eventlog/",
@@ -73,17 +72,40 @@ def main() -> None:
         "/api/model-registry",
         "/api/route-snapshots",
         "/api/token-lab",
+        "/api/history/imports",
+        "/api/history/sessions",
+        "/api/reorientation",
+        "/api/reorientation/approval",
+        "/api/activation/status",
+        "/api/conversations/{conversation_id}/actions",
+        "/api/work-items/{work_item_id}/delegations",
+        "/api/effects/{lease_id}/approval",
     ):
         require(endpoint in web, f"required API endpoint missing: {endpoint}")
 
     config = (ROOT / "vsm" / "config.py").read_text("utf-8")
     require(
-        'model_snapshot: Literal["claude-fable-5"]' in config,
-        "Interface Pilot model is not fixed to claude-fable-5",
+        'interface.model_snapshot != "claude-fable-5"' in config,
+        "production Interface Pilot model is not fixed to claude-fable-5",
     )
     require(
-        'effort: Literal["high"]' in config,
-        "Interface Pilot effort is not fixed to high",
+        'interface.effort != "high"' in config,
+        "production Interface Pilot effort is not fixed to high",
+    )
+
+    activation = (ROOT / "vsm" / "activation" / "models.py").read_text("utf-8")
+    for state in (
+        "UNCOMMISSIONED",
+        "HISTORY_IMPORTED",
+        "REORIENTATION_ONLY",
+        "AWAITING_OWNER_CONFIRMATION",
+        "ACTIVE",
+    ):
+        require(state in activation, f"activation state missing: {state}")
+
+    require(
+        "/api/conversations/{conversation_id}/messages" not in web,
+        "removed conversation messages endpoint remains",
     )
 
     token_lab = (ROOT / "vsm" / "token_lab" / "lab.py").read_text("utf-8")

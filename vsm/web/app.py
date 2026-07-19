@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import (
+    BackgroundTasks,
+    Cookie,
     Depends,
     FastAPI,
     Header,
@@ -14,12 +16,30 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from vsm.errors import InvariantViolation, NaniholdError
-from vsm.interface.models import Conversation
+from vsm.activation.models import (
+    CurrentWorkGraphSnapshot,
+    HistoryImportReceipt,
+    ReorientationAssessment,
+)
+from vsm.activation.reorientation import (
+    HistoryReader,
+    HistoryToolService,
+    ReorientationService,
+)
+from vsm.dispatcher import DependencyAwareDispatcher, PilotBinding
+from vsm.interface.models import (
+    Conversation,
+    OwnerMessageAction,
+    ReadHistoryAction,
+    SurfaceBinding,
+)
 from vsm.interface.service import InterfaceService
+from vsm.ids import new_id
 from vsm.kernel.models import Execution, RouteSnapshot, UVSMNode, WorkItem
 from vsm.kernel.service import Kernel
 from vsm.pilot.host import PilotHostCoordinator
@@ -68,13 +88,41 @@ class WorkInterventionRequest(CommandMetadata):
 
 class CreateConversationRequest(StrictRequest):
     conversation: Conversation
+    surface_binding: SurfaceBinding
     idempotency_key: str = Field(min_length=1)
 
 
-class OwnerMessageRequest(StrictRequest):
-    text: str = Field(min_length=1)
+class HistoryImportRequest(CommandMetadata):
+    work_graph_snapshot: CurrentWorkGraphSnapshot
+    receipt: HistoryImportReceipt
+
+
+class ReorientationAssessmentRequest(CommandMetadata):
+    assessment: ReorientationAssessment
+
+
+class HistoryQueryRequest(CommandMetadata):
+    action: ReadHistoryAction
+
+
+class ReorientationApprovalRequest(CommandMetadata):
+    assessment_id: str
+    conversation_id: str
+    corrections: tuple[Annotated[str, Field(min_length=1)], ...]
+
+
+class WorkDelegationRequest(CommandMetadata):
+    delegated_to_node_id: str
+
+
+class EffectApprovalRequest(CommandMetadata):
+    pass
+
+
+class OwnerBootstrapExchangeRequest(StrictRequest):
+    code: str = Field(min_length=1)
+    device_id: str = Field(min_length=1)
     idempotency_key: str = Field(min_length=1)
-    force_new_pilot: bool
 
 
 class PilotHostConnectRequest(StrictRequest):
@@ -123,6 +171,14 @@ class AppState:
     token_lab_events: TokenLabEventService
     model_registry: dict[str, ModelCandidate]
     api_bearer_token: str
+    authorized_device_ids: frozenset[str]
+    dispatcher: DependencyAwareDispatcher
+    owner_session_lifetime_seconds: int
+    history_reader: HistoryReader
+    history_max_result_bytes: int
+    reorientation_service: ReorientationService | None = None
+    reorientation_max_tool_rounds: int | None = None
+    coding_pilot_id: str | None = None
 
 
 def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
@@ -132,17 +188,84 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(allowed_origins),
-        allow_credentials=False,
-        allow_methods=["GET", "POST"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=[
+            "Content-Type",
+            "Authorization",
+            "X-Nanihold-Device-Id",
+        ],
     )
 
-    def authorize(authorization: Annotated[str | None, Header()] = None) -> None:
+    if not state.authorized_device_ids:
+        raise InvariantViolation("at least one API device identity must be configured")
+
+    @app.get("/health/live")
+    def health_live():
+        return {"status": "live", "model_calls": 0}
+
+    @app.get("/health/ready")
+    def health_ready():
+        state.kernel.ledger.page(0, 1)
+        return {
+            "status": "ready",
+            "activation_state": state.kernel.activation.state,
+            "model_calls": 0,
+        }
+
+    def authorize(
+        authorization: Annotated[str | None, Header()] = None,
+        x_nanihold_device_id: Annotated[
+        str | None, Header(alias="X-Nanihold-Device-Id")
+        ] = None,
+        owner_session: Annotated[
+            str | None, Cookie(alias="nanihold_owner_session")
+        ] = None,
+    ) -> str:
+        if owner_session is not None:
+            try:
+                return state.kernel.owner_bootstrap.authenticate(owner_session)
+            except InvariantViolation as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=str(exc),
+                ) from exc
         if authorization != f"Bearer {state.api_bearer_token}":
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="valid Bearer token required",
             )
+        if x_nanihold_device_id not in state.authorized_device_ids:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="registered X-Nanihold-Device-Id required",
+            )
+        return x_nanihold_device_id
+
+    @app.post("/api/owner-bootstrap/exchange")
+    def exchange_owner_bootstrap(request: OwnerBootstrapExchangeRequest):
+        grant = state.kernel.owner_bootstrap.exchange(
+            code=request.code,
+            device_id=request.device_id,
+            session_lifetime_seconds=state.owner_session_lifetime_seconds,
+            idempotency_key=request.idempotency_key,
+        )
+        response = JSONResponse(
+            {
+                "device_id": grant.device_id,
+                "expires_at": grant.expires_at.isoformat(),
+            }
+        )
+        response.set_cookie(
+            "nanihold_owner_session",
+            grant.session_token,
+            httponly=True,
+            secure=True,
+            samesite="strict",
+            expires=grant.expires_at,
+            path="/",
+        )
+        return response
 
     @app.exception_handler(NaniholdError)
     async def nanihold_error_handler(_request: Any, exc: NaniholdError):
@@ -188,6 +311,19 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
         return request.work_item
 
     @app.post(
+        "/api/work-items/{work_item_id}/delegations",
+        dependencies=[Depends(authorize)],
+    )
+    def delegate_work_item(work_item_id: str, request: WorkDelegationRequest):
+        state.kernel.delegate_work_item(
+            work_item_id,
+            delegated_to_node_id=request.delegated_to_node_id,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        return state.kernel.work_items[work_item_id]
+
+    @app.post(
         "/api/work-items/{work_item_id}/interventions",
         dependencies=[Depends(authorize)],
     )
@@ -218,6 +354,18 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
             idempotency_key=request.idempotency_key,
         )
         return request.execution
+
+    @app.post(
+        "/api/effects/{lease_id}/approval",
+        dependencies=[Depends(authorize)],
+    )
+    def approve_effect(lease_id: str, request: EffectApprovalRequest):
+        state.kernel.approve_effect(
+            lease_id,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        return state.kernel.effect_approvals[lease_id]
 
     @app.get("/api/events", dependencies=[Depends(authorize)])
     def events(
@@ -254,6 +402,8 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
             visible_messages[conversation_id] = visible
         return {
             "items": list(state.interface.conversations.values()),
+            "surface_bindings": list(state.interface.surface_bindings.values()),
+            "pilot_sessions": list(state.interface.pilot_sessions.values()),
             "messages": visible_messages,
             "commitments": list(state.interface.commitments.values()),
             "decisions": list(state.interface.decisions.values()),
@@ -263,7 +413,9 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
     @app.post("/api/conversations", dependencies=[Depends(authorize)], status_code=201)
     def create_conversation(request: CreateConversationRequest):
         return state.interface.create_conversation(
-            request.conversation, idempotency_key=request.idempotency_key
+            request.conversation,
+            request.surface_binding,
+            idempotency_key=request.idempotency_key,
         )
 
     @app.get(
@@ -272,17 +424,222 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
     def conversation_status(conversation_id: str):
         return state.interface.status(conversation_id)
 
-    @app.post(
-        "/api/conversations/{conversation_id}/messages",
-        dependencies=[Depends(authorize)],
-    )
-    def owner_message(conversation_id: str, request: OwnerMessageRequest):
-        return state.interface.turn(
+    @app.post("/api/conversations/{conversation_id}/actions", status_code=202)
+    def owner_action(
+        conversation_id: str,
+        request: OwnerMessageAction,
+        device_id: str = Depends(authorize),
+    ):
+        return state.interface.perform_owner_action(
             conversation_id=conversation_id,
-            owner_text=request.text,
-            idempotency_key=request.idempotency_key,
-            force_new_pilot=request.force_new_pilot,
+            action=request,
+            device_id=device_id,
         )
+
+    @app.get("/api/conversations/{conversation_id}/actions/{action_id}")
+    def owner_action_receipt(
+        conversation_id: str,
+        action_id: str,
+        _device_id: str = Depends(authorize),
+    ):
+        return state.interface.action_receipt(conversation_id, action_id)
+
+    @app.get("/api/history/imports", dependencies=[Depends(authorize)])
+    def history_import():
+        return {"receipt": state.kernel.activation.import_receipt}
+
+    @app.post(
+        "/api/history/imports", dependencies=[Depends(authorize)], status_code=201
+    )
+    def register_history_import(request: HistoryImportRequest):
+        state.kernel.import_current_work_graph(
+            request.work_graph_snapshot,
+            actor_id=request.actor_id,
+            idempotency_key=f"{request.idempotency_key}:work-graph",
+        )
+        state.kernel.activation.register_history_import(
+            request.receipt,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        return state.kernel.activation.status()
+
+    @app.get("/api/history/sessions", dependencies=[Depends(authorize)])
+    def history_sessions():
+        return {
+            "items": [
+                {
+                    "session_ref": session.session_ref,
+                    "source_session_id": session.source_session_id,
+                    "source_kind": session.source_kind,
+                    "source_id": session.source_id,
+                    "message_count": session.message_count,
+                    "first_message_at": session.first_message_at,
+                    "last_message_at": session.last_message_at,
+                }
+                for session in state.kernel.activation.sessions.values()
+            ],
+            "model_calls": 0,
+        }
+
+    @app.get("/api/reorientation", dependencies=[Depends(authorize)])
+    def reorientation():
+        return {
+            "state": state.kernel.activation.state,
+            "assessment": state.kernel.activation.assessment,
+            "model_calls": 0,
+        }
+
+    @app.post(
+        "/api/reorientation/start",
+        dependencies=[Depends(authorize)],
+        status_code=202,
+    )
+    def start_reorientation(
+        request: CommandMetadata, background_tasks: BackgroundTasks
+    ):
+        if (
+            state.reorientation_service is None
+            or state.reorientation_max_tool_rounds is None
+        ):
+            raise InvariantViolation(
+                "production reorientation service is not configured"
+            )
+        receipt = state.kernel.activation.import_receipt
+        if receipt is None:
+            raise InvariantViolation("verified history handoff is missing")
+        state.kernel.activation.start_reorientation(
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        initial_action = ReadHistoryAction(
+            action_id=new_id("action"),
+            kind="history.read",
+            operation="list_sessions",
+            argument=None,
+            page_cursor=None,
+        )
+
+        def execute_reorientation() -> None:
+            try:
+                state.reorientation_service.execute(
+                    initial_action=initial_action,
+                    actor_id=request.actor_id,
+                    idempotency_key=f"{request.idempotency_key}:execute",
+                    max_tool_rounds=state.reorientation_max_tool_rounds,
+                    objective=(
+                        "Review the complete indexed history, resolve uncertainty "
+                        "with bounded LETHE queries, and submit ReorientationAssessment."
+                    ),
+                    session_index_ref=receipt.session_index_ref,
+                    open_commitment_refs=(receipt.open_commitments_ref,),
+                    current_state_ref=receipt.current_state_ref,
+                )
+            except Exception as exc:
+                state.kernel.activation.record_reorientation_failure(
+                    error_code=type(exc).__name__,
+                    actor_id=request.actor_id,
+                    idempotency_key=f"{request.idempotency_key}:failure",
+                )
+
+        background_tasks.add_task(execute_reorientation)
+        return state.kernel.activation.status()
+
+    @app.post("/api/reorientation", dependencies=[Depends(authorize)])
+    def submit_reorientation(request: ReorientationAssessmentRequest):
+        state.kernel.activation.submit_assessment(
+            request.assessment,
+            open_commitment_ids=(
+                item.commitment_id
+                for item in state.interface.commitments.values()
+                if item.state == "open"
+            ),
+            existing_work_item_ids=state.kernel.work_items,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        return state.kernel.activation.status()
+
+    @app.post("/api/reorientation/queries", dependencies=[Depends(authorize)])
+    def resolve_reorientation_query(request: HistoryQueryRequest):
+        return HistoryToolService(
+            kernel=state.kernel,
+            reader=state.history_reader,
+            max_result_bytes=state.history_max_result_bytes,
+        ).resolve(
+            request.action,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+
+    @app.post("/api/reorientation/approval", dependencies=[Depends(authorize)])
+    def approve_reorientation(request: ReorientationApprovalRequest):
+        assessment = state.kernel.activation.assessment
+        if assessment is None or not assessment.resume_work_item_ids:
+            raise InvariantViolation(
+                "Fable activity start requires at least one assessed real WorkItem"
+            )
+        if state.coding_pilot_id is None:
+            raise InvariantViolation("production coding Pilot is not configured")
+        if request.conversation_id not in state.interface.conversations:
+            raise InvariantViolation("Conversation not found")
+        for work_item_id in assessment.resume_work_item_ids:
+            state.kernel.validate_owner_confirmed_resume(work_item_id)
+        bindings = tuple(
+            PilotBinding(
+                node_id=node_id,
+                pilot_id=state.coding_pilot_id,
+                pilot_host_id=state.pilot_hosts.expected_identity.pilot_host_id,
+            )
+            for node_id in sorted(
+                {
+                    state.kernel.work_items[item_id].delegated_to_node_id
+                    for item_id in assessment.resume_work_item_ids
+                }
+            )
+        )
+        resume_ids = frozenset(assessment.resume_work_item_ids)
+        state.dispatcher.preflight_ready(
+            bindings,
+            allowed_work_item_ids=resume_ids,
+            allow_owner_confirmed_prepare=True,
+        )
+        for index, correction in enumerate(request.corrections):
+            state.interface.record_owner_correction(
+                conversation_id=request.conversation_id,
+                statement=correction,
+                actor_id=request.actor_id,
+                idempotency_key=f"{request.idempotency_key}:correction:{index}",
+            )
+        for index, work_item_id in enumerate(assessment.resume_work_item_ids):
+            state.kernel.prepare_owner_confirmed_resume(
+                work_item_id,
+                actor_id=request.actor_id,
+                idempotency_key=f"{request.idempotency_key}:prepare:{index}",
+            )
+        state.kernel.activation.approve(
+            request.assessment_id,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        batch = state.dispatcher.dispatch_ready(
+            bindings,
+            actor_id=request.actor_id,
+            idempotency_key=f"{request.idempotency_key}:dispatch",
+            allowed_work_item_ids=resume_ids,
+        )
+        if not batch.assignments:
+            raise InvariantViolation(
+                "owner approval did not start a real WorkItem"
+            )
+        return {
+            **state.kernel.activation.status().model_dump(mode="json"),
+            "dispatch_batch": batch.model_dump(mode="json"),
+        }
+
+    @app.get("/api/activation/status", dependencies=[Depends(authorize)])
+    def activation_status():
+        return state.kernel.activation.status()
 
     @app.get("/api/pilot-hosts", dependencies=[Depends(authorize)])
     def pilot_hosts():
@@ -439,7 +796,13 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
 
     @app.websocket("/api/pilot-hosts/{pilot_host_id}/stream")
     async def pilot_stream(websocket: WebSocket, pilot_host_id: str):
-        if websocket.headers.get("authorization") != f"Bearer {state.api_bearer_token}":
+        if (
+            websocket.headers.get("authorization")
+            != f"Bearer {state.api_bearer_token}"
+            or websocket.headers.get("x-nanihold-device-id")
+            not in state.authorized_device_ids
+            or websocket.headers.get("origin") not in allowed_origins
+        ):
             await websocket.close(code=4401)
             return
         await websocket.accept()

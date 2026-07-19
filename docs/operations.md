@@ -11,7 +11,8 @@
 - Interface Pilot の exact candidate。現在の既定は `claude-fable-5 / high`
 - candidate ごとの versioned benchmark prior
 - active RouteSnapshot ID
-- API Bearer token、CORS origin
+- API Bearer token、許可device ID、owner session lifetime、CORS origin
+- LETHE HistoryReaderの`history_max_result_bytes`
 
 example の `EXAMPLE-REPLACE` は構造説明用であり production 証拠ではありません。
 
@@ -46,10 +47,12 @@ Interface Adapterは認証済みPilotHostへRPCし、起動時にexact candidate
 ```powershell
 vsm inspect nodes \
   --base-url http://localhost:8000 \
-  --bearer-token-env NANIHOLD_API_BEARER_TOKEN
+  --bearer-token-env NANIHOLD_API_BEARER_TOKEN \
+  --device-id device:operator
 vsm inspect events \
   --base-url http://localhost:8000 \
   --bearer-token-env NANIHOLD_API_BEARER_TOKEN \
+  --device-id device:operator \
   --after-cursor 0 \
   --limit 250
 ```
@@ -58,11 +61,62 @@ resource は `data-spaces`、`nodes`、`work-items`、`executions`、`events`、
 
 production objective は `quality_max` です。production exploration は禁止です。証拠更新後は古い snapshot が stale になり、再起動時に失敗します。
 
-## 4. 障害
+## 4. 初回履歴取込とowner activation
+
+1. Claude、Codex、Intercom、LETHE Personal、旧Nanihold、現況の全sourceをdry-runする。
+2. ambiguous ownershipをすべて解決し、manifestとreceiptの件数・bytes・digest・cursorを一致させる。
+3. current Work Graph snapshotとLETHE activation handoffを同じ
+   `/api/history/imports` requestへ登録し、`HISTORY_IMPORTED`を確認する。
+4. reorientationを開始する。FableはLETHE HistoryReaderで必要箇所だけをpage照会する。
+5. 全session coverage、citation、open commitment、最新現況を満たすAssessmentを確認する。
+6. ownerが訂正・承認する。全resume対象、route、PilotHostを無変更でpreflightした後だけ
+   `ACTIVE`となり、依存関係上開始可能な実WorkItemがdispatchされる。
+   それ以前はExecutionとEffectがfail-fastする。
+
+ターミナルではworkspace IDやassessment IDを手入力しません。
+
+```powershell
+vsm tui `
+  --base-url https://nanihold.local `
+  --bearer-token-env NANIHOLD_API_BEARER_TOKEN `
+  --device-id device:operator
+
+vsm fable catch-up `
+  --base-url https://nanihold.local `
+  --bearer-token-env NANIHOLD_API_BEARER_TOKEN `
+  --device-id device:operator `
+  --idempotency-key reorientation:20260720
+
+vsm fable approve `
+  --base-url https://nanihold.local `
+  --bearer-token-env NANIHOLD_API_BEARER_TOKEN `
+  --device-id device:operator `
+  --idempotency-key activation:20260720 `
+  --correction "ownerの訂正内容"
+```
+
+`vsm fable approve`は現在のAssessmentとConversationをProjectionから取得する。
+status、TUI、keepaliveはモデルを呼ばない。Web ownerはBearer tokenを貼り付けず、
+次の一回限りbootstrap linkを使う。Secure cookieのためHTTPSが必須である。
+
+Web owner用codeは次で発行します。codeとlinkだけが表示され、保存されるのはhashです。
+
+```powershell
+vsm owner-bootstrap `
+  --config vsm.toml `
+  --base-url https://nanihold.local `
+  --lifetime-seconds 300 `
+  --idempotency-key bootstrap:20260720
+```
+
+## 5. 障害
 
 ### LETHE unavailable
 
 状態変更と owner response を開始しません。未保存の命令を Pilot へ渡しません。backend fallback と local spool はありません。
+
+HistoryReaderもLETHEのindexed APIだけを使用します。応答がsize上限を超えた場合は停止し、
+page cursorを修正します。Nanihold側で全blob検索へfallbackしません。
 
 ### PilotHost disconnected
 
@@ -80,13 +134,13 @@ production objective は `quality_max` です。production exploration は禁止
 
 `.local-verification/`はsecretと永続Lakeを含むためcommitしません。`local-review.cmd down`はデータを消さず、再起動時のcommissioningは既存Eventとcandidateを厳密照合します。ローカル検証Composeは専用project名で通常の開発Composeから隔離します。
 
-## 5. Token Efficiency Lab
+## 6. Token Efficiency Lab
 
 通常の status と週次判定はモデルを呼びません。一件で即時調査する事象は classifier、model substitution、full-history resend、model-call polling、false-complete です。同種 20 WorkItem 以上で承認 baseline から 10% 以上悪化した場合も調査します。
 
 モデル評価が不可避なら `low` の安価な独立 Judge だけを許可します。Fable と Opus は拒否します。AI Judge の confusion matrix を deterministic/human truth と同時に更新します。
 
-## 6. 完了
+## 7. 完了
 
 次の一つでも偽なら WorkItem は completed になりません。
 
@@ -98,3 +152,12 @@ production objective は `quality_max` です。production exploration は禁止
 - remote push succeeded
 
 deploy は completion 条件に含めません。
+
+## 8. HA配備ゲート
+
+`deploy/ha`は設計と静的契約であり、現状のimageを配備可能と宣言しません。
+runtime contract receiptがNanihold production config、PilotHost transport、
+LETHE canary/restore/projection、canonical backupを実装済みtest digest付きで
+証明しない限り`RUNTIME_CONTRACT_UNAVAILABLE`で停止します。NAS、管理者Hyper-V、
+ISO、SSH、secret、実PostgreSQL、RPO/RTO測定も必須です。fallbackや単一nodeへの
+縮退運転は行いません。

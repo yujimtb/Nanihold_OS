@@ -1,0 +1,448 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nanihold.local/contracts/ha-deployment-input-v1.json",
+  "title": "Nanihold HA deployment input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ubuntu_iso_sha256",
+    "k3s_version",
+    "k3s_install_script_path",
+    "k3s_install_script_sha256",
+    "k3s_binary_path",
+    "k3s_binary_sha256",
+    "oscdimg_path",
+    "oscdimg_sha256",
+    "kube_vip_image",
+    "longhorn_manifest_path",
+    "longhorn_manifest_sha256",
+    "cloudnative_pg_manifest_path",
+    "cloudnative_pg_manifest_sha256",
+    "monitoring_manifest_path",
+    "monitoring_manifest_sha256",
+    "nanihold_image",
+    "lethe_image",
+    "pilot_host_image",
+    "backup_image",
+    "backup_image_archive_path",
+    "backup_image_archive_sha256",
+    "runtime_contract_receipt_path",
+    "runtime_contract_receipt_sha256",
+    "claude_cli_version",
+    "codex_cli_version",
+    "codex_model",
+    "codex_effort",
+    "pilot_permission_mode",
+    "pilot_sandbox_certificate_sha256",
+    "claude_max_budget_usd",
+    "pilot_timeout_seconds",
+    "codex_max_input_tokens",
+    "codex_max_output_tokens",
+    "codex_max_total_tokens",
+    "mcp_gateway_url",
+    "mcp_allowlist",
+    "pilot_hosts",
+    "nanihold_runtime",
+    "route_priors",
+    "lethe_data_space_id",
+    "postgres_storage_gib",
+    "blob_storage_gib",
+    "nas_nfs_server",
+    "nas_nfs_export"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "ubuntu_iso_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "k3s_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "k3s_install_script_path": {
+      "$ref": "#/$defs/nonBlank"
+    },
+    "k3s_install_script_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "k3s_binary_path": {
+      "$ref": "#/$defs/nonBlank"
+    },
+    "k3s_binary_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "oscdimg_path": {
+      "$ref": "#/$defs/nonBlank"
+    },
+    "oscdimg_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "kube_vip_image": {
+      "$ref": "#/$defs/digestImage"
+    },
+    "longhorn_manifest_path": {
+      "$ref": "#/$defs/nonBlank"
+    },
+    "longhorn_manifest_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "cloudnative_pg_manifest_path": {
+      "$ref": "#/$defs/nonBlank"
+    },
+    "cloudnative_pg_manifest_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "monitoring_manifest_path": {
+      "$ref": "#/$defs/nonBlank"
+    },
+    "monitoring_manifest_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "nanihold_image": {
+      "$ref": "#/$defs/digestImage"
+    },
+    "lethe_image": {
+      "$ref": "#/$defs/digestImage"
+    },
+    "pilot_host_image": {
+      "$ref": "#/$defs/digestImage"
+    },
+    "backup_image": {
+      "$ref": "#/$defs/digestImage"
+    },
+    "backup_image_archive_path": {
+      "$ref": "#/$defs/nonBlank"
+    },
+    "backup_image_archive_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "runtime_contract_receipt_path": {
+      "$ref": "#/$defs/nonBlank"
+    },
+    "runtime_contract_receipt_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "claude_cli_version": {
+      "$ref": "#/$defs/nonBlank"
+    },
+    "codex_cli_version": {
+      "$ref": "#/$defs/nonBlank"
+    },
+    "codex_model": {
+      "$ref": "#/$defs/nonBlank"
+    },
+    "codex_effort": {
+      "enum": [
+        "xhigh"
+      ]
+    },
+    "pilot_permission_mode": {
+      "enum": [
+        "sandboxed_bypass",
+        "managed_permissions",
+        "observe_only"
+      ]
+    },
+    "pilot_sandbox_certificate_sha256": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "claude_max_budget_usd": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "pilot_timeout_seconds": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "codex_max_input_tokens": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "codex_max_output_tokens": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "codex_max_total_tokens": {
+      "type": "integer",
+      "minimum": 2
+    },
+    "mcp_gateway_url": {
+      "type": "string",
+      "pattern": "^https://172\\.31\\.100\\.10(?::[0-9]{1,5})?/"
+    },
+    "mcp_allowlist": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^mcp__[a-z][a-z0-9_-]{0,62}__[A-Za-z0-9_.-]+$"
+      }
+    },
+    "pilot_hosts": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pilot_host_id",
+          "device_id",
+          "device_certificate_sha256",
+          "node_name"
+        ],
+        "properties": {
+          "pilot_host_id": {
+            "$ref": "#/$defs/nonBlank"
+          },
+          "device_id": {
+            "$ref": "#/$defs/nonBlank"
+          },
+          "device_certificate_sha256": {
+            "$ref": "#/$defs/sha256"
+          },
+          "node_name": {
+            "enum": [
+              "nh-control-a",
+              "nh-control-b"
+            ]
+          }
+        }
+      }
+    },
+    "nanihold_runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner_id",
+        "audit_policy_id",
+        "control_policy_id",
+        "interface_node_id",
+        "interface_pilot_id",
+        "coding_pilot_id",
+        "active_route_snapshot_id",
+        "server_allowed_origins",
+        "authorized_device_ids",
+        "owner_session_lifetime_seconds",
+        "retention_days",
+        "max_parallelism",
+        "reorientation_max_tool_rounds",
+        "sandbox_profile_id",
+        "sandbox_certificate_file",
+        "sandbox_write_roots",
+        "sandbox_network_destinations",
+        "sandbox_issued_at",
+        "sandbox_expires_at"
+      ],
+      "properties": {
+        "owner_id": {
+          "$ref": "#/$defs/nonPlaceholder"
+        },
+        "audit_policy_id": {
+          "$ref": "#/$defs/nonPlaceholder"
+        },
+        "control_policy_id": {
+          "$ref": "#/$defs/nonPlaceholder"
+        },
+        "interface_node_id": {
+          "$ref": "#/$defs/nonPlaceholder"
+        },
+        "interface_pilot_id": {
+          "$ref": "#/$defs/nonPlaceholder"
+        },
+        "coding_pilot_id": {
+          "$ref": "#/$defs/nonPlaceholder"
+        },
+        "active_route_snapshot_id": {
+          "$ref": "#/$defs/nonPlaceholder"
+        },
+        "server_allowed_origins": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "authorized_device_ids": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "owner_session_lifetime_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "retention_days": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_parallelism": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "reorientation_max_tool_rounds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "sandbox_profile_id": {
+          "$ref": "#/$defs/nonPlaceholder"
+        },
+        "sandbox_certificate_file": {
+          "$ref": "#/$defs/nonPlaceholder"
+        },
+        "sandbox_write_roots": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "sandbox_network_destinations": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "sandbox_issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "sandbox_expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "route_priors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interface",
+        "coding"
+      ],
+      "properties": {
+        "interface": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/routePrior"
+          }
+        },
+        "coding": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/routePrior"
+          }
+        }
+      }
+    },
+    "lethe_data_space_id": {
+      "type": "string",
+      "pattern": "^data-space:[A-Za-z0-9._~-]{1,160}$"
+    },
+    "postgres_storage_gib": {
+      "type": "integer",
+      "minimum": 32
+    },
+    "blob_storage_gib": {
+      "type": "integer",
+      "minimum": 32
+    },
+    "nas_nfs_server": {
+      "type": "string",
+      "format": "ipv4"
+    },
+    "nas_nfs_export": {
+      "type": "string",
+      "pattern": "^/[^\\u0000]+$"
+    }
+  },
+  "$defs": {
+    "nonBlank": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nonPlaceholder": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "pattern": "([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Rr][Ee][Pp][Ll][Aa][Cc][Ee]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])"
+      }
+    },
+    "nonEmptyUniqueStrings": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/nonBlank"
+      }
+    },
+    "routePrior": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "benchmark_family",
+        "version",
+        "sample_count",
+        "harness",
+        "successes",
+        "failures",
+        "log_token_samples",
+        "log_cost_samples",
+        "log_latency_samples"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/nonPlaceholder"
+        },
+        "benchmark_family": {
+          "$ref": "#/$defs/nonPlaceholder"
+        },
+        "version": {
+          "$ref": "#/$defs/nonPlaceholder"
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "harness": {
+          "$ref": "#/$defs/nonPlaceholder"
+        },
+        "successes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failures": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "log_token_samples": {
+          "$ref": "#/$defs/numericSamples"
+        },
+        "log_cost_samples": {
+          "$ref": "#/$defs/numericSamples"
+        },
+        "log_latency_samples": {
+          "$ref": "#/$defs/numericSamples"
+        }
+      }
+    },
+    "numericSamples": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "number"
+      }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "digestImage": {
+      "type": "string",
+      "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"
+    }
+  }
+}

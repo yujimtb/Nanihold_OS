@@ -35,6 +35,7 @@ def work(work_id: str, node_id: str, parent: str | None = None) -> WorkItem:
         integration_owner_node_id=INTERFACE_NODE_ID,
         parent_work_item_id=parent,
         acceptance_criteria=("verified",),
+        route_key="coding_s1",
         state=WorkState.READY,
         blocking_s3_star_finding_ids=(),
         completion_evidence=None,
@@ -107,6 +108,9 @@ def test_recursive_uvsm_multiple_executions_effects_and_targeted_intervention(sy
         expires_at=NOW + timedelta(hours=1),
     )
     kernel.plan_effect(lease, actor_id=first.pilot_id, idempotency_key="plan:lease")
+    kernel.approve_effect(
+        lease.lease_id, actor_id=OWNER_ID, idempotency_key="approve:lease"
+    )
     kernel.activate_effect(
         lease.lease_id, actor_id=first.pilot_id, idempotency_key="activate:lease"
     )
@@ -271,6 +275,7 @@ def test_route_snapshot_approval_order_and_projection_rebuild(system):
         kernel=rebuilt_kernel,
         ledger=ledger,
         pilot=pilot,
+        token_lab_events=interface.token_lab_events,
         clock=kernel.clock,
     )
     projection = OperationalProjection(

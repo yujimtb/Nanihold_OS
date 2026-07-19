@@ -1,0 +1,245 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lethe-system
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-three-replica
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+parameters:
+  numberOfReplicas: "3"
+  staleReplicaTimeout: "30"
+  dataLocality: "disabled"
+  fsType: "ext4"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lethe-blob
+  namespace: lethe-system
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: longhorn-three-replica
+  resources:
+    requests:
+      storage: "@@BLOB_STORAGE_GIB@@Gi"
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: lethe-postgres
+  namespace: lethe-system
+spec:
+  instances: 3
+  primaryUpdateStrategy: unsupervised
+  minSyncReplicas: 1
+  maxSyncReplicas: 1
+  superuserSecret:
+    name: lethe-postgres-superuser
+  storage:
+    storageClass: longhorn-three-replica
+    size: "@@POSTGRES_STORAGE_GIB@@Gi"
+  postgresql:
+    parameters:
+      synchronous_commit: "remote_apply"
+      wal_level: "replica"
+      wal_log_hints: "on"
+      max_wal_senders: "10"
+      max_replication_slots: "10"
+  monitoring:
+    enablePodMonitor: true
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: lethe-postgres
+  namespace: lethe-system
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      cnpg.io/cluster: lethe-postgres
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lethe-event-api
+  namespace: lethe-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: lethe-event-api
+  template:
+    metadata:
+      labels:
+        app: lethe-event-api
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: lethe-event-api
+      containers:
+        - name: event-api
+          image: "@@LETHE_IMAGE@@"
+          imagePullPolicy: IfNotPresent
+          args: ["serve-event-ledger"]
+          env:
+            - name: LETHE_DATA_SPACE_ID
+              value: "@@LETHE_DATA_SPACE_ID@@"
+            - name: LETHE_POSTGRES_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: lethe-runtime
+                  key: postgres-dsn
+            - name: LETHE_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lethe-runtime
+                  key: encryption-key
+            - name: LETHE_HISTORY_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: lethe-runtime
+                  key: history-bearer-token
+            - name: LETHE_BLOB_ROOT
+              value: /var/lib/lethe/blob
+          ports:
+            - name: https
+              containerPort: 8443
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /health/ready
+              port: https
+            periodSeconds: 2
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /health/live
+              port: https
+            periodSeconds: 10
+            failureThreshold: 3
+          volumeMounts:
+            - name: blob
+              mountPath: /var/lib/lethe/blob
+      volumes:
+        - name: blob
+          persistentVolumeClaim:
+            claimName: lethe-blob
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lethe-projection
+  namespace: lethe-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: lethe-projection
+  template:
+    metadata:
+      labels:
+        app: lethe-projection
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: lethe-projection
+      containers:
+        - name: projection
+          image: "@@LETHE_IMAGE@@"
+          imagePullPolicy: IfNotPresent
+          args: ["serve-projection"]
+          env:
+            - name: LETHE_DATA_SPACE_ID
+              value: "@@LETHE_DATA_SPACE_ID@@"
+            - name: LETHE_POSTGRES_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: lethe-runtime
+                  key: postgres-dsn
+          readinessProbe:
+            exec:
+              command: ["/app/lethe", "projection-health"]
+            periodSeconds: 2
+            failureThreshold: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lethe
+  namespace: lethe-system
+  annotations:
+    kube-vip.io/loadbalancerIPs: "@@LETHE_VIP@@"
+spec:
+  type: LoadBalancer
+  loadBalancerIP: "@@LETHE_VIP@@"
+  externalTrafficPolicy: Cluster
+  selector:
+    app: lethe-event-api
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: lethe-event-api
+  namespace: lethe-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: lethe-event-api
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lethe-default-deny
+  namespace: lethe-system
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lethe-allow-same-namespace
+  namespace: lethe-system
+spec:
+  podSelector: {}
+  ingress:
+    - from:
+        - podSelector: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lethe-allow-nanihold-network
+  namespace: lethe-system
+spec:
+  podSelector:
+    matchLabels:
+      app: lethe-event-api
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 172.31.100.0/24
+      ports:
+        - protocol: TCP
+          port: 8443

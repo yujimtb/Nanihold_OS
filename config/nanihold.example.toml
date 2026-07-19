@@ -16,6 +16,7 @@ base_url = "https://lethe.example.invalid"
 bearer_token_env = "LETHE_BEARER_TOKEN"
 timeout_seconds = 30.0
 max_page_size = 100
+history_max_result_bytes = 262144
 
 [kernel.audit_policy]
 policy_id = "policy:audit-primary"
@@ -62,6 +63,20 @@ environment_fingerprint = "pilot-host-image-sha256:replace"
 pilot_host_base_url = "https://pilot-host.example.invalid"
 pilot_host_bearer_token_env = "PILOT_HOST_BEARER_TOKEN"
 timeout_seconds = 120.0
+
+[production_pilot_host]
+coding_pilot_id = "pilot:codex-coding-s1"
+coding_candidate_model_snapshot = "gpt-5.6-sol"
+interface_max_budget_usd = 5.0
+transport_timeout_seconds = 330.0
+work_cwd = "/workspace"
+work_sandbox = "workspace-write"
+work_max_input_tokens = 10000
+work_max_output_tokens = 2000
+work_max_total_tokens = 12000
+work_timeout_seconds = 300.0
+max_parallelism = 3
+reorientation_max_tool_rounds = 32
 
 [routing]
 active_route_snapshot_id = "route:coding-production"
@@ -141,3 +156,5 @@ bind_host = "0.0.0.0"
 bind_port = 8000
 api_bearer_token_env = "NANIHOLD_API_BEARER_TOKEN"
 allowed_origins = ["http://localhost:5173"]
+authorized_device_ids = ["device:owner-web", "device:intercom"]
+owner_session_lifetime_seconds = 43200

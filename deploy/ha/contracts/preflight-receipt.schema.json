@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nanihold.local/contracts/ha-preflight-receipt-v1.json",
+  "title": "Nanihold HA preflight receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "created_at",
+    "host",
+    "topology_sha256",
+    "deployment_input_sha256",
+    "ubuntu_iso_sha256",
+    "ssh_public_key_sha256",
+    "nas_path",
+    "switch_name",
+    "node_count",
+    "nanihold_vip",
+    "lethe_vip",
+    "required_memory_gib",
+    "required_disk_gib"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "const": "ready"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "host": {
+      "type": "string",
+      "minLength": 1
+    },
+    "topology_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "deployment_input_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "ubuntu_iso_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "ssh_public_key_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "nas_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "switch_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "node_count": {
+      "const": 6
+    },
+    "nanihold_vip": {
+      "const": "172.31.100.20"
+    },
+    "lethe_vip": {
+      "const": "172.31.100.30"
+    },
+    "required_memory_gib": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "required_disk_gib": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

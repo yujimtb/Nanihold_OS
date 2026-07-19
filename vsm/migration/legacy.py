@@ -341,16 +341,14 @@ def import_plan(
             data_space_id=data_space_id,
             interface_node_id=assigned.interface_node_id,
             owner_id=assigned.owner_id,
-            provider_session_id=None,
-            last_event_cursor=0,
-            status="closed",
+            title=f"Imported history: {source}",
         )
         _append(
             ledger,
             data_space_id=data_space_id,
             stream_id=assigned.conversation_id,
             versions=versions,
-            event_type="conversation_created",
+            event_type="legacy_conversation_created",
             occurred_at=first_by_source[source],
             actor_type="human",
             actor_id=assigned.owner_id,
@@ -374,6 +372,7 @@ def import_plan(
                 display_text=None if role == "owner" else _text(record.raw),
                 blob_ref=blob_ref if role == "owner" else None,
                 occurred_at=record.occurred_at,
+                source=None,
             )
             event_type = "legacy_conversation_message_imported"
             content = {"message": message.model_dump(mode="json"), "raw_blob_ref": blob_ref}

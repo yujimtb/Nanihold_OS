@@ -12,6 +12,7 @@ base_url = "http://lethe:8080"
 bearer_token_env = "LETHE_NANIHOLD_TOKEN"
 timeout_seconds = 30.0
 max_page_size = 100
+history_max_result_bytes = 262144
 
 [kernel.audit_policy]
 policy_id = "policy:audit-local"
@@ -84,3 +85,5 @@ bind_host = "0.0.0.0"
 bind_port = 8000
 api_bearer_token_env = "NANIHOLD_API_BEARER_TOKEN"
 allowed_origins = ["http://localhost:@@NANIHOLD_WEB_HOST_PORT@@"]
+authorized_device_ids = ["device:owner-local"]
+owner_session_lifetime_seconds = 43200

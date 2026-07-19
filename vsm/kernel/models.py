@@ -115,6 +115,7 @@ class WorkItem(StrictModel):
     integration_owner_node_id: Identifier
     parent_work_item_id: Identifier | None
     acceptance_criteria: tuple[NonBlank, ...]
+    route_key: NonBlank
     state: WorkState
     blocking_s3_star_finding_ids: tuple[Identifier, ...]
     completion_evidence: CompletionEvidence | None
@@ -186,6 +187,12 @@ class EffectLease(StrictModel):
     plan_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     state: EffectLeaseState
     expires_at: datetime
+
+
+class EffectApproval(StrictModel):
+    lease_id: Identifier
+    approved_by: Identifier
+    approved_at: datetime
 
 
 class ReferenceGrant(StrictModel):

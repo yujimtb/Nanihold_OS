@@ -74,9 +74,7 @@ class FakeClient:
                 "actual_model_snapshot": self.actual_model,
                 "structured_response": {
                     "display_text": "確認できました",
-                    "work_directives": [],
-                    "decisions": [],
-                    "commitment_updates": [],
+                    "actions": [],
                     "provider_session_id": "provider-session",
                     "pilot_usage": {
                         "candidate_key": candidate().key,
@@ -88,6 +86,12 @@ class FakeClient:
                         "output_tokens": 5,
                         "cost_usd": 0.001,
                         "duration_ms": 100,
+                        "classifier_triggered": False,
+                        "model_substitution": False,
+                        "full_history_resent": False,
+                        "polling_call": False,
+                        "false_complete": False,
+                        "reedited_tokens": 0,
                     },
                 },
             },

@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nanihold.local/contracts/ha-runtime-contract-receipt-v1.json",
+  "title": "Verified HA runtime contract receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "nanihold_image",
+    "lethe_image",
+    "backup_image",
+    "nanihold_source_commit",
+    "lethe_source_commit",
+    "backup_source_commit",
+    "capabilities",
+    "test_receipt_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "const": "implemented-verified"
+    },
+    "nanihold_image": {
+      "$ref": "#/$defs/digestImage"
+    },
+    "lethe_image": {
+      "$ref": "#/$defs/digestImage"
+    },
+    "backup_image": {
+      "$ref": "#/$defs/digestImage"
+    },
+    "nanihold_source_commit": {
+      "$ref": "#/$defs/sourceDigest"
+    },
+    "lethe_source_commit": {
+      "$ref": "#/$defs/sourceDigest"
+    },
+    "backup_source_commit": {
+      "$ref": "#/$defs/sourceDigest"
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 8,
+      "maxItems": 8,
+      "items": {
+        "enum": [
+          "nanihold-production-config-v1",
+          "pilot-host-http-active-standby-v1",
+          "lethe-serve-event-ledger-v1",
+          "lethe-serve-projection-v1",
+          "lethe-projection-health-v1",
+          "lethe-restore-state-v1",
+          "lethe-ha-canary-v1",
+          "backup-canonical-event-blob-projection-postgres-v1"
+        ]
+      }
+    },
+    "test_receipt_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "$defs": {
+    "digestImage": {
+      "type": "string",
+      "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"
+    },
+    "sourceDigest": {
+      "type": "string",
+      "oneOf": [
+        {
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        {
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      ]
+    }
+  }
+}

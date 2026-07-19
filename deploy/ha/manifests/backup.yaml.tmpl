@@ -1,0 +1,80 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: lethe-nas-backup
+spec:
+  capacity:
+    storage: 1Ti
+  accessModes: ["ReadWriteMany"]
+  persistentVolumeReclaimPolicy: Retain
+  mountOptions: ["hard", "nfsvers=4.1", "timeo=600", "retrans=2"]
+  nfs:
+    server: "@@NAS_NFS_SERVER@@"
+    path: "@@NAS_NFS_EXPORT@@"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lethe-nas-backup
+  namespace: lethe-system
+spec:
+  accessModes: ["ReadWriteMany"]
+  volumeName: lethe-nas-backup
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 1Ti
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: lethe-canonical-backup
+  namespace: lethe-system
+spec:
+  schedule: "17 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: backup
+              image: "@@BACKUP_IMAGE@@"
+              imagePullPolicy: IfNotPresent
+              args:
+                - backup
+                - --mode
+                - canonical-event-blob-projection-postgres
+                - --destination
+                - /backup
+                - --data-space-id
+                - "@@LETHE_DATA_SPACE_ID@@"
+              env:
+                - name: LETHE_BASE_URL
+                  value: "https://lethe.lethe-system.svc"
+                - name: LETHE_HISTORY_BEARER_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: lethe-runtime
+                      key: history-bearer-token
+                - name: BACKUP_ENCRYPTION_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: lethe-runtime
+                      key: backup-encryption-key
+                - name: POSTGRES_DSN
+                  valueFrom:
+                    secretKeyRef:
+                      name: lethe-runtime
+                      key: postgres-dsn
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            - name: backup
+              persistentVolumeClaim:
+                claimName: lethe-nas-backup

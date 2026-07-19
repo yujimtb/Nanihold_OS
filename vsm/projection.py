@@ -5,12 +5,25 @@ import json
 from datetime import datetime
 
 from vsm.errors import InvariantViolation
+from vsm.activation.models import (
+    ActivationState,
+    CurrentWorkGraphSnapshot,
+    HistoryImportReceipt,
+    ReorientationAssessment,
+)
+from vsm.auth import BootstrapCodeRecord, BrowserSessionRecord
 from vsm.interface.models import (
     Commitment,
     Conversation,
+    ConversationActionReceipt,
+    ConversationCreatedReceipt,
     ConversationMessage,
     Decision,
     NodeMemory,
+    PilotSession,
+    RecordDecisionAction,
+    SurfaceBinding,
+    UpdateCommitmentAction,
 )
 from vsm.interface.service import InterfaceService
 from vsm.kernel.models import (
@@ -18,6 +31,7 @@ from vsm.kernel.models import (
     CapabilityGrant,
     CompletionEvidence,
     EffectLease,
+    EffectApproval,
     EffectLeaseState,
     Execution,
     ExecutionState,
@@ -86,6 +100,16 @@ class OperationalProjection:
                 if self.token_lab_events is not None
                 else 0
             ),
+            (
+                self.kernel.activation._version
+                if event.stream_id == self.kernel.activation._stream_id
+                else 0
+            ),
+            (
+                self.kernel.owner_bootstrap._version
+                if event.stream_id == self.kernel.owner_bootstrap._stream_id
+                else 0
+            ),
         )
         if event.stream_version != known_version + 1:
             raise InvariantViolation(
@@ -139,6 +163,37 @@ class OperationalProjection:
         self.kernel.work_edges.append(WorkEdge.model_validate(event.payload["edge"]))
         self._kernel_version(event)
 
+    def _on_current_work_graph_imported(self, event) -> None:
+        snapshot = CurrentWorkGraphSnapshot.model_validate(
+            event.payload["snapshot"]
+        )
+        self.kernel.nodes.update(
+            {item.node_id: item for item in snapshot.nodes}
+        )
+        self.kernel.work_items.update(
+            {item.work_item_id: item for item in snapshot.work_items}
+        )
+        self.kernel.work_edges.extend(snapshot.edges)
+        self.kernel.activation.work_graph_snapshot_id = snapshot.snapshot_id
+        self._kernel_version(event)
+
+    def _on_work_item_delegated(self, event) -> None:
+        work = self.kernel.work_items[event.stream_id]
+        self.kernel.work_items[event.stream_id] = work.model_copy(
+            update={
+                "delegated_to_node_id": event.payload["delegated_to_node_id"],
+                "state": WorkState.READY,
+            }
+        )
+        self._kernel_version(event)
+
+    def _on_work_item_resume_prepared(self, event) -> None:
+        work = self.kernel.work_items[event.stream_id]
+        self.kernel.work_items[event.stream_id] = work.model_copy(
+            update={"state": WorkState.READY}
+        )
+        self._kernel_version(event)
+
     def _on_execution_created(self, event) -> None:
         execution = Execution.model_validate(event.payload["execution"])
         self.kernel.executions[execution.execution_id] = execution
@@ -162,6 +217,22 @@ class OperationalProjection:
     def _on_effect_planned(self, event) -> None:
         lease = EffectLease.model_validate(event.payload["effect_lease"])
         self.kernel.effect_leases[lease.lease_id] = lease
+        self._kernel_version(event)
+
+    def _on_pilot_execution_receipt_recorded(self, event) -> None:
+        execution = self.kernel.executions[event.stream_id]
+        self.kernel.executions[event.stream_id] = execution.model_copy(
+            update={
+                "state": ExecutionState(event.payload["state"]),
+                "provider_session_id": event.payload["provider_session_id"],
+                "pause_reason": event.payload["pause_reason"],
+            }
+        )
+        self._kernel_version(event)
+
+    def _on_effect_approved(self, event) -> None:
+        approval = EffectApproval.model_validate(event.payload["approval"])
+        self.kernel.effect_approvals[approval.lease_id] = approval
         self._kernel_version(event)
 
     def _effect_state(self, event) -> None:
@@ -290,41 +361,223 @@ class OperationalProjection:
 
     def _on_conversation_created(self, event) -> None:
         conversation = Conversation.model_validate(event.payload["conversation"])
-        stored = conversation.model_copy(update={"last_event_cursor": self.cursor + 1})
-        self.interface.conversations[conversation.conversation_id] = stored
+        binding = SurfaceBinding.model_validate(event.payload["surface_binding"])
+        self.interface.conversations[conversation.conversation_id] = conversation
+        self.interface.surface_bindings[binding.binding_id] = binding
         self.interface.messages[conversation.conversation_id] = []
+        self.interface._conversation_cursors[conversation.conversation_id] = self.cursor + 1
+        receipt = ConversationCreatedReceipt(
+            conversation_id=conversation.conversation_id,
+            surface_binding_id=binding.binding_id,
+            event_cursor=self.cursor + 1,
+        )
+        self.interface._creation_receipts[event.idempotency_key] = receipt
+        self.interface._creation_digests[event.idempotency_key] = event.payload[
+            "request_digest"
+        ]
+        self._interface_version(event)
+
+    def _on_legacy_conversation_created(self, event) -> None:
+        conversation = Conversation.model_validate(event.payload["conversation"])
+        self.interface.conversations[conversation.conversation_id] = conversation
+        self.interface.messages[conversation.conversation_id] = []
+        self.interface._conversation_cursors[conversation.conversation_id] = self.cursor + 1
         self._interface_version(event)
 
     def _on_owner_message_received(self, event) -> None:
         message = ConversationMessage.model_validate(event.payload["message"])
         self.interface.messages[message.conversation_id].append(message)
+        receipt = ConversationActionReceipt(
+            action_id=event.payload["action_id"],
+            conversation_id=message.conversation_id,
+            status="accepted",
+            owner_message_id=message.message_id,
+            interface_message=None,
+            event_cursor=self.cursor + 1,
+            error=None,
+        )
+        self.interface.action_receipts[receipt.action_id] = receipt
+        self.interface._action_digests[receipt.action_id] = event.payload["action_digest"]
+        self.interface._conversation_cursors[message.conversation_id] = self.cursor + 1
         self._interface_version(event)
 
     def _on_interface_response_recorded(self, event) -> None:
         message = ConversationMessage.model_validate(event.payload["message"])
         self.interface.messages[message.conversation_id].append(message)
-        conversation = self.interface.conversations[message.conversation_id]
-        self.interface.conversations[message.conversation_id] = conversation.model_copy(
+        existing = next(
+            (
+                session
+                for session in self.interface.pilot_sessions.values()
+                if session.conversation_id == message.conversation_id
+            ),
+            None,
+        )
+        if existing is None:
+            existing = PilotSession(
+                pilot_session_id=event.payload["pilot_session_id"],
+                conversation_id=message.conversation_id,
+                pilot_id="pilot:fable",
+                root_provider_session_id=event.payload[
+                    "root_provider_session_id"
+                ],
+                provider_session_id=event.payload["provider_session_id"],
+                last_event_cursor=self.cursor + 1,
+            )
+        else:
+            existing = existing.model_copy(
+                update={
+                    "provider_session_id": event.payload["provider_session_id"],
+                    "last_event_cursor": self.cursor + 1,
+                }
+            )
+        self.interface.pilot_sessions[existing.pilot_session_id] = existing
+        from pydantic import TypeAdapter
+        from vsm.interface.models import InterfaceAction
+
+        adapter = TypeAdapter(InterfaceAction)
+        for raw in event.payload["actions"]:
+            action = adapter.validate_python(raw)
+            if isinstance(action, RecordDecisionAction):
+                self.interface.decisions[action.action_id] = Decision(
+                    decision_id=action.action_id,
+                    conversation_id=message.conversation_id,
+                    statement=action.statement,
+                    supersedes_decision_id=action.supersedes_decision_id,
+                )
+            elif isinstance(action, UpdateCommitmentAction):
+                self.interface.commitments[action.commitment_id] = Commitment(
+                    commitment_id=action.commitment_id,
+                    conversation_id=message.conversation_id,
+                    statement=action.statement,
+                    work_item_id=action.work_item_id,
+                    state=action.state,
+                )
+        receipt = ConversationActionReceipt(
+            action_id=event.payload["action_id"],
+            conversation_id=message.conversation_id,
+            status="completed",
+            owner_message_id=event.payload["owner_message_id"],
+            interface_message=message,
+            event_cursor=self.cursor + 1,
+            error=None,
+        )
+        self.interface.action_receipts[receipt.action_id] = receipt
+        self.interface._action_digests[receipt.action_id] = event.payload["action_digest"]
+        self.interface._conversation_cursors[message.conversation_id] = self.cursor + 1
+        self._interface_version(event)
+
+    def _on_reorientation_session_advanced(self, event) -> None:
+        existing = next(
+            (
+                session
+                for session in self.interface.pilot_sessions.values()
+                if session.conversation_id == event.stream_id
+            ),
+            None,
+        )
+        session = PilotSession(
+            pilot_session_id=event.payload["pilot_session_id"],
+            conversation_id=event.stream_id,
+            pilot_id="pilot:fable",
+            root_provider_session_id=event.payload[
+                "root_provider_session_id"
+            ],
+            provider_session_id=event.payload["provider_session_id"],
+            last_event_cursor=self.cursor + 1,
+        )
+        if existing is not None and existing.pilot_session_id != session.pilot_session_id:
+            raise InvariantViolation(
+                "reorientation changed canonical PilotSession identity"
+            )
+        self.interface.pilot_sessions[session.pilot_session_id] = session
+        self.interface._conversation_cursors[event.stream_id] = self.cursor + 1
+        self._interface_version(event)
+
+    def _on_conversation_action_failed(self, event) -> None:
+        action_id = event.payload["action_id"]
+        previous = self.interface.action_receipts.get(action_id)
+        if previous is None:
+            raise InvariantViolation("failed action has no accepted owner message")
+        self.interface.action_receipts[action_id] = previous.model_copy(
             update={
-                "provider_session_id": event.payload["provider_session_id"],
-                "last_event_cursor": self.cursor + 1,
+                "status": "failed",
+                "event_cursor": self.cursor + 1,
+                "error": event.payload["error"],
             }
         )
-        response = {
-            "display_text": message.display_text,
-            "work_directives": event.payload["work_directives"],
-            "decisions": event.payload["decisions"],
-            "commitment_updates": event.payload["commitment_updates"],
-            "provider_session_id": event.payload["provider_session_id"],
-            "pilot_usage": event.payload["pilot_usage"],
-        }
-        from vsm.pilot.models import StructuredInterfaceResponse
-
-        self.interface._apply_structured_updates(
-            message.conversation_id,
-            StructuredInterfaceResponse.model_validate(response),
-        )
+        self.interface._conversation_cursors[event.stream_id] = self.cursor + 1
         self._interface_version(event)
+
+    def _on_owner_correction_recorded(self, event) -> None:
+        decision = Decision.model_validate(event.payload["decision"])
+        self.interface.decisions[decision.decision_id] = decision
+        self.interface._conversation_cursors[event.stream_id] = self.cursor + 1
+        self._interface_version(event)
+
+    def _on_history_import_verified(self, event) -> None:
+        activation = self.kernel.activation
+        receipt = HistoryImportReceipt.model_validate(event.payload["receipt"])
+        activation.import_receipt = receipt
+        activation.sessions = {
+            session.session_ref: session for session in receipt.sessions
+        }
+        activation.state = ActivationState.HISTORY_IMPORTED
+        activation.import_event_cursor = self.cursor + 1
+        activation._version = event.stream_version
+
+    def _on_reorientation_started(self, event) -> None:
+        self.kernel.activation.state = ActivationState.REORIENTATION_ONLY
+        self.kernel.activation.reorientation_error = None
+        self.kernel.activation._version = event.stream_version
+
+    _on_reorientation_retry_started = _on_reorientation_started
+
+    def _on_reorientation_failed(self, event) -> None:
+        self.kernel.activation.reorientation_error = event.payload["error_code"]
+        self.kernel.activation._version = event.stream_version
+
+    def _on_history_query_resolved(self, event) -> None:
+        self.kernel.activation.history_query_operations.add(event.payload["operation"])
+        self.kernel.activation.history_query_event_ids.add(event.event_id)
+        self.kernel.activation._version = event.stream_version
+
+    def _on_reorientation_pilot_usage_recorded(self, event) -> None:
+        activation = self.kernel.activation
+        activation.reorientation_pilot_calls += 1
+        activation.reorientation_input_tokens += event.payload["input_tokens"]
+        activation.reorientation_output_tokens += event.payload["output_tokens"]
+        activation._version = event.stream_version
+
+    def _on_reorientation_assessment_accepted(self, event) -> None:
+        self.kernel.activation.assessment = ReorientationAssessment.model_validate(
+            event.payload["assessment"]
+        )
+        self.kernel.activation.state = ActivationState.AWAITING_OWNER_CONFIRMATION
+        self.kernel.activation._version = event.stream_version
+
+    def _on_activation_approved(self, event) -> None:
+        self.kernel.activation.state = ActivationState.ACTIVE
+        self.kernel.activation.approved_at = datetime.fromisoformat(
+            event.payload["approved_at"]
+        )
+        self.kernel.activation._version = event.stream_version
+
+    def _on_owner_bootstrap_issued(self, event) -> None:
+        record = BootstrapCodeRecord.model_validate(event.payload["record"])
+        self.kernel.owner_bootstrap.codes[record.bootstrap_id] = record
+        self.kernel.owner_bootstrap._version = event.stream_version
+
+    def _on_owner_bootstrap_exchanged(self, event) -> None:
+        bootstrap_id = event.payload["bootstrap_id"]
+        record = self.kernel.owner_bootstrap.codes.get(bootstrap_id)
+        if record is None:
+            raise InvariantViolation("owner bootstrap exchange references unknown code")
+        self.kernel.owner_bootstrap.codes[bootstrap_id] = record.model_copy(
+            update={"used_at": datetime.fromisoformat(event.payload["used_at"])}
+        )
+        session = BrowserSessionRecord.model_validate(event.payload["session"])
+        self.kernel.owner_bootstrap.sessions[session.session_id] = session
+        self.kernel.owner_bootstrap._version = event.stream_version
 
     def _on_legacy_conversation_message_imported(self, event) -> None:
         message = ConversationMessage.model_validate(event.payload["message"])
@@ -397,15 +650,22 @@ class OperationalProjection:
             "executions": self.kernel.executions,
             "capability_grants": self.kernel.capability_grants,
             "effect_leases": self.kernel.effect_leases,
+            "effect_approvals": self.kernel.effect_approvals,
             "reference_grants": self.kernel.reference_grants,
             "budget_reservations": self.kernel.budget_reservations,
             "findings": self.kernel.findings,
             "route_snapshots": self.kernel.route_snapshots,
             "conversations": self.interface.conversations,
+            "surface_bindings": self.interface.surface_bindings,
+            "pilot_sessions": self.interface.pilot_sessions,
             "messages": self.interface.messages,
             "commitments": self.interface.commitments,
             "decisions": self.interface.decisions,
             "node_memories": self.interface.node_memories,
+            "action_receipts": self.interface.action_receipts,
+            "activation": self.kernel.activation.status(),
+            "owner_bootstrap_codes": self.kernel.owner_bootstrap.codes,
+            "owner_browser_sessions": self.kernel.owner_bootstrap.sessions,
             "routing_outcomes": (
                 self.routing_evidence.outcomes
                 if self.routing_evidence is not None

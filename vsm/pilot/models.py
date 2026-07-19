@@ -9,6 +9,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from vsm.kernel.models import BlobRef, Identifier, NonBlank
+from vsm.interface.models import InterfaceAction
 
 
 class StrictModel(BaseModel):
@@ -137,6 +138,57 @@ class PilotHostStatus(StrictModel):
     disconnected_at: datetime | None
 
 
+class ProviderSession(StrictModel):
+    provider_session_id: NonBlank
+    root_session_id: NonBlank
+    relation: Literal["root", "fork"]
+    model_candidate_key: NonBlank
+    working_directory_fingerprint: NonBlank
+    mcp_prefix_fingerprint: NonBlank
+
+    @model_validator(mode="after")
+    def root_identity_is_consistent(self) -> "ProviderSession":
+        if (
+            self.relation == "root"
+            and self.provider_session_id != self.root_session_id
+        ):
+            raise ValueError("root ProviderSession must identify itself as root")
+        if (
+            self.relation == "fork"
+            and self.provider_session_id == self.root_session_id
+        ):
+            raise ValueError("fork ProviderSession must differ from root")
+        return self
+
+
+class CacheOpportunity(StrictModel):
+    root_session: ProviderSession
+    requested_candidate_key: NonBlank
+    working_directory_fingerprint: NonBlank
+    mcp_prefix_fingerprint: NonBlank
+    next_use_probability: Annotated[float, Field(ge=0, le=1)]
+    posterior_confidence: Annotated[float, Field(ge=0, le=1)]
+    cold_input_cost: Annotated[float, Field(ge=0)]
+    cache_hit_input_cost: Annotated[float, Field(ge=0)]
+    warming_cost: Annotated[float, Field(ge=0)]
+    quota_remaining_fraction: Annotated[float, Field(ge=0, le=1)]
+    quota_floor_fraction: Annotated[float, Field(ge=0, le=1)]
+    owner_turn_queued: bool
+
+
+class CacheDecision(StrictModel):
+    warm: bool
+    reason: Literal[
+        "expected_saving_exceeds_cost",
+        "identity_mismatch",
+        "confidence_below_95_percent",
+        "quota_below_floor",
+        "owner_turn_queued",
+        "not_economical",
+    ]
+    root_session_id: NonBlank
+
+
 class HandoffPack(StrictModel):
     work_item_id: Identifier
     unmet_acceptance: tuple[NonBlank, ...]
@@ -177,13 +229,17 @@ class InterfacePilotUsage(StrictModel):
     output_tokens: Annotated[int, Field(ge=0)]
     cost_usd: Annotated[float, Field(ge=0)]
     duration_ms: Annotated[int, Field(ge=0)]
+    classifier_triggered: bool
+    model_substitution: bool
+    full_history_resent: bool
+    polling_call: bool
+    false_complete: bool
+    reedited_tokens: Annotated[int, Field(ge=0)]
 
 
 class StructuredInterfaceResponse(StrictModel):
     display_text: NonBlank
-    work_directives: tuple[dict[str, object], ...]
-    decisions: tuple[dict[str, object], ...]
-    commitment_updates: tuple[dict[str, object], ...]
+    actions: tuple[InterfaceAction, ...]
     provider_session_id: NonBlank
     pilot_usage: InterfacePilotUsage
 

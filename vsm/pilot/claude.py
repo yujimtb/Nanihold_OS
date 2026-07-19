@@ -4,7 +4,8 @@ from dataclasses import dataclass
 
 from vsm.errors import InvariantViolation, ModelMismatch
 from vsm.pilot.models import (
-    ModelCandidate,
+    CacheDecision,
+    CacheOpportunity,
     PilotMode,
     PilotPolicy,
     PilotRequest,
@@ -16,6 +17,7 @@ from vsm.pilot.models import (
 class ClaudeLaunch:
     argv: tuple[str, ...]
     policy: PilotPolicy
+    env: tuple[tuple[str, str], ...]
 
 
 class ClaudePilotAdapter:
@@ -48,7 +50,64 @@ class ClaudePilotAdapter:
             argv.extend(("--resume", request.provider_session_id))
         if self.policy.mode is PilotMode.SANDBOXED_BYPASS:
             argv.append("--dangerously-skip-permissions")
-        return ClaudeLaunch(argv=tuple(argv), policy=self.policy)
+        return ClaudeLaunch(
+            argv=tuple(argv),
+            policy=self.policy,
+            env=(("CLAUDE_CODE_DISABLE_FABLE_OPUS_AUTO_SWITCH", "1"),),
+        )
+
+    def decide_cache_warming(self, opportunity: CacheOpportunity) -> CacheDecision:
+        root = opportunity.root_session
+        identity_matches = (
+            root.relation == "root"
+            and root.model_candidate_key == opportunity.requested_candidate_key
+            and root.working_directory_fingerprint
+            == opportunity.working_directory_fingerprint
+            and root.mcp_prefix_fingerprint == opportunity.mcp_prefix_fingerprint
+        )
+        if not identity_matches:
+            reason = "identity_mismatch"
+        elif opportunity.posterior_confidence < 0.95:
+            reason = "confidence_below_95_percent"
+        elif opportunity.quota_remaining_fraction < opportunity.quota_floor_fraction:
+            reason = "quota_below_floor"
+        elif opportunity.owner_turn_queued:
+            reason = "owner_turn_queued"
+        else:
+            expected_saving = opportunity.next_use_probability * (
+                opportunity.cold_input_cost - opportunity.cache_hit_input_cost
+            )
+            reason = (
+                "expected_saving_exceeds_cost"
+                if expected_saving > opportunity.warming_cost
+                else "not_economical"
+            )
+        return CacheDecision(
+            warm=reason == "expected_saving_exceeds_cost",
+            reason=reason,
+            root_session_id=root.root_session_id,
+        )
+
+    def build_cache_warm_launch(
+        self, opportunity: CacheOpportunity
+    ) -> ClaudeLaunch:
+        decision = self.decide_cache_warming(opportunity)
+        if not decision.warm:
+            raise InvariantViolation(f"cache warming rejected: {decision.reason}")
+        return ClaudeLaunch(
+            argv=(
+                "claude",
+                "--resume",
+                decision.root_session_id,
+                "--fork-session",
+                "--model",
+                "claude-fable-5",
+                "--effort",
+                "high",
+            ),
+            policy=self.policy,
+            env=(("CLAUDE_CODE_DISABLE_FABLE_OPUS_AUTO_SWITCH", "1"),),
+        )
 
     def validate_response(
         self, request: PilotRequest, response: PilotResponse

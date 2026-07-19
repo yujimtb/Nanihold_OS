@@ -8,7 +8,7 @@ from typing import Callable
 from pydantic import BaseModel, ConfigDict, Field
 
 from vsm.errors import InvariantViolation
-from vsm.ids import new_id
+from vsm.ids import deterministic_event_id
 from vsm.kernel.ledger import OperationalLedger
 from vsm.kernel.models import EventEnvelope
 
@@ -252,7 +252,11 @@ class TokenLabEventService:
         stream_id = self._baseline_stream(baseline.work_type)
         expected = self._versions.get(stream_id, 0)
         event = EventEnvelope(
-            event_id=new_id("event"),
+            event_id=deterministic_event_id(
+                data_space_id=self.data_space_id,
+                stream_id=stream_id,
+                idempotency_key=idempotency_key,
+            ),
             data_space_id=self.data_space_id,
             stream_id=stream_id,
             stream_version=expected + 1,
@@ -288,7 +292,11 @@ class TokenLabEventService:
         stream_id = observation.observation_id
         expected = self._versions.get(stream_id, 0)
         event = EventEnvelope(
-            event_id=new_id("event"),
+            event_id=deterministic_event_id(
+                data_space_id=self.data_space_id,
+                stream_id=stream_id,
+                idempotency_key=idempotency_key,
+            ),
             data_space_id=self.data_space_id,
             stream_id=stream_id,
             stream_version=expected + 1,
@@ -335,7 +343,11 @@ class TokenLabEventService:
         stream_id = "tokenlab:weekly-review"
         expected = self._versions.get(stream_id, 0)
         event = EventEnvelope(
-            event_id=new_id("event"),
+            event_id=deterministic_event_id(
+                data_space_id=self.data_space_id,
+                stream_id=stream_id,
+                idempotency_key=idempotency_key,
+            ),
             data_space_id=self.data_space_id,
             stream_id=stream_id,
             stream_version=expected + 1,

@@ -28,6 +28,7 @@ class LetheConfig(StrictConfig):
     bearer_token_env: str = Field(min_length=1)
     timeout_seconds: float = Field(gt=0)
     max_page_size: int = Field(gt=0, le=1000)
+    history_max_result_bytes: int = Field(gt=0)
 
 
 class KernelConfig(StrictConfig):
@@ -124,6 +125,31 @@ class InterfacePilotConfig(StrictConfig):
         return self
 
 
+class ProductionPilotHostRuntimeConfig(StrictConfig):
+    coding_pilot_id: str = Field(min_length=1)
+    coding_candidate_model_snapshot: str = Field(min_length=1)
+    interface_max_budget_usd: float = Field(gt=0)
+    transport_timeout_seconds: float = Field(gt=0)
+    work_cwd: str = Field(min_length=1)
+    work_sandbox: Literal["read-only", "workspace-write"]
+    work_max_input_tokens: int = Field(gt=0)
+    work_max_output_tokens: int = Field(gt=0)
+    work_max_total_tokens: int = Field(gt=0)
+    work_timeout_seconds: float = Field(gt=0)
+    max_parallelism: int = Field(gt=0, le=32)
+    reorientation_max_tool_rounds: int = Field(gt=0, le=100)
+
+    @model_validator(mode="after")
+    def work_total_covers_parts(self) -> "ProductionPilotHostRuntimeConfig":
+        if self.work_max_total_tokens < (
+            self.work_max_input_tokens + self.work_max_output_tokens
+        ):
+            raise ValueError(
+                "production_pilot_host.work_max_total_tokens must cover parts"
+            )
+        return self
+
+
 class CandidateRegistration(StrictConfig):
     candidate: ModelCandidate
     priors: tuple[BenchmarkPrior, ...]
@@ -143,6 +169,17 @@ class ServerConfig(StrictConfig):
     bind_port: int = Field(gt=0, le=65535)
     api_bearer_token_env: str = Field(min_length=1)
     allowed_origins: tuple[str, ...]
+    authorized_device_ids: tuple[str, ...]
+    owner_session_lifetime_seconds: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def device_identities_are_explicit(self) -> "ServerConfig":
+        if (
+            not self.authorized_device_ids
+            or len(self.authorized_device_ids) != len(set(self.authorized_device_ids))
+        ):
+            raise ValueError("server.authorized_device_ids must be non-empty and unique")
+        return self
 
 
 class NaniholdConfig(StrictConfig):
@@ -150,6 +187,7 @@ class NaniholdConfig(StrictConfig):
     kernel: KernelConfig
     pilot: PilotConfig
     interface_pilot: InterfacePilotConfig
+    production_pilot_host: ProductionPilotHostRuntimeConfig | None = None
     routing: RoutingConfig
     server: ServerConfig
 
@@ -196,6 +234,20 @@ class NaniholdConfig(StrictConfig):
                 "model registry"
             )
         if self.deployment.mode == "production":
+            if self.production_pilot_host is None:
+                raise ValueError(
+                    "production requires production_pilot_host receipt contract"
+                )
+            coding_matches = [
+                item.candidate
+                for item in self.routing.candidates
+                if item.candidate.model_snapshot
+                == self.production_pilot_host.coding_candidate_model_snapshot
+            ]
+            if len(coding_matches) != 1:
+                raise ValueError(
+                    "production coding candidate must match exactly one registry entry"
+                )
             if any(
                 prior.source == "local-verification"
                 for registration in self.routing.candidates
@@ -215,6 +267,10 @@ class NaniholdConfig(StrictConfig):
                     "claude-code/anthropic/claude-fable-5/high"
                 )
         else:
+            if self.production_pilot_host is not None:
+                raise ValueError(
+                    "local verification cannot configure production_pilot_host"
+                )
             lowered = interface.model_snapshot.lower()
             if interface.effort != "low":
                 raise ValueError("local verification requires Interface effort low")

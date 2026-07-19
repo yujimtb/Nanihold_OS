@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from vsm.interface.service import InterfaceService
+from vsm.activation.models import ActivationState
 from vsm.kernel.ledger import InMemoryOperationalLedger
 from vsm.kernel.models import (
     AuditPolicy,
@@ -18,6 +19,7 @@ from vsm.kernel.models import (
 )
 from vsm.kernel.service import Kernel
 from vsm.pilot.models import InterfacePilotUsage, StructuredInterfaceResponse
+from vsm.token_lab.lab import TokenEfficiencyLab, TokenLabEventService
 
 
 NOW = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
@@ -30,15 +32,15 @@ class FakePilot:
     def __init__(self) -> None:
         self.calls = 0
         self.contexts = []
+        self.actions = ()
+        self.classifier_triggered = False
 
     def respond(self, *, owner_text, context):
         self.calls += 1
         self.contexts.append(context)
         return StructuredInterfaceResponse(
             display_text=f"accepted:{owner_text}",
-            work_directives=(),
-            decisions=(),
-            commitment_updates=(),
+            actions=self.actions,
             provider_session_id="provider-session",
             pilot_usage=InterfacePilotUsage(
                 candidate_key="fake@1:test",
@@ -50,6 +52,12 @@ class FakePilot:
                 output_tokens=5,
                 cost_usd=0.001,
                 duration_ms=50,
+                classifier_triggered=self.classifier_triggered,
+                model_substitution=False,
+                full_history_resent=False,
+                polling_call=False,
+                false_complete=False,
+                reedited_tokens=0,
             ),
         )
 
@@ -111,11 +119,19 @@ def system():
         actor_id=OWNER_ID,
         idempotency_key="fixture:interface-node",
     )
+    kernel.activation.state = ActivationState.ACTIVE
     pilot = FakePilot()
+    token_lab_events = TokenLabEventService(
+        lab=TokenEfficiencyLab(),
+        ledger=ledger,
+        data_space_id=SPACE_ID,
+        clock=lambda: NOW,
+    )
     interface = InterfaceService(
         kernel=kernel,
         ledger=ledger,
         pilot=pilot,
+        token_lab_events=token_lab_events,
         clock=lambda: NOW,
     )
     return kernel, ledger, interface, pilot
