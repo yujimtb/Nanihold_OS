@@ -10,6 +10,7 @@ import typer
 
 from vsm.errors import ConfigurationError, InvariantViolation
 from vsm.config import load_config
+from vsm.interface.models import Conversation
 from vsm.migration.legacy import (
     MigrationPlan,
     archive_legacy,
@@ -18,7 +19,14 @@ from vsm.migration.legacy import (
     scan_legacy,
 )
 from vsm.runtime import bootstrap, build_app
-from vsm.kernel.models import RouteSnapshot, RouteSnapshotState
+from vsm.kernel.models import (
+    NodeKind,
+    NodeStatus,
+    RouteSnapshot,
+    RouteSnapshotState,
+    UVSMNode,
+    VSMFunction,
+)
 
 app = typer.Typer(
     name="vsm",
@@ -28,9 +36,13 @@ app = typer.Typer(
 events_app = typer.Typer(help="Read the canonical Event Ledger.")
 migration_app = typer.Typer(help="One-time legacy archive migration.")
 routes_app = typer.Typer(help="Commission and inspect approved Bayesian routes.")
+verification_app = typer.Typer(
+    help="Commission the isolated local verification environment."
+)
 app.add_typer(events_app, name="events")
 app.add_typer(migration_app, name="migration")
 app.add_typer(routes_app, name="routes")
+app.add_typer(verification_app, name="verification")
 
 
 class InspectResource(StrEnum):
@@ -147,6 +159,153 @@ def route_publish(
             idempotency_key=f"{idempotency_prefix}:publish",
         )
         _json(runtime.kernel.route_snapshots[snapshot_id])
+    finally:
+        runtime.close()
+
+
+@verification_app.command("commission")
+def verification_commission(
+    config: Path = typer.Option(..., exists=True, dir_okay=False, readable=True),
+) -> None:
+    """Create the local Interface Node, conversation, and approved route once."""
+    runtime = bootstrap(config, require_active_route=False)
+    try:
+        loaded = runtime.loaded.config
+        if loaded.deployment.mode != "local_verification":
+            raise typer.BadParameter(
+                "verification commission requires deployment.mode=local_verification"
+            )
+        data_space = loaded.kernel.data_space
+        interface_config = loaded.interface_pilot
+        node = UVSMNode(
+            node_id=interface_config.node_id,
+            data_space_id=data_space.data_space_id,
+            owner_id=data_space.owner_id,
+            name="Local owner Interface Node",
+            kind=NodeKind.INTERFACE,
+            parent_node_id=None,
+            resident_functions=frozenset(VSMFunction),
+            resident_s3_parent_function=VSMFunction.S5,
+            status=NodeStatus.ACTIVE,
+            memory_stream_id="memory:local-interface",
+        )
+        stored_node = runtime.kernel.nodes.get(node.node_id)
+        if stored_node is None:
+            runtime.kernel.register_node(
+                node,
+                actor_id=data_space.owner_id,
+                idempotency_key="local-verification:interface-node",
+            )
+        elif stored_node != node:
+            raise InvariantViolation(
+                "existing local Interface Node differs from commissioning contract"
+            )
+
+        conversation = Conversation(
+            conversation_id="conversation:local-verification",
+            data_space_id=data_space.data_space_id,
+            interface_node_id=node.node_id,
+            owner_id=data_space.owner_id,
+            provider_session_id=None,
+            last_event_cursor=0,
+            status="active",
+        )
+        stored_conversation = runtime.interface.conversations.get(
+            conversation.conversation_id
+        )
+        if stored_conversation is None:
+            runtime.interface.create_conversation(
+                conversation,
+                idempotency_key="local-verification:conversation",
+            )
+        else:
+            immutable_existing = stored_conversation.model_copy(
+                update={
+                    "provider_session_id": None,
+                    "last_event_cursor": 0,
+                }
+            )
+            if immutable_existing != conversation:
+                raise InvariantViolation(
+                    "existing local Conversation differs from commissioning contract"
+                )
+
+        registry = runtime.state.model_registry
+        candidate = next(
+            item
+            for item in registry.values()
+            if (
+                item.adapter == interface_config.adapter
+                and item.adapter_version == interface_config.adapter_version
+                and item.provider == interface_config.provider
+                and item.model_snapshot == interface_config.model_snapshot
+                and item.effort == interface_config.effort
+                and item.toolset == interface_config.toolset
+                and item.sandbox_fingerprint
+                == interface_config.sandbox_fingerprint
+                and item.environment_fingerprint
+                == interface_config.environment_fingerprint
+            )
+        )
+        snapshot_id = loaded.routing.active_route_snapshot_id
+        snapshot = runtime.kernel.route_snapshots.get(snapshot_id)
+        if snapshot is None:
+            snapshot = RouteSnapshot(
+                snapshot_id=snapshot_id,
+                data_space_id=data_space.data_space_id,
+                route_key="interface:local-verification",
+                evidence_cursor=runtime.state.routing_evidence.evidence_cursor,
+                candidate_keys=(candidate.key,),
+                production_objective="quality_max",
+                state=RouteSnapshotState.DRAFT,
+                s3_star_approval_event_id=None,
+                owner_approval_event_id=None,
+            )
+            runtime.kernel.register_route_snapshot(
+                snapshot,
+                actor_id=data_space.owner_id,
+                idempotency_key="local-verification:route:register",
+            )
+            runtime.kernel.approve_route_snapshot(
+                snapshot_id,
+                approval="s3_star",
+                actor_id="actor:local-s3-star",
+                idempotency_key="local-verification:route:s3-star",
+            )
+            runtime.kernel.approve_route_snapshot(
+                snapshot_id,
+                approval="owner",
+                actor_id=data_space.owner_id,
+                idempotency_key="local-verification:route:owner",
+            )
+            runtime.kernel.publish_route_snapshot(
+                snapshot_id,
+                actor_id=data_space.owner_id,
+                idempotency_key="local-verification:route:publish",
+            )
+            snapshot = runtime.kernel.route_snapshots[snapshot_id]
+        elif (
+            snapshot.state is not RouteSnapshotState.PUBLISHED
+            or snapshot.candidate_keys != (candidate.key,)
+            or snapshot.evidence_cursor
+            != runtime.state.routing_evidence.evidence_cursor
+        ):
+            raise InvariantViolation(
+                "existing local RouteSnapshot differs from commissioning contract"
+            )
+        _json(
+            {
+                "deployment_mode": loaded.deployment.mode,
+                "data_space_id": data_space.data_space_id,
+                "interface_node_id": node.node_id,
+                "conversation_id": conversation.conversation_id,
+                "route_snapshot_id": snapshot.snapshot_id,
+                "route_state": snapshot.state,
+                "candidate_key": candidate.key,
+                "model_snapshot": candidate.model_snapshot,
+                "effort": candidate.effort,
+            }
+        )
     finally:
         runtime.close()
 

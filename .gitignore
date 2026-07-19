@@ -35,3 +35,4 @@ env/
 .vscode/
 .DS_Store
 vsm.toml
+.local-verification/

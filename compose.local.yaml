@@ -1,0 +1,46 @@
+services:
+  app:
+    env_file:
+      - path: ${NANIHOLD_ENV_FILE:?}
+        required: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - lethe
+
+  api:
+    command: vsm serve --config /workspace/.local-verification/vsm.toml
+    env_file: !override
+      - path: ${NANIHOLD_ENV_FILE:?}
+        required: true
+    depends_on:
+      - lethe
+    ports: !override
+      - "127.0.0.1:${NANIHOLD_API_HOST_PORT:?}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  lethe:
+    build:
+      context: ${LETHE_SOURCE_DIR:?}
+      dockerfile: apps/selfhost/Dockerfile
+    environment:
+      LETHE_CONFIG_PATH: /etc/lethe/config.toml
+    env_file:
+      - path: ${NANIHOLD_ENV_FILE:?}
+        required: true
+    ports:
+      - "127.0.0.1:${LETHE_HTTP_HOST_PORT:?}:8080"
+      - "127.0.0.1:${LETHE_MCP_HOST_PORT:?}:8090"
+    volumes:
+      - ./config/lethe.local.toml:/etc/lethe/config.toml:ro
+      - ./config/lethe.local.jwks.json:/etc/lethe/mcp-jwks.json:ro
+      - ./.local-verification/lethe-data:/var/lib/lethe/data
+    restart: "no"
+    profiles: ["local"]
+
+  web:
+    environment:
+      VITE_API_BASE_URL: http://localhost:${NANIHOLD_API_HOST_PORT:?}
+    ports: !override
+      - "127.0.0.1:${NANIHOLD_WEB_HOST_PORT:?}:5173"

@@ -1,0 +1,19 @@
+{
+  "candidate": {
+    "adapter": "claude-code",
+    "adapter_version": "@@CLAUDE_VERSION@@",
+    "provider": "anthropic",
+    "model_snapshot": "claude-haiku-4-5-20251001",
+    "effort": "low",
+    "toolset": ["conversation-only"],
+    "sandbox_fingerprint": "observe-only:no-tools",
+    "environment_fingerprint": "@@ENVIRONMENT_FINGERPRINT@@"
+  },
+  "cli_executable": @@CLAUDE_EXECUTABLE_JSON@@,
+  "cli_version": "@@CLAUDE_VERSION@@",
+  "bearer_token_env": "PILOT_HOST_BEARER_TOKEN",
+  "max_budget_usd": 0.05,
+  "timeout_seconds": 120,
+  "bind_host": "0.0.0.0",
+  "bind_port": @@PILOT_HOST_PORT@@
+}

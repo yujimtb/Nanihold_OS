@@ -13,3 +13,8 @@ dist/
 runs/
 .env
 .env.*
+.local-verification/
+.claude/
+.agents/
+.codex/
+docs/archive/

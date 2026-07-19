@@ -31,6 +31,14 @@ import type {
 
 type View = "command" | "conversation" | "ledger" | "routing" | "audit";
 
+type PilotUsage = {
+  input_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+};
+
 type Snapshot = {
   spaces: DataSpace[];
   nodes: {
@@ -114,6 +122,20 @@ function short(value: string, keep = 12) {
 
 function StatePill({ value }: { value: string }) {
   return <span className={`pill state-${value}`}>{value.replaceAll("_", " ")}</span>;
+}
+
+function pilotUsage(value: unknown): PilotUsage | null {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Record<string, unknown>;
+  const keys: Array<keyof PilotUsage> = [
+    "input_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "output_tokens",
+    "cost_usd",
+  ];
+  if (!keys.every((key) => typeof item[key] === "number")) return null;
+  return item as PilotUsage;
 }
 
 export default function App() {
@@ -267,6 +289,19 @@ export default function App() {
   const route = snapshot.routes.items.find((item) => item.state === "published");
   const scores = route ? snapshot.routes.scores[route.snapshot_id] ?? [] : [];
   const selected = scores.find((item) => item.ranks[route?.production_objective ?? "quality_max"] === 1);
+  const interfaceModel = snapshot.models.candidates.find(
+    (model) => model.key === selected?.candidate_key,
+  ) ?? snapshot.models.candidates[0];
+  const latestPilotUsage = pilotUsage(
+    snapshot.events.events
+      .slice()
+      .reverse()
+      .find(
+        (item) =>
+          item.event.event_type === "interface_response_recorded"
+          && item.event.stream_id === selectedConversation,
+      )?.event.payload.pilot_usage,
+  );
 
   return (
     <div className="app-shell">
@@ -350,7 +385,7 @@ export default function App() {
               ))}
             </div>
             <div className="chat panel">
-              <div className="chat-head"><div><p className="eyebrow">INTERFACE PILOT</p><h2>Fable · high</h2></div><span className="model-note">1 call / owner turn</span></div>
+              <div className="chat-head"><div><p className="eyebrow">INTERFACE PILOT</p><h2>{interfaceModel ? `${interfaceModel.model_snapshot} · ${interfaceModel.effort}` : "unavailable"}</h2></div><span className="model-note">{latestPilotUsage ? `${latestPilotUsage.input_tokens.toLocaleString()} input + ${latestPilotUsage.cache_creation_input_tokens.toLocaleString()} cache write + ${latestPilotUsage.cache_read_input_tokens.toLocaleString()} cache read + ${latestPilotUsage.output_tokens.toLocaleString()} output · $${latestPilotUsage.cost_usd.toFixed(4)}` : "1 call / owner turn"}</span></div>
               <div className="messages">
                 {messages.map((item) => <article key={item.message_id} className={item.role}><span>{item.role}</span><p>{item.display_text}</p></article>)}
               </div>

@@ -215,6 +215,7 @@ class InterfaceService:
                 "decisions": list(response.decisions),
                 "commitment_updates": list(response.commitment_updates),
                 "provider_session_id": response.provider_session_id,
+                "pilot_usage": response.pilot_usage.model_dump(mode="json"),
                 "context_mode": "resume_pack" if force_new_pilot else "provider_delta",
             },
             actor_type="pilot",

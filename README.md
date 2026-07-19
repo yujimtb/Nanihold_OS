@@ -59,6 +59,19 @@ WebUI:
 docker compose --profile runtime up --build api web
 ```
 
+Fable/Opusを使わず、実Claude Codeまで含めた隔離ローカル確認:
+
+```powershell
+.\local-review.cmd init
+.\local-review.cmd up
+.\local-review.cmd token
+```
+
+`up` が表示した動的localhost URLを開きます。検証候補は
+`claude-haiku-4-5-20251001 / low`、`observe_only`、tools disabledで、
+モデルはConversation送信時だけ呼ばれます。詳しくは
+[local-verification.md](docs/local-verification.md) を参照してください。
+
 起動前に次を用意します。
 
 1. `config/nanihold.example.toml` を `vsm.toml` へコピーする。
@@ -74,6 +87,7 @@ docker compose --profile runtime up --build api web
 - [設計正本](docs/architecture.md)
 - [API 契約](docs/api.md)
 - [運用と commissioning](docs/operations.md)
+- [隔離ローカル確認環境](docs/local-verification.md)
 - [旧成果物の一回限り移行](docs/migration.md)
 - [Bayesian routing と benchmark](docs/routing.md)
 - [実装・検証状況](docs/implementation-status.md)

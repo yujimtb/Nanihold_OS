@@ -316,6 +316,7 @@ class OperationalProjection:
             "decisions": event.payload["decisions"],
             "commitment_updates": event.payload["commitment_updates"],
             "provider_session_id": event.payload["provider_session_id"],
+            "pilot_usage": event.payload["pilot_usage"],
         }
         from vsm.pilot.models import StructuredInterfaceResponse
 
