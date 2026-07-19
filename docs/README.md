@@ -1,26 +1,12 @@
-# Nanihold OS ドキュメント
+# Nanihold OS documentation
 
-Nanihold OS のドキュメント目次。プロジェクト概要は[リポジトリルートの README](../README.md)。
-
-## 使い方
-
-| ドキュメント | 内容 |
+| 文書 | 正本の範囲 |
 |---|---|
-| [setup.md](setup.md) | 環境構築(WSL / Docker、Windows ネイティブ、Codex アプリ、LLM プロバイダ設定) |
-| [cli.md](cli.md) | `vsm` CLI コマンド、Run の確認、終了コード、開発コマンド、ファイルレイアウト |
-| [web-ui.md](web-ui.md) | ローカル Web UI ダッシュボード |
-| [economics.md](economics.md) | 円建て operational ledger、survival report、事業状況 API |
-| [discord-bot.md](discord-bot.md) | Discord Codex Bot |
+| [architecture.md](architecture.md) | 層、型、u-VSM、永続性、不変条件 |
+| [api.md](api.md) | REST / WebSocket 公開契約 |
+| [operations.md](operations.md) | 設定、Pilot mode、commissioning、障害時手順 |
+| [migration.md](migration.md) | 所有先確定、dry-run、import、read-only archive |
+| [routing.md](routing.md) | Bayesian posterior、benchmark provenance、公開 gate |
+| [implementation-status.md](implementation-status.md) | 実装済み範囲と検証結果 |
 
-## 設計・計画
-
-| ドキュメント | 内容 |
-|---|---|
-| [architecture.md](architecture.md) | VSM ランタイムの設計リファレンス(構造・責務・履歴・権限・実行境界) |
-| [implementation-status.md](implementation-status.md) | アーキテクチャ／Tool 群の実装到達状況、スコープ(REQ 14.x) |
-| [roadmap.md](roadmap.md) | 製品化までの統合ロードマップ |
-
-## アーカイブ
-
-過去の作業文書・廃止済みスペックは [archive/](archive/) に保管。経緯は
-[archive/README.md](archive/README.md) を参照。
+旧文書の API や state machine は仕様ではありません。現在の Python 型、Event、上記文書だけを正本とします。

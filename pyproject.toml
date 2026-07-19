@@ -4,18 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nanihold-os"
-version = "0.1.0"
-description = "Nanihold OS - Viable System Model runtime platform"
+version = "0.2.0"
+description = "Nanihold OS - persistent u-VSM Node and Event control plane"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
 authors = [{ name = "Nanihold OS contributors" }]
 dependencies = [
     "fastapi>=0.115",
-    "litellm",
-    "python-multipart>=0.0.20",
-    "pypdf>=5",
-    "python-dotenv",
+    "httpx>=0.28",
     "typer",
     "pydantic>=2",
     "uvicorn[standard]>=0.34",
@@ -30,10 +27,6 @@ dev = [
     "pytest",
     "pytest-asyncio",
 ]
-bot = [
-    "discord.py>=2.7",
-]
-
 [tool.setuptools.packages.find]
 include = ["vsm*"]
 exclude = ["tests*", "runs*"]
@@ -42,5 +35,5 @@ exclude = ["tests*", "runs*"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
-    "live_llm: tests that hit a live LLM provider (gated, opt-in only)",
+    "live_pilot: tests that hit a live Pilot provider (gated, opt-in only)",
 ]

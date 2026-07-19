@@ -47,7 +47,7 @@ Commands:
   doctor             Check WSL, Docker, and Compose visibility.
   up                 Start the Docker Compose app service.
   ps                 Show Docker Compose service status.
-  install            Run: docker compose exec -T app python -m pip install -e .
+  install            Run: docker compose exec -T app python -m pip install -e ".[dev]"
   test [args...]     Run pytest in the app service.
   vsm [args...]      Run the vsm CLI in the app service.
   exec [args...]     Run an arbitrary command in the app service.
@@ -74,7 +74,7 @@ switch ($Command) {
         Invoke-InWsl @("docker", "compose", "ps")
     }
     "install" {
-        Invoke-InWsl @("docker", "compose", "exec", "-T", "app", "python", "-m", "pip", "install", "-e", ".")
+        Invoke-InWsl @("docker", "compose", "exec", "-T", "app", "python", "-m", "pip", "install", "-e", ".[dev]")
     }
     "test" {
         Invoke-InWsl (@("docker", "compose", "exec", "-T", "app", "python", "-m", "pytest") + $CommandArgs)
