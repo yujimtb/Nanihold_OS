@@ -66,7 +66,7 @@ timeout_seconds = 120.0
 
 [production_pilot_host]
 coding_pilot_id = "pilot:codex-coding-s1"
-coding_candidate_model_snapshot = "gpt-5.6-sol"
+coding_candidate_model_snapshot = "gpt-5.6-luna"
 interface_max_budget_usd = 5.0
 transport_timeout_seconds = 330.0
 work_cwd = "/workspace"

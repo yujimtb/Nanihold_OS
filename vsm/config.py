@@ -253,17 +253,18 @@ class NaniholdConfig(StrictConfig):
                     "production requires production_pilot_host receipt contract"
                 )
             try:
-                require_coding_escalation_candidates(
+                coding_escalation = require_coding_escalation_candidates(
                     tuple(item.candidate for item in self.routing.candidates)
                 )
             except InvariantViolation as exc:
                 raise ValueError(str(exc)) from exc
             if (
                 self.production_pilot_host.coding_candidate_model_snapshot
-                != "gpt-5.6-sol"
+                != coding_escalation[0].model_snapshot
             ):
                 raise ValueError(
-                    "production PilotHost coding candidate must be gpt-5.6-sol"
+                    "production PilotHost coding candidate must match the first "
+                    "coding escalation candidate"
                 )
             if any(
                 prior.source == "local-verification"
