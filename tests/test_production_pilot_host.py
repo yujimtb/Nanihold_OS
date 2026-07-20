@@ -712,6 +712,11 @@ def test_codex_exec_has_exact_model_effort_cwd_sandbox_and_schema(
         "artifact_refs",
         "token_budget",
     }
+    # The contract must instruct Codex to copy each unmet_acceptance string
+    # verbatim into acceptance_results[].criterion so the strict order/verbatim
+    # coverage gate is satisfiable without loosening verification.
+    assert "verbatim" in prompt["contract"]
+    assert "unmet_acceptance is the authoritative source text" in prompt["contract"]
 
 
 def _codex_stdout(thread_id: str = "codex-thread-1") -> str:
@@ -793,6 +798,50 @@ def test_codex_rejects_actual_model_mismatch_from_rollout(
 
     assert receipt["status"] == "failed"
     assert receipt["error"]["code"] == "RequestedActualModelMismatch"
+
+
+def test_codex_rejects_acceptance_criterion_not_copied_verbatim(
+    tmp_path: Path, monkeypatch, provider_env
+):
+    def fake_run(argv, **kwargs):
+        version = _version_result(argv)
+        if version is not None:
+            return version
+        # The request unmet_acceptance is exactly ["targeted tests pass"]; return a
+        # criterion that differs by whitespace only (the real failure mode observed
+        # in production where the model normalized spaces).
+        output_path = Path(argv[argv.index("--output-last-message") + 1])
+        output_path.write_text(
+            json.dumps(
+                {
+                    "summary": "Implemented and tested.",
+                    "acceptance_results": [
+                        {
+                            "criterion": "targeted  tests pass",
+                            "satisfied": True,
+                            "evidence_refs": ["artifact:test-log"],
+                        }
+                    ],
+                    "artifact_refs": ["artifact:commit"],
+                    "event_notes": ["tests passed"],
+                    "completed": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+        _write_codex_rollout(
+            _codex_home(tmp_path),
+            "codex-thread-1",
+            model="gpt-5.6-sol",
+            effort="xhigh",
+        )
+        return subprocess.CompletedProcess(argv, 0, _codex_stdout(), "")
+
+    host = _make_host(tmp_path, monkeypatch, fake_run)
+    receipt = host.execute("/v1/work-executions", _work_request(tmp_path))
+
+    assert receipt["status"] == "failed"
+    assert receipt["error"]["code"] == "AcceptanceCoverageMismatch"
 
 
 def test_work_execution_rejects_arbitrary_command_before_provider(

@@ -1212,7 +1212,18 @@ class CodexAdapter:
                 "contract": (
                     "Execute this WorkItem in the exact cwd and sandbox selected by "
                     "the PilotHost. Return only StructuredWorkOutput. Do not infer "
-                    "missing decisions or report completion without acceptance evidence."
+                    "missing decisions or report completion without acceptance "
+                    "evidence. acceptance_results MUST contain exactly one entry for "
+                    "each string in the unmet_acceptance array, in the same order and "
+                    "with the same count. Each acceptance_results[].criterion MUST be "
+                    "a verbatim, character-for-character copy of the corresponding "
+                    "unmet_acceptance string. unmet_acceptance is the authoritative "
+                    "source text: copy each string exactly as given and never "
+                    "rephrase, translate, summarize, reorder, add, drop, or normalize "
+                    "any character, including ASCII spaces between Japanese and "
+                    "Latin/numeric characters, punctuation, and character width. A "
+                    "criterion that differs from its source string by even one "
+                    "character will be rejected."
                 ),
                 "execution_id": request.execution_id,
                 "work_item": request.work_item.model_dump(mode="json"),
