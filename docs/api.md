@@ -23,6 +23,8 @@ codeは短寿命で再利用不可、Ledgerにはhashだけを保存します。
 | GET | `/api/conversations/{id}` | model-free status |
 | POST | `/api/conversations/{id}/actions` | `OwnerMessageAction`を受付（202） |
 | GET | `/api/conversations/{id}/actions/{action_id}` | transport不明時のreceipt照合 |
+| POST | `/api/owner-bootstrap/issues` | 認証済み管理deviceからallowed Interface origin用の短寿命codeを発行 |
+| POST | `/api/owner-bootstrap/exchange` | one-time codeをHttpOnly owner sessionへ交換 |
 | GET/POST | `/api/history/imports` | current Work GraphとLETHE activation handoffの厳密な取込gate |
 | GET | `/api/history/sessions` | model-free履歴session索引 |
 | GET/POST | `/api/reorientation` | Assessment表示／提出 |

@@ -144,6 +144,12 @@ class OwnerBootstrapExchangeRequest(StrictRequest):
     idempotency_key: str = Field(min_length=1)
 
 
+class OwnerBootstrapIssueRequest(StrictRequest):
+    base_url: str = Field(min_length=1)
+    lifetime_seconds: Annotated[int, Field(ge=1, le=900)]
+    idempotency_key: str = Field(min_length=1)
+
+
 class PilotHostConnectRequest(StrictRequest):
     identity: DeviceIdentity
     acknowledged_cursor: int = Field(ge=0)
@@ -316,6 +322,23 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
             path="/",
         )
         return response
+
+    @app.post(
+        "/api/owner-bootstrap/issues",
+        dependencies=[Depends(authorize)],
+        status_code=201,
+    )
+    def issue_owner_bootstrap(request: OwnerBootstrapIssueRequest):
+        base_url = request.base_url.rstrip("/")
+        if base_url not in allowed_origins:
+            raise InvariantViolation(
+                "owner bootstrap base_url must be an allowed Interface origin"
+            )
+        return state.kernel.owner_bootstrap.issue(
+            base_url=base_url,
+            lifetime_seconds=request.lifetime_seconds,
+            idempotency_key=request.idempotency_key,
+        )
 
     @app.exception_handler(NaniholdError)
     async def nanihold_error_handler(_request: Any, exc: NaniholdError):

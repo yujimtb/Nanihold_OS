@@ -33,6 +33,8 @@
 - Projection起動cursor以降だけを送る排他的なdispatch event deltaと、
   ACTIVE後の単一WorkItem明示dispatch API
 - one-time owner bootstrap、hash永続化、HttpOnly SameSite=Strict cookie
+- 認証済み管理deviceからallowed Interface origin専用の短寿命bootstrap codeを発行する
+  Web API。ユーザーへBearer tokenやterminal操作を要求しない
 - root/fork ProviderSessionと期待費用に基づくcache warming純ロジック
 - Interface usageからTokenObservationを自動生成
 - 7 source固定のLETHE activation handoff、current Work Graph先行取込、retry可能な再オリエンテーション

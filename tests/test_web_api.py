@@ -755,17 +755,33 @@ def test_cookie_cors_preflight_is_explicit(system):
 
 
 def test_owner_bootstrap_exchanges_once_for_strict_cookie(system):
-    kernel, _, _, _ = system
     api = client(system)
-    grant = kernel.owner_bootstrap.issue(
-        base_url="https://nanihold.local",
-        lifetime_seconds=60,
-        idempotency_key="web-bootstrap:issue",
+    issue = api.post(
+        "/api/owner-bootstrap/issues",
+        headers=auth(),
+        json={
+            "base_url": "http://localhost:5173",
+            "lifetime_seconds": 60,
+            "idempotency_key": "web-bootstrap:issue",
+        },
     )
+    assert issue.status_code == 201, issue.text
+    grant = issue.json()
+    assert grant["link"].startswith("http://localhost:5173/owner-bootstrap?code=")
+    rejected_origin = api.post(
+        "/api/owner-bootstrap/issues",
+        headers=auth(),
+        json={
+            "base_url": "https://untrusted.example",
+            "lifetime_seconds": 60,
+            "idempotency_key": "web-bootstrap:untrusted-origin",
+        },
+    )
+    assert rejected_origin.status_code == 409
     exchanged = api.post(
         "/api/owner-bootstrap/exchange",
         json={
-            "code": grant.code,
+            "code": grant["code"],
             "device_id": "owner-browser",
             "idempotency_key": "web-bootstrap:exchange",
         },
@@ -784,7 +800,7 @@ def test_owner_bootstrap_exchanges_once_for_strict_cookie(system):
     reused = api.post(
         "/api/owner-bootstrap/exchange",
         json={
-            "code": grant.code,
+            "code": grant["code"],
             "device_id": "owner-browser",
             "idempotency_key": "web-bootstrap:reuse",
         },
