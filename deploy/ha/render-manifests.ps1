@@ -119,7 +119,7 @@ try {
                     adapter = 'claude-code'
                     adapter_version = $deployment.claude_cli_version
                     provider = 'anthropic'
-                    model_snapshot = 'claude-fable-5'
+                    selection = 'provider_configured'
                     effort = 'high'
                     toolset = $allTools
                     sandbox_fingerprint = "sandbox:$($deployment.pilot_sandbox_certificate_sha256)"
@@ -128,6 +128,9 @@ try {
                 executable = 'claude'
                 cli_version = $deployment.claude_cli_version
                 working_directory = '/workspace'
+                request_document_directory =
+                    '/var/lib/nanihold-pilot/request-documents'
+                max_request_document_bytes = 32768
                 permission_mode = $deployment.pilot_permission_mode
                 sandbox_profile_certificate_sha256 =
                     $deployment.pilot_sandbox_certificate_sha256
@@ -152,6 +155,7 @@ try {
                     adapter = 'codex-cli'
                     adapter_version = $deployment.codex_cli_version
                     provider = 'openai'
+                    selection = 'exact'
                     model_snapshot = $deployment.codex_model
                     effort = $deployment.codex_effort
                     toolset = $gatewayTools

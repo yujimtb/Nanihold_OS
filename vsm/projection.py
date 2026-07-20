@@ -10,6 +10,8 @@ from vsm.activation.models import (
     CurrentWorkGraphSnapshot,
     HistoryImportReceipt,
     ReorientationAssessment,
+    ReorientationInterruptionReason,
+    ReorientationRevisionReason,
 )
 from vsm.auth import BootstrapCodeRecord, BrowserSessionRecord
 from vsm.interface.models import (
@@ -54,6 +56,12 @@ from vsm.token_lab.lab import (
 )
 
 
+LETHE_EXTERNAL_EVENT_STREAM_PREFIXES = {
+    "history.message_imported": "history-message:",
+    "history.import_completed": "history-import:",
+}
+
+
 class OperationalProjection:
     """Rebuilds all mutable views from the DataSpace Event Ledger."""
 
@@ -87,6 +95,15 @@ class OperationalProjection:
     def apply(self, event) -> None:
         if event.data_space_id != self.kernel.data_space.data_space_id:
             raise InvariantViolation("projection event crossed its DataSpace")
+        external_stream_prefix = LETHE_EXTERNAL_EVENT_STREAM_PREFIXES.get(
+            event.event_type
+        )
+        if external_stream_prefix is not None:
+            if not event.stream_id.startswith(external_stream_prefix):
+                raise InvariantViolation(
+                    "LETHE external event does not match its reserved history stream"
+                )
+            return
         known_version = max(
             self.kernel._versions.get(event.stream_id, 0),
             self.interface._versions.get(event.stream_id, 0),
@@ -164,12 +181,8 @@ class OperationalProjection:
         self._kernel_version(event)
 
     def _on_current_work_graph_imported(self, event) -> None:
-        snapshot = CurrentWorkGraphSnapshot.model_validate(
-            event.payload["snapshot"]
-        )
-        self.kernel.nodes.update(
-            {item.node_id: item for item in snapshot.nodes}
-        )
+        snapshot = CurrentWorkGraphSnapshot.model_validate(event.payload["snapshot"])
+        self.kernel.nodes.update({item.node_id: item for item in snapshot.nodes})
         self.kernel.work_items.update(
             {item.work_item_id: item for item in snapshot.work_items}
         )
@@ -349,7 +362,9 @@ class OperationalProjection:
             update["s3_star_approval_event_id"] = event.event_id
         else:
             update["owner_approval_event_id"] = event.event_id
-        self.kernel.route_snapshots[event.stream_id] = snapshot.model_copy(update=update)
+        self.kernel.route_snapshots[event.stream_id] = snapshot.model_copy(
+            update=update
+        )
         self._kernel_version(event)
 
     def _on_route_snapshot_published(self, event) -> None:
@@ -365,7 +380,9 @@ class OperationalProjection:
         self.interface.conversations[conversation.conversation_id] = conversation
         self.interface.surface_bindings[binding.binding_id] = binding
         self.interface.messages[conversation.conversation_id] = []
-        self.interface._conversation_cursors[conversation.conversation_id] = self.cursor + 1
+        self.interface._conversation_cursors[conversation.conversation_id] = (
+            self.cursor + 1
+        )
         receipt = ConversationCreatedReceipt(
             conversation_id=conversation.conversation_id,
             surface_binding_id=binding.binding_id,
@@ -381,7 +398,9 @@ class OperationalProjection:
         conversation = Conversation.model_validate(event.payload["conversation"])
         self.interface.conversations[conversation.conversation_id] = conversation
         self.interface.messages[conversation.conversation_id] = []
-        self.interface._conversation_cursors[conversation.conversation_id] = self.cursor + 1
+        self.interface._conversation_cursors[conversation.conversation_id] = (
+            self.cursor + 1
+        )
         self._interface_version(event)
 
     def _on_owner_message_received(self, event) -> None:
@@ -397,7 +416,9 @@ class OperationalProjection:
             error=None,
         )
         self.interface.action_receipts[receipt.action_id] = receipt
-        self.interface._action_digests[receipt.action_id] = event.payload["action_digest"]
+        self.interface._action_digests[receipt.action_id] = event.payload[
+            "action_digest"
+        ]
         self.interface._conversation_cursors[message.conversation_id] = self.cursor + 1
         self._interface_version(event)
 
@@ -416,10 +437,8 @@ class OperationalProjection:
             existing = PilotSession(
                 pilot_session_id=event.payload["pilot_session_id"],
                 conversation_id=message.conversation_id,
-                pilot_id="pilot:fable",
-                root_provider_session_id=event.payload[
-                    "root_provider_session_id"
-                ],
+                pilot_id="pilot:interface",
+                root_provider_session_id=event.payload["root_provider_session_id"],
                 provider_session_id=event.payload["provider_session_id"],
                 last_event_cursor=self.cursor + 1,
             )
@@ -462,7 +481,9 @@ class OperationalProjection:
             error=None,
         )
         self.interface.action_receipts[receipt.action_id] = receipt
-        self.interface._action_digests[receipt.action_id] = event.payload["action_digest"]
+        self.interface._action_digests[receipt.action_id] = event.payload[
+            "action_digest"
+        ]
         self.interface._conversation_cursors[message.conversation_id] = self.cursor + 1
         self._interface_version(event)
 
@@ -478,18 +499,44 @@ class OperationalProjection:
         session = PilotSession(
             pilot_session_id=event.payload["pilot_session_id"],
             conversation_id=event.stream_id,
-            pilot_id="pilot:fable",
-            root_provider_session_id=event.payload[
-                "root_provider_session_id"
-            ],
+            pilot_id="pilot:interface",
+            root_provider_session_id=event.payload["root_provider_session_id"],
             provider_session_id=event.payload["provider_session_id"],
             last_event_cursor=self.cursor + 1,
         )
-        if existing is not None and existing.pilot_session_id != session.pilot_session_id:
+        if (
+            existing is not None
+            and existing.pilot_session_id != session.pilot_session_id
+        ):
             raise InvariantViolation(
                 "reorientation changed canonical PilotSession identity"
             )
         self.interface.pilot_sessions[session.pilot_session_id] = session
+        self.interface._conversation_cursors[event.stream_id] = self.cursor + 1
+        self._interface_version(event)
+
+    def _on_history_commitments_materialized(self, event) -> None:
+        commitments = tuple(
+            Commitment.model_validate(item) for item in event.payload["commitments"]
+        )
+        if len({item.commitment_id for item in commitments}) != len(commitments):
+            raise InvariantViolation("history commitment identities must be unique")
+        for commitment in commitments:
+            existing = self.interface.commitments.get(commitment.commitment_id)
+            if existing is not None and existing != commitment:
+                raise InvariantViolation("history commitment identity collision")
+            self.interface.commitments[commitment.commitment_id] = commitment
+        self.interface._conversation_cursors[event.stream_id] = self.cursor + 1
+        self._interface_version(event)
+
+    def _on_reorientation_assessment_materialized(self, event) -> None:
+        memory = NodeMemory.model_validate(event.payload["memory"])
+        decisions = tuple(
+            Decision.model_validate(item) for item in event.payload["decisions"]
+        )
+        self.interface.node_memories[memory.memory_id] = memory
+        for decision in decisions:
+            self.interface.decisions[decision.decision_id] = decision
         self.interface._conversation_cursors[event.stream_id] = self.cursor + 1
         self._interface_version(event)
 
@@ -517,28 +564,76 @@ class OperationalProjection:
     def _on_history_import_verified(self, event) -> None:
         activation = self.kernel.activation
         receipt = HistoryImportReceipt.model_validate(event.payload["receipt"])
+        conversation_id = event.payload.get("reorientation_conversation_id")
+        if not isinstance(conversation_id, str) or not conversation_id:
+            raise InvariantViolation(
+                "history import event is missing its canonical Conversation"
+            )
         activation.import_receipt = receipt
+        activation.reorientation_conversation_id = conversation_id
         activation.sessions = {
             session.session_ref: session for session in receipt.sessions
         }
         activation.state = ActivationState.HISTORY_IMPORTED
+        activation.reorientation_attempt_in_progress = False
+        activation.reorientation_attempt_started_stream_version = None
+        activation.pending_reorientation_revision_reason = None
         activation.import_event_cursor = self.cursor + 1
         activation._version = event.stream_version
 
     def _on_reorientation_started(self, event) -> None:
         self.kernel.activation.state = ActivationState.REORIENTATION_ONLY
         self.kernel.activation.reorientation_error = None
+        self.kernel.activation.pending_reorientation_revision_reason = None
+        self.kernel.activation.reorientation_attempt_in_progress = True
+        self.kernel.activation.reorientation_attempt_started_stream_version = (
+            event.stream_version
+        )
         self.kernel.activation._version = event.stream_version
 
     _on_reorientation_retry_started = _on_reorientation_started
+    _on_reorientation_revision_retry_started = _on_reorientation_started
 
     def _on_reorientation_failed(self, event) -> None:
         self.kernel.activation.reorientation_error = event.payload["error_code"]
+        self.kernel.activation.pending_reorientation_revision_reason = None
+        self.kernel.activation.reorientation_attempt_in_progress = False
+        self.kernel.activation.reorientation_attempt_started_stream_version = None
+        self.kernel.activation._version = event.stream_version
+
+    def _on_reorientation_attempt_interrupted(self, event) -> None:
+        try:
+            reason_code = ReorientationInterruptionReason(
+                event.payload.get("reason_code")
+            )
+        except (TypeError, ValueError) as exc:
+            raise InvariantViolation(
+                "reorientation interruption event has an invalid reason code"
+            ) from exc
+        self.kernel.activation.reorientation_error = reason_code
+        self.kernel.activation.pending_reorientation_revision_reason = None
+        self.kernel.activation.reorientation_attempt_in_progress = False
+        self.kernel.activation.reorientation_attempt_started_stream_version = None
+        self.kernel.activation._version = event.stream_version
+
+    def _on_reorientation_session_checkpointed(self, event) -> None:
+        provider_session_id = event.payload.get("provider_session_id")
+        if not isinstance(provider_session_id, str) or not provider_session_id:
+            raise InvariantViolation(
+                "reorientation checkpoint is missing its provider session"
+            )
+        self.kernel.activation.reorientation_provider_session_id = provider_session_id
         self.kernel.activation._version = event.stream_version
 
     def _on_history_query_resolved(self, event) -> None:
         self.kernel.activation.history_query_operations.add(event.payload["operation"])
         self.kernel.activation.history_query_event_ids.add(event.event_id)
+        self.kernel.activation._version = event.stream_version
+
+    def _on_history_session_index_page_verified(self, event) -> None:
+        # The page blob and cursor are audit evidence. Session coverage is verified
+        # during the deterministic reorientation preflight, not reconstructed by a
+        # lossy projection.
         self.kernel.activation._version = event.stream_version
 
     def _on_reorientation_pilot_usage_recorded(self, event) -> None:
@@ -553,7 +648,38 @@ class OperationalProjection:
             event.payload["assessment"]
         )
         self.kernel.activation.state = ActivationState.AWAITING_OWNER_CONFIRMATION
+        self.kernel.activation.pending_reorientation_revision_reason = None
+        self.kernel.activation.reorientation_attempt_in_progress = False
+        self.kernel.activation.reorientation_attempt_started_stream_version = None
         self.kernel.activation._version = event.stream_version
+
+    def _on_reorientation_assessment_revision_requested(self, event) -> None:
+        activation = self.kernel.activation
+        prior_assessment_id = event.payload.get("prior_assessment_id")
+        if (
+            activation.assessment is None
+            or activation.assessment.assessment_id != prior_assessment_id
+        ):
+            raise InvariantViolation(
+                "assessment revision does not reference the projected assessment"
+            )
+        try:
+            reason_code = ReorientationRevisionReason(event.payload.get("reason_code"))
+        except (TypeError, ValueError) as exc:
+            raise InvariantViolation(
+                "assessment revision event has an invalid reason code"
+            ) from exc
+        if event.payload.get("state") != ActivationState.REORIENTATION_ONLY:
+            raise InvariantViolation(
+                "assessment revision event has an invalid activation state"
+            )
+        activation.assessment = None
+        activation.reorientation_error = None
+        activation.pending_reorientation_revision_reason = reason_code
+        activation.reorientation_attempt_in_progress = False
+        activation.reorientation_attempt_started_stream_version = None
+        activation.state = ActivationState.REORIENTATION_ONLY
+        activation._version = event.stream_version
 
     def _on_activation_approved(self, event) -> None:
         self.kernel.activation.state = ActivationState.ACTIVE

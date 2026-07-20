@@ -246,7 +246,10 @@ def convert_intercom_export(
         converted.append(
             _record(
                 source_session_id=f"{surface}:{channel}",
-                source_message_id=source_native_id,
+                # Intercom stream records may legitimately reuse a platform
+                # native ID (for example inbox and routing completion).  The
+                # source-native identity is only unique within its stream.
+                source_message_id=f"{stream}:{source_native_id}",
                 parent_message_id=parent,
                 published_at=published_at,
                 ordinal=order,
@@ -404,7 +407,17 @@ def convert_system_snapshot(
                 "each snapshot state requires exactly state_key, text, value"
             )
         state_key = _string(state["state_key"], "snapshot state_key")
-        text = _string(state["text"], "snapshot text", allow_empty=True)
+        summary = _string(state["text"], "snapshot text", allow_empty=True)
+        value = state["value"]
+        # CurrentState queries expose HistoryRawRecord.text.  Keep the concise
+        # operator summary, but also project the exact secret-free captured
+        # value so the Interface Pilot can reason about the real cutover state without an
+        # additional raw-blob read or an unverifiable guess.
+        text = (
+            f"{summary}\n{_canonical(value).decode('utf-8')}"
+            if summary
+            else _canonical(value).decode("utf-8")
+        )
         raw = _canonical(state)
         records.append(
             _record(

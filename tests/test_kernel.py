@@ -19,9 +19,56 @@ from vsm.kernel.models import (
     S3StarSeverity,
     WorkItem,
     WorkState,
+    EventEnvelope,
 )
 from vsm.kernel.service import effect_plan_sha256
 from vsm.projection import OperationalProjection
+
+
+def test_projection_skips_only_lethe_owned_history_events(system):
+    kernel, _, interface, _ = system
+    projection = OperationalProjection(kernel=kernel, interface=interface)
+    history_message = EventEnvelope(
+        event_id="event:history-imported",
+        data_space_id=SPACE_ID,
+        stream_id=f"history-message:{'a' * 64}",
+        stream_version=99,
+        event_type="history.message_imported",
+        occurred_at=NOW,
+        actor_type="system",
+        actor_id=None,
+        correlation_id=None,
+        causation_id=None,
+        idempotency_key="history:imported",
+        payload={},
+    )
+    projection.apply(history_message)
+    projection.apply(
+        history_message.model_copy(
+            update={
+                "event_id": "event:history-import-completed",
+                "stream_id": f"history-import:{'b' * 64}",
+                "event_type": "history.import_completed",
+            }
+        )
+    )
+
+    wrong_stream = history_message.model_copy(
+        update={"event_id": "event:wrong-history-stream", "stream_id": "history:wrong"}
+    )
+    with pytest.raises(InvariantViolation, match="reserved history stream"):
+        projection.apply(wrong_stream)
+
+    unknown = history_message.model_copy(
+        update={
+            "event_id": "event:unknown",
+            "stream_id": f"history-message:{'c' * 64}",
+            "stream_version": 1,
+            "event_type": "history.unknown",
+        }
+    )
+    with pytest.raises(InvariantViolation, match="no handler"):
+        projection.apply(unknown)
 
 
 def work(work_id: str, node_id: str, parent: str | None = None) -> WorkItem:

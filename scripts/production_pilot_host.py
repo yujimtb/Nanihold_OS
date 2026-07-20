@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypeAlias
 from urllib.parse import urlparse
 
 from pydantic import (
@@ -25,11 +25,15 @@ from pydantic import (
     model_validator,
 )
 
-from vsm.interface.models import InterfaceAction
+from vsm.interface.models import (
+    InterfaceAction,
+    ReadHistoryAction,
+    SubmitReorientationAction,
+)
+from vsm.kernel.models import WorkState
 from vsm.pilot.models import DeviceIdentity, ModelCandidate
 
 
-CLAUDE_MODEL = "claude-fable-5"
 CLAUDE_EFFORT = "high"
 MAX_REQUEST_BYTES = 2_000_000
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -94,11 +98,76 @@ class InterfaceTurnRequest(ClaudeTurnRequest):
     owner_text: Annotated[str, Field(min_length=1, max_length=200_000)]
 
 
+class ReorientationHistoryResult(StrictModel):
+    action_id: Annotated[str, Field(min_length=1)]
+    operation: Annotated[str, Field(min_length=1)]
+    result_json: Any
+    result_blob_ref: Annotated[str, Field(min_length=1)]
+    result_sha256: Annotated[str, Field(pattern=SHA256_PATTERN)]
+    next_cursor: Annotated[str, Field(min_length=1)] | None
+    source_cursor: Annotated[str, Field(min_length=1)]
+    result_event_id: Annotated[str, Field(min_length=1)]
+    event_cursor: Annotated[int, Field(gt=0)]
+
+
+class ReorientationWorkItemSummary(StrictModel):
+    work_item_id: Annotated[str, Field(min_length=1)]
+    title: Annotated[str, Field(min_length=1)]
+    description: Annotated[str, Field(min_length=1)]
+    acceptance_criteria: tuple[Annotated[str, Field(min_length=1)], ...]
+    state: WorkState
+
+
+class ReorientationAssessmentContract(StrictModel):
+    import_id: Annotated[str, Field(min_length=1)]
+    canonical_conversation_id: Annotated[str, Field(min_length=1)]
+    covered_session_index_ref: Annotated[str, Field(min_length=1)]
+    covered_session_count: Annotated[int, Field(ge=0)]
+    open_commitment_ids: tuple[Annotated[str, Field(min_length=1)], ...]
+    resume_work_items: tuple[ReorientationWorkItemSummary, ...]
+    minimum_history_cursor: Annotated[int, Field(ge=0)]
+
+
+class ReorientationAssessmentContractReference(StrictModel):
+    import_id: Annotated[str, Field(min_length=1)]
+    canonical_conversation_id: Annotated[str, Field(min_length=1)]
+    contract_sha256: Annotated[str, Field(pattern=SHA256_PATTERN)]
+    covered_session_index_ref: Annotated[str, Field(min_length=1)]
+    covered_session_count: Annotated[int, Field(ge=0)]
+    open_commitment_ids: tuple[Annotated[str, Field(min_length=1)], ...]
+    resume_work_items: tuple[ReorientationWorkItemSummary, ...]
+    minimum_history_cursor: Annotated[int, Field(ge=0)]
+
+
+class SessionIndexSummary(StrictModel):
+    session_count: Annotated[int, Field(ge=0)]
+    source_kind_counts: dict[str, Annotated[int, Field(ge=0)]]
+    first_message_at: Annotated[str, Field(min_length=1)] | None
+    last_message_at: Annotated[str, Field(min_length=1)] | None
+
+
 class ReorientationTurnRequest(ClaudeTurnRequest):
     objective: Annotated[str, Field(min_length=1, max_length=20_000)]
     session_index_ref: Annotated[str, Field(min_length=1)]
     open_commitment_refs: tuple[str, ...]
     current_state_ref: Annotated[str, Field(min_length=1)]
+    history_result: ReorientationHistoryResult
+    assessment_contract: (
+        ReorientationAssessmentContract | ReorientationAssessmentContractReference
+    )
+    audited_history_event_ids: tuple[Annotated[str, Field(min_length=1)], ...]
+    assessment_contract_included: bool
+    session_index_event_ids: tuple[Annotated[str, Field(min_length=1)], ...]
+    session_index_summary: SessionIndexSummary
+
+    @model_validator(mode="after")
+    def contract_is_sent_only_on_initial_turn(self) -> "ReorientationTurnRequest":
+        is_full = isinstance(self.assessment_contract, ReorientationAssessmentContract)
+        if self.root_session_id is None and (not is_full or not self.assessment_contract_included):
+            raise ValueError("initial reorientation turn requires the full assessment contract")
+        if self.root_session_id is not None and (is_full or self.assessment_contract_included):
+            raise ValueError("resumed reorientation turn requires only a contract reference")
+        return self
 
 
 class ArtifactRef(StrictModel):
@@ -151,8 +220,22 @@ class WorkExecutionRequest(StrictModel):
 
 
 class StructuredInterfaceOutput(StrictModel):
-    display_text: Annotated[str, Field(min_length=1)]
+    display_text: Annotated[str, Field(min_length=1, max_length=1_200)]
     actions: tuple[InterfaceAction, ...]
+
+
+ReorientationAction: TypeAlias = Annotated[
+    ReadHistoryAction | SubmitReorientationAction,
+    Field(discriminator="kind"),
+]
+
+
+class StructuredReorientationOutput(StrictModel):
+    display_text: Annotated[str, Field(min_length=1, max_length=1_200)]
+    actions: Annotated[
+        tuple[ReorientationAction, ...],
+        Field(min_length=1, max_length=1),
+    ]
 
 
 class AcceptanceResult(StrictModel):
@@ -169,7 +252,28 @@ class StructuredWorkOutput(StrictModel):
     completed: bool
 
 
-INTERFACE_SCHEMA = StructuredInterfaceOutput.model_json_schema()
+def _claude_supported_json_schema(model: type[BaseModel]) -> dict[str, object]:
+    def without_discriminator(value: object) -> object:
+        if isinstance(value, dict):
+            return {
+                key: without_discriminator(item)
+                for key, item in value.items()
+                if key != "discriminator"
+            }
+        if isinstance(value, list):
+            return [without_discriminator(item) for item in value]
+        return value
+
+    schema = without_discriminator(model.model_json_schema())
+    if not isinstance(schema, dict):
+        raise RuntimeError("Claude structured output schema must be an object")
+    return schema
+
+
+INTERFACE_SCHEMA = _claude_supported_json_schema(StructuredInterfaceOutput)
+REORIENTATION_SCHEMA = _claude_supported_json_schema(
+    StructuredReorientationOutput
+)
 WORK_SCHEMA = StructuredWorkOutput.model_json_schema()
 
 
@@ -212,6 +316,12 @@ def _canonical_json(value: object) -> str:
 
 def _sha256_json(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _request_sha256(request: BaseModel) -> str:
+    return _sha256_json(
+        request.model_dump(mode="json", exclude_computed_fields=True)
+    )
 
 
 def _required_env(name: str) -> str:
@@ -295,7 +405,7 @@ class ReceiptStore:
         idempotency_key: str,
         request_sha256: str,
         candidate_key: str,
-        requested_model: str,
+        requested_model: str | None,
     ) -> tuple[dict[str, object], bool]:
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -494,6 +604,8 @@ class ClaudeAdapter:
                 "executable",
                 "cli_version",
                 "working_directory",
+                "request_document_directory",
+                "max_request_document_bytes",
                 "permission_mode",
                 "sandbox_profile_certificate_sha256",
                 "mcp",
@@ -506,12 +618,12 @@ class ClaudeAdapter:
         if (
             self.candidate.adapter != "claude-code"
             or self.candidate.provider != "anthropic"
-            or self.candidate.model_snapshot != CLAUDE_MODEL
+            or self.candidate.selection != "provider_configured"
+            or self.candidate.model_snapshot is not None
             or self.candidate.effort != CLAUDE_EFFORT
         ):
             raise RuntimeError(
-                "Claude Interface candidate must be "
-                "claude-code/anthropic/claude-fable-5/high"
+                "Claude Interface candidate must be claude-code/anthropic/high"
             )
         self.executable = _nonblank(data["executable"], "Claude executable")
         self.cli_version = _nonblank(data["cli_version"], "Claude CLI version")
@@ -522,6 +634,30 @@ class ClaudeAdapter:
         ).resolve()
         if not self.working_directory.is_dir():
             raise RuntimeError("Claude working directory does not exist")
+        request_document_directory = Path(
+            _nonblank(
+                data["request_document_directory"],
+                "Claude request document directory",
+            )
+        )
+        if not request_document_directory.is_absolute():
+            raise RuntimeError(
+                "Claude request document directory must be absolute"
+            )
+        self.request_document_directory = request_document_directory.resolve()
+        self.request_document_directory.mkdir(parents=True, exist_ok=True)
+        if not self.request_document_directory.is_dir():
+            raise RuntimeError("Claude request document directory is not a directory")
+        self.provider_io_document_directory = (
+            self.request_document_directory / "provider-io"
+        )
+        self.provider_io_document_directory.mkdir(parents=False, exist_ok=True)
+        if not self.provider_io_document_directory.is_dir():
+            raise RuntimeError("Claude provider I/O directory is not a directory")
+        self.max_request_document_bytes = _positive_integer(
+            data["max_request_document_bytes"],
+            "Claude max request document bytes",
+        )
         self.permission_mode = _nonblank(
             data["permission_mode"], "Claude permission mode"
         )
@@ -563,6 +699,7 @@ class ClaudeAdapter:
             text=True,
             timeout=15,
             shell=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if completed.returncode != 0 or self.cli_version not in completed.stdout:
             raise RuntimeError("Claude CLI version mismatch")
@@ -573,49 +710,40 @@ class ClaudeAdapter:
         request: InterfaceTurnRequest | ReorientationTurnRequest,
     ) -> tuple[dict[str, object], str, dict[str, object], str]:
         self.validate_request(request)
+        prompt_payload = self._request_document_payload(endpoint, request)
 
-        prompt_payload: dict[str, object] = {
-            "contract": (
-                "Return one StructuredInterfaceOutput. You are the Interface Pilot, "
-                "not the persistent owner of memory. Use only typed MCP tools. Never "
-                "claim an effect or completion that is absent from supplied evidence."
-            ),
-            "endpoint": endpoint,
-            "event_delta": request.event_delta.model_dump(mode="json"),
-            "resume_pack": (
-                None
-                if request.resume_pack is None
-                else request.resume_pack.model_dump(mode="json")
-            ),
-        }
-        if isinstance(request, InterfaceTurnRequest):
-            prompt_payload["owner_text"] = request.owner_text
-        else:
-            prompt_payload.update(
-                {
-                    "objective": request.objective,
-                    "session_index_ref": request.session_index_ref,
-                    "open_commitment_refs": list(request.open_commitment_refs),
-                    "current_state_ref": request.current_state_ref,
-                    "reorientation_only": True,
-                }
-            )
+        (
+            request_document,
+            request_document_sha256,
+            request_document_bytes,
+        ) = self._write_request_document(prompt_payload)
+        short_instruction = (
+            "Read the appended Nanihold request document. Verify its SHA-256 is "
+            f"{request_document_sha256}. Execute that exact contract and return "
+            "one structured response."
+        )
+        if len(short_instruction.encode("utf-8")) > 256:
+            raise RuntimeError("Claude stdio instruction exceeds the fixed short limit")
 
         permission_flag = {
             "sandboxed_bypass": "bypassPermissions",
             "managed_permissions": "auto",
             "observe_only": "plan",
         }[self.permission_mode]
+        response_schema = (
+            REORIENTATION_SCHEMA
+            if endpoint == "/v1/reorientation-turn"
+            else INTERFACE_SCHEMA
+        )
         argv = [
             self.executable,
             "-p",
-            _canonical_json(prompt_payload),
             "--output-format",
             "json",
             "--json-schema",
-            _canonical_json(INTERFACE_SCHEMA),
-            "--model",
-            self.candidate.model_snapshot,
+            _canonical_json(response_schema),
+            "--append-system-prompt-file",
+            str(request_document),
             "--effort",
             self.candidate.effort,
             "--permission-mode",
@@ -645,11 +773,202 @@ class ClaudeAdapter:
             check=False,
             capture_output=True,
             text=True,
+            input=short_instruction,
             timeout=request.timeout_seconds,
             shell=False,
             cwd=self.working_directory,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        return self._parse(completed, endpoint)
+        _, provider_io_sha256 = self._write_content_addressed_document(
+            self.provider_io_document_directory,
+            {
+                "document_schema": "nanihold.provider-io-document",
+                "document_schema_version": "1.0.0",
+                "request_receipt_id": request.receipt_id,
+                "request_sha256": _request_sha256(request),
+                "request_document_sha256": request_document_sha256,
+                "request_document_bytes": request_document_bytes,
+                "endpoint": endpoint,
+                "return_code": completed.returncode,
+                "stdout_sha256": hashlib.sha256(
+                    completed.stdout.encode("utf-8")
+                ).hexdigest(),
+                "stdout_bytes": len(completed.stdout.encode("utf-8")),
+                "stdout_text": completed.stdout,
+                "stderr_sha256": hashlib.sha256(
+                    completed.stderr.encode("utf-8")
+                ).hexdigest(),
+                "stderr_bytes": len(completed.stderr.encode("utf-8")),
+                "stderr_text": completed.stderr,
+            },
+        )
+        return self._parse(completed, endpoint, provider_io_sha256)
+
+    def _request_document_payload(
+        self,
+        endpoint: str,
+        request: InterfaceTurnRequest | ReorientationTurnRequest,
+    ) -> dict[str, object]:
+        output_contract = (
+            "Return one StructuredReorientationOutput with exactly one action. "
+            "The action must be history.read or reorientation.submit. Keep display "
+            "text concise and keep assessment prose within the schema bounds."
+            if endpoint == "/v1/reorientation-turn"
+            else "Return one StructuredInterfaceOutput."
+        )
+        prompt_payload: dict[str, object] = {
+            "document_schema": "nanihold.interface-request-document",
+            "document_schema_version": "1.0.0",
+            "request_receipt_id": request.receipt_id,
+            "request_idempotency_key": request.idempotency_key,
+            "request_sha256": _request_sha256(request),
+            "contract": (
+                f"{output_contract} You are the Interface Pilot, "
+                "not the persistent owner of memory. Use only typed MCP tools. Never "
+                "claim an effect or completion that is absent from supplied evidence."
+            ),
+            "endpoint": endpoint,
+            "event_delta": request.event_delta.model_dump(mode="json"),
+            "resume_pack": (
+                None
+                if request.resume_pack is None
+                else request.resume_pack.model_dump(mode="json")
+            ),
+        }
+        if isinstance(request, InterfaceTurnRequest):
+            prompt_payload["owner_text"] = request.owner_text
+        else:
+            prompt_payload.update(
+                {
+                    "objective": request.objective,
+                    "session_index_ref": request.session_index_ref,
+                    "open_commitment_refs": list(request.open_commitment_refs),
+                    "current_state_ref": request.current_state_ref,
+                    "history_result": request.history_result.model_dump(mode="json"),
+                    "assessment_contract": request.assessment_contract.model_dump(mode="json"),
+                    "audited_history_event_ids": list(
+                        request.audited_history_event_ids
+                    ),
+                    "session_index_event_ids": list(request.session_index_event_ids),
+                    "session_index_summary": request.session_index_summary.model_dump(mode="json"),
+                    "assessment_submission_contract": (
+                        "history_result is already the completed result of its "
+                        "operation, argument, and page cursor. Never request that "
+                        "same triple again. When next_cursor is non-null and another "
+                        "page is needed, copy next_cursor exactly into page_cursor. "
+                        "request_receipt_id, request_idempotency_key, request_sha256, "
+                        "and document identifiers are transport audit metadata, not "
+                        "history references; never pass them to resolve_reference. "
+                        "A resolve_reference argument must be an explicit history "
+                        "reference supplied in history_result or the assessment "
+                        "contract, never an invented identifier. "
+                        "A get_current_state result without an argument is a "
+                        "paginated index without value bodies. Continue that index "
+                        "with next_cursor only when needed, or request one value by "
+                        "setting argument to an exact state_key from the index and "
+                        "page_cursor to null. "
+                        "For reorientation.submit, copy import_id and "
+                        "canonical_conversation_id exactly from assessment_contract; "
+                        "covered_session_index_ref and covered_session_count must be copied "
+                        "exactly from assessment_contract; open_commitment_ids must be the exact "
+                        "listed set; resume_work_item_ids must be selected only from "
+                        "assessment_contract.resume_work_items[].work_item_id. The "
+                        "title, description, acceptance_criteria, and state in each "
+                        "resume_work_items entry are the verified compact WorkItem "
+                        "summary; use them exactly and do not invent identifiers or "
+                        "WorkItem details. This rule applies equally when "
+                        "assessment_contract_included is false because the resumed "
+                        "contract reference carries the same submission values. Use only supplied "
+                        "citation claim_ref values must be exactly understanding, "
+                        "active_missions:{index}, or decisions_and_constraints:{index}. "
+                        "Use only an ID from audited_history_event_ids as a citation "
+                        "evidence_ref. "
+                        "Before submitting, include at least one citation for "
+                        "understanding and for every active_missions and "
+                        "decisions_and_constraints item, using its exact indexed "
+                        "claim_ref. If any required claim lacks evidence, request "
+                        "one history.read action instead of submitting a partial "
+                        "assessment. "
+                        "history_cursor must be at least minimum_history_cursor; after "
+                        "get_current_state, use history_result.event_cursor for both "
+                        "history_cursor and current_state_cursor."
+                    ),
+                    "assessment_contract_included": request.assessment_contract_included,
+                    "reorientation_only": True,
+                }
+            )
+        return prompt_payload
+
+    def _write_request_document(
+        self, payload: dict[str, object]
+    ) -> tuple[Path, str, int]:
+        encoded = self._encode_content_addressed_document(payload)
+        encoded_bytes = len(encoded)
+        if encoded_bytes > self.max_request_document_bytes:
+            raise ProviderInvocationError(
+                "RequestDocumentTooLarge",
+                "Claude request document exceeds the configured byte limit "
+                f"({encoded_bytes}>{self.max_request_document_bytes})",
+            )
+        path, digest = self._write_content_addressed_bytes(
+            self.request_document_directory,
+            encoded,
+        )
+        return path, digest, encoded_bytes
+
+    @classmethod
+    def _write_content_addressed_document(
+        cls,
+        directory: Path,
+        payload: dict[str, object],
+    ) -> tuple[Path, str]:
+        return cls._write_content_addressed_bytes(
+            directory,
+            cls._encode_content_addressed_document(payload),
+        )
+
+    @staticmethod
+    def _encode_content_addressed_document(
+        payload: dict[str, object],
+    ) -> bytes:
+        return (_canonical_json(payload) + "\n").encode("utf-8")
+
+    @staticmethod
+    def _write_content_addressed_bytes(
+        directory: Path,
+        encoded: bytes,
+    ) -> tuple[Path, str]:
+        digest = hashlib.sha256(encoded).hexdigest()
+        destination = directory / f"{digest}.json"
+        if destination.exists():
+            if destination.read_bytes() != encoded:
+                raise RuntimeError(
+                    "content-addressed Claude document mismatch"
+                )
+            return destination, digest
+
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=directory,
+                prefix=f".{digest}.",
+                suffix=".tmp",
+                delete=False,
+            ) as stream:
+                temporary = Path(stream.name)
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, destination)
+            temporary = None
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        if destination.read_bytes() != encoded:
+            raise RuntimeError("Claude document failed post-write verification")
+        return destination, digest
 
     def validate_request(
         self, request: InterfaceTurnRequest | ReorientationTurnRequest
@@ -664,14 +983,18 @@ class ClaudeAdapter:
             raise ContractError("requested Claude timeout exceeds the host maximum")
 
     def _parse(
-        self, completed: subprocess.CompletedProcess[str], endpoint: str
+        self,
+        completed: subprocess.CompletedProcess[str],
+        endpoint: str,
+        provider_io_sha256: str,
     ) -> tuple[dict[str, object], str, dict[str, object], str]:
         try:
             outer = json.loads(completed.stdout)
         except (json.JSONDecodeError, TypeError) as exc:
             raise ProviderInvocationError(
                 "ProviderProtocolError",
-                "Claude Code returned invalid JSON",
+                "Claude Code returned invalid JSON; provider I/O document "
+                f"sha256={provider_io_sha256}",
             ) from exc
         if not isinstance(outer, dict):
             raise ProviderInvocationError(
@@ -679,13 +1002,6 @@ class ClaudeAdapter:
                 "Claude Code returned a non-object response",
             )
         usage, actual_model = self._usage(outer)
-        if actual_model != self.candidate.model_snapshot:
-            raise ProviderInvocationError(
-                "RequestedActualModelMismatch",
-                "Claude Code actual model differs from the requested snapshot",
-                usage=usage,
-                actual_model=actual_model,
-            )
         if (
             self.permission_mode == "sandboxed_bypass"
             and usage["permission_rejections"] != 0
@@ -703,26 +1019,26 @@ class ClaudeAdapter:
                 usage=usage,
                 actual_model=actual_model,
             )
+        output_model: type[StructuredInterfaceOutput | StructuredReorientationOutput]
+        if endpoint == "/v1/reorientation-turn":
+            output_model = StructuredReorientationOutput
+        else:
+            output_model = StructuredInterfaceOutput
         try:
-            structured = StructuredInterfaceOutput.model_validate(
-                outer["structured_output"]
-            )
+            structured = output_model.model_validate(outer["structured_output"])
         except (KeyError, ValidationError) as exc:
+            contract_name = (
+                "reorientation"
+                if endpoint == "/v1/reorientation-turn"
+                else "InterfaceAction"
+            )
             raise ProviderInvocationError(
                 "ProviderProtocolError",
-                "Claude Code structured output violated InterfaceAction schema",
+                "Claude Code structured output violated "
+                f"{contract_name} schema",
                 usage=usage,
                 actual_model=actual_model,
             ) from exc
-        if endpoint == "/v1/reorientation-turn":
-            allowed = {"history.read", "reorientation.submit"}
-            if any(action.kind not in allowed for action in structured.actions):
-                raise ProviderInvocationError(
-                    "ReorientationEffectForbidden",
-                    "reorientation turn returned an action outside read/submit scope",
-                    usage=usage,
-                    actual_model=actual_model,
-                )
         session_id = outer.get("session_id")
         if not isinstance(session_id, str) or not session_id:
             raise ProviderInvocationError(
@@ -797,9 +1113,7 @@ class ClaudeAdapter:
                 ),
                 "permission_rejections": len(permission_denials),
                 "permission_mode": self.permission_mode,
-                "model_substitution": (
-                    actual_model != self.candidate.model_snapshot
-                ),
+                "model_substitution": False,
             }
         )
         return usage, actual_model
@@ -873,6 +1187,7 @@ class CodexAdapter:
             text=True,
             timeout=15,
             shell=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if completed.returncode != 0 or self.cli_version not in completed.stdout:
             raise RuntimeError("Codex CLI version mismatch")
@@ -934,6 +1249,7 @@ class CodexAdapter:
                 timeout=request.timeout_seconds,
                 shell=False,
                 cwd=resolved_cwd,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             result_text = (
                 output_path.read_text("utf-8") if output_path.is_file() else ""
@@ -1197,16 +1513,21 @@ class ProductionPilotHost:
             "candidates": {
                 "interface": {
                     "candidate_key": _candidate_key(self.claude.candidate),
+                    "selection": self.claude.candidate.selection,
                     "model_snapshot": self.claude.candidate.model_snapshot,
                     "effort": self.claude.candidate.effort,
                 },
                 "coding_s1": {
                     "candidate_key": _candidate_key(self.codex.candidate),
+                    "selection": self.codex.candidate.selection,
                     "model_snapshot": self.codex.candidate.model_snapshot,
                     "effort": self.codex.candidate.effort,
                 },
             },
             "permission_mode": self.claude.permission_mode,
+            "max_request_document_bytes": (
+                self.claude.max_request_document_bytes
+            ),
             "receipt_reconciliation": True,
         }
 
@@ -1233,7 +1554,7 @@ class ProductionPilotHost:
         else:
             self.claude.validate_request(request)
 
-        request_digest = _sha256_json(request.model_dump(mode="json"))
+        request_digest = _request_sha256(request)
         receipt, created = self.receipts.begin(
             endpoint=endpoint,
             receipt_id=request.receipt_id,

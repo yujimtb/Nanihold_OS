@@ -106,7 +106,8 @@ class InterfacePilotConfig(StrictConfig):
     adapter: str = Field(min_length=1)
     adapter_version: str = Field(min_length=1)
     provider: str = Field(min_length=1)
-    model_snapshot: str = Field(min_length=1)
+    model_selection: Literal["exact", "provider_configured"]
+    model_snapshot: str | None = None
     effort: Literal["low", "medium", "high", "xhigh", "max"]
     toolset: tuple[str, ...]
     sandbox_fingerprint: str = Field(min_length=1)
@@ -122,6 +123,13 @@ class InterfacePilotConfig(StrictConfig):
             raise ValueError(
                 "interface_pilot.pilot_host_base_url must be an explicit HTTP(S) URL"
             )
+        if self.model_selection == "exact" and self.model_snapshot is None:
+            raise ValueError("exact Interface Pilot requires model_snapshot")
+        if (
+            self.model_selection == "provider_configured"
+            and self.model_snapshot is not None
+        ):
+            raise ValueError("provider_configured Interface Pilot forbids model_snapshot")
         return self
 
 
@@ -219,6 +227,7 @@ class NaniholdConfig(StrictConfig):
                 item.candidate.adapter == interface.adapter
                 and item.candidate.adapter_version == interface.adapter_version
                 and item.candidate.provider == interface.provider
+                and item.candidate.selection == interface.model_selection
                 and item.candidate.model_snapshot == interface.model_snapshot
                 and item.candidate.effort == interface.effort
                 and item.candidate.toolset == interface.toolset
@@ -259,24 +268,29 @@ class NaniholdConfig(StrictConfig):
             if (
                 interface.adapter != "claude-code"
                 or interface.provider != "anthropic"
-                or interface.model_snapshot != "claude-fable-5"
+                or interface.model_selection != "provider_configured"
+                or interface.model_snapshot is not None
                 or interface.effort != "high"
             ):
                 raise ValueError(
-                    "the production Interface Pilot default is "
-                    "claude-code/anthropic/claude-fable-5/high"
+                    "the production Interface Pilot requires "
+                    "claude-code/anthropic/provider_configured/high"
                 )
         else:
             if self.production_pilot_host is not None:
                 raise ValueError(
                     "local verification cannot configure production_pilot_host"
                 )
-            lowered = interface.model_snapshot.lower()
             if interface.effort != "low":
                 raise ValueError("local verification requires Interface effort low")
-            if "fable" in lowered or "opus" in lowered:
+            if (
+                interface.model_selection != "exact"
+                or interface.model_snapshot is None
+                or interface.model_snapshot
+                not in {"claude-haiku-4-5-20251001"}
+            ):
                 raise ValueError(
-                    "local verification forbids Fable and Opus Interface models"
+                    "local verification requires the approved cheap exact Interface model"
                 )
             if self.pilot.mode is not PilotMode.OBSERVE_ONLY:
                 raise ValueError("local verification requires observe_only Pilot mode")

@@ -84,8 +84,8 @@ def test_intercom_keeps_identical_short_messages_with_different_native_ids(
     records, _ = convert_intercom_export(export, require_cutover_ready=True)
     assert len(records) == 2
     assert {record["source_message_id"] for record in records} == {
-        "slack:C1:m1",
-        "slack:C1:m2",
+        "inbox:slack:C1:m1",
+        "inbox:slack:C1:m2",
     }
 
 
@@ -99,6 +99,26 @@ def test_intercom_deduplicates_only_matching_native_identity_and_raw(
     write_intercom_export(export, [first, first])
     records, _ = convert_intercom_export(export, require_cutover_ready=True)
     assert len(records) == 1
+
+
+def test_intercom_identity_is_scoped_by_durable_stream(tmp_path: Path) -> None:
+    export = tmp_path / "intercom"
+    inbox = intercom_record(
+        "m1", "同じplatform ID", order=1, occurred_at="2026-07-20T00:00:00Z"
+    )
+    outbox = {
+        **inbox,
+        "stream": "outbox",
+        "order": 2,
+    }
+    write_intercom_export(export, [inbox, outbox])
+
+    records, _ = convert_intercom_export(export, require_cutover_ready=True)
+
+    assert [record["source_message_id"] for record in records] == [
+        "inbox:slack:C1:m1",
+        "outbox:slack:C1:m1",
+    ]
 
 
 def test_intercom_infers_only_missing_timestamp_from_signed_manifest(
@@ -218,6 +238,9 @@ def test_system_snapshot_is_strict_and_atomic(tmp_path: Path) -> None:
         "kind": "current_state",
         "state_key": "git:nanihold",
     }
+    assert written["text"] == (
+        'branch=feature\n{"branch":"feature","dirty":false}'
+    )
     assert bytes(written["raw"]) == canonical(
         {
             "state_key": "git:nanihold",

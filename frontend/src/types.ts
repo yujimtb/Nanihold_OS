@@ -140,7 +140,8 @@ export type ReorientationAssessment = {
   open_commitment_ids: string[];
   unknowns: string[];
   resume_work_item_ids: string[];
-  covered_session_ids: string[];
+  covered_session_index_ref: string;
+  covered_session_count: number;
   history_cursor: number;
   current_state_cursor: number;
   citations: EvidenceCitation[];
@@ -205,6 +206,12 @@ export type ActivationStatus = {
   reorientation_output_tokens: number;
   reorientation_error: string | null;
   work_graph_snapshot_id: string | null;
+  reorientation_conversation_id: string | null;
+  reorientation_attempt_in_progress: boolean;
+  pending_reorientation_revision_reason:
+    | "missing_resume_work_item"
+    | "owner_correction"
+    | null;
 };
 
 export type ConversationActionReceipt = {

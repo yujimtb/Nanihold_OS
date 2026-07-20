@@ -145,8 +145,8 @@ class TokenEfficiencyLab:
         self, trigger: InvestigationTrigger, *, model: str, effort: str
     ) -> InvestigationTrigger:
         lowered = model.lower()
-        if "fable" in lowered or "opus" in lowered:
-            raise InvariantViolation("Token Efficiency Lab forbids Fable and Opus")
+        if "opus" in lowered:
+            raise InvariantViolation("Token Efficiency Lab forbids Opus")
         if effort != "low":
             raise InvariantViolation("Token Efficiency Lab model effort must be low")
         return trigger.model_copy(

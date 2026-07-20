@@ -15,7 +15,7 @@ _STATES = tuple(ActivationState)
 _STATE_LABELS = {
     ActivationState.UNCOMMISSIONED: "履歴取込待ち",
     ActivationState.HISTORY_IMPORTED: "履歴検証済み",
-    ActivationState.REORIENTATION_ONLY: "Fable読解中",
+    ActivationState.REORIENTATION_ONLY: "履歴読解中",
     ActivationState.AWAITING_OWNER_CONFIRMATION: "owner確認待ち",
     ActivationState.ACTIVE: "活動中",
 }
@@ -105,7 +105,7 @@ def render_dashboard(snapshot: TuiOperationalSnapshot, *, width: int = 88) -> st
         raise ValueError("TUI width must be at least 60")
     activation = snapshot.activation
     lines = [
-        _rule(" Nanihold / Fable ", width),
+        _rule(" Nanihold / Interface ", width),
         f"状態: {activation.state.value} — {_STATE_LABELS[activation.state]}",
         _progress(activation.state),
         "",
@@ -146,7 +146,7 @@ def render_dashboard(snapshot: TuiOperationalSnapshot, *, width: int = 88) -> st
         lines.extend(
             [
                 "",
-                _rule(" Fableが追いつきました ", width),
+                _rule(" Interfaceが追いつきました ", width),
                 *_wrapped("理解", assessment.understanding, width),
                 *_section("ミッション", assessment.active_missions, width),
                 *_section(
@@ -162,7 +162,7 @@ def render_dashboard(snapshot: TuiOperationalSnapshot, *, width: int = 88) -> st
                 ),
                 (
                     "coverage: "
-                    f"{len(assessment.covered_session_ids)} sessions / "
+                    f"{assessment.covered_session_count} sessions / "
                     f"history#{assessment.history_cursor} / "
                     f"current#{assessment.current_state_cursor}"
                 ),
@@ -170,13 +170,23 @@ def render_dashboard(snapshot: TuiOperationalSnapshot, *, width: int = 88) -> st
             ]
         )
     if activation.state is ActivationState.AWAITING_OWNER_CONFIRMATION:
-        lines.extend(
-            [
-                "",
-                "次の操作: Web UIまたはapproval commandで訂正を保存し、",
-                "          assessmentをowner承認してください。",
-            ]
-        )
+        if assessment is not None and assessment.resume_work_item_ids:
+            lines.extend(
+                [
+                    "",
+                    "次の操作: Web UIまたはapproval commandで訂正を保存し、",
+                    "          assessmentをowner承認してください。",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "",
+                    "再開候補が空のため、このassessmentは承認できません。",
+                    "次の操作: Web UIまたは`vsm reorientation revise`で再評価してください。",
+                    "安全ゲート: ExecutionとEffectは開始されていません。",
+                ]
+            )
     elif (
         activation.state is ActivationState.REORIENTATION_ONLY
         and activation.reorientation_error is not None
@@ -185,7 +195,7 @@ def render_dashboard(snapshot: TuiOperationalSnapshot, *, width: int = 88) -> st
             [
                 "",
                 f"履歴読解は安全に停止: {activation.reorientation_error}",
-                "次の操作: `vsm fable catch-up` またはWeb UIから再開してください。",
+                "次の操作: `vsm reorientation start` またはWeb UIから再開してください。",
                 "安全ゲート: ExecutionとEffectは開始されていません。",
             ]
         )

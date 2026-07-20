@@ -8,6 +8,7 @@ from pathlib import Path
 import httpx
 import typer
 
+from vsm.activation.models import ReorientationRevisionReason
 from vsm.errors import ConfigurationError, InvariantViolation
 from vsm.config import load_config
 from vsm.interface.models import Conversation, SurfaceBinding
@@ -40,12 +41,12 @@ routes_app = typer.Typer(help="Commission and inspect approved Bayesian routes."
 verification_app = typer.Typer(
     help="Commission the isolated local verification environment."
 )
-fable_app = typer.Typer(help="Start and confirm Fable's owner-gated activation.")
+reorientation_app = typer.Typer(help="Start and confirm Interface reorientation.")
 app.add_typer(events_app, name="events")
 app.add_typer(migration_app, name="migration")
 app.add_typer(routes_app, name="routes")
 app.add_typer(verification_app, name="verification")
-app.add_typer(fable_app, name="fable")
+app.add_typer(reorientation_app, name="reorientation")
 
 
 @app.command("owner-bootstrap")
@@ -262,6 +263,7 @@ def verification_commission(
                 item.adapter == interface_config.adapter
                 and item.adapter_version == interface_config.adapter_version
                 and item.provider == interface_config.provider
+                and item.selection == interface_config.model_selection
                 and item.model_snapshot == interface_config.model_snapshot
                 and item.effort == interface_config.effort
                 and item.toolset == interface_config.toolset
@@ -456,8 +458,28 @@ def _owner_id(client: httpx.Client) -> str:
     return spaces[0]["owner_id"]
 
 
-@fable_app.command("catch-up")
-def fable_catch_up(
+def _compact_activation_status(document: object) -> dict[str, object]:
+    if not isinstance(document, dict):
+        raise InvariantViolation("activation status must be a JSON object")
+    state = document.get("state")
+    assessment = document.get("assessment")
+    error = document.get("reorientation_error")
+    if (
+        not isinstance(state, str)
+        or not state
+        or (assessment is not None and not isinstance(assessment, dict))
+        or (error is not None and not isinstance(error, str))
+    ):
+        raise InvariantViolation("activation status fields are invalid")
+    return {
+        "state": state,
+        "assessment_ready": assessment is not None,
+        "reorientation_error": error,
+    }
+
+
+@reorientation_app.command("start")
+def reorientation_start(
     base_url: str = typer.Option(..., min=1),
     bearer_token_env: str = typer.Option(..., min=1),
     device_id: str = typer.Option(..., min=1),
@@ -480,11 +502,11 @@ def fable_catch_up(
         raise InvariantViolation(
             f"Nanihold API HTTP {response.status_code}: {response.text}"
         )
-    _json(response.json())
+    _json(_compact_activation_status(response.json()))
 
 
-@fable_app.command("approve")
-def fable_approve(
+@reorientation_app.command("approve")
+def reorientation_approve(
     base_url: str = typer.Option(..., min=1),
     bearer_token_env: str = typer.Option(..., min=1),
     device_id: str = typer.Option(..., min=1),
@@ -516,7 +538,20 @@ def fable_approve(
             or not assessment["conversation_id"]
         ):
             raise InvariantViolation(
-                "Fable has no owner-confirmable assessment"
+                "Interface reorientation has no owner-confirmable assessment"
+            )
+        resume_work_item_ids = assessment.get("resume_work_item_ids")
+        if (
+            not isinstance(resume_work_item_ids, list)
+            or not resume_work_item_ids
+            or any(
+                not isinstance(work_item_id, str) or not work_item_id
+                for work_item_id in resume_work_item_ids
+            )
+        ):
+            raise InvariantViolation(
+                "Interface assessment has no real resume WorkItem; "
+                "request reorientation revision instead of approval"
             )
         response = client.post(
             "/api/reorientation/approval",
@@ -532,7 +567,37 @@ def fable_approve(
         raise InvariantViolation(
             f"Nanihold API HTTP {response.status_code}: {response.text}"
         )
-    _json(response.json())
+    _json(_compact_activation_status(response.json()))
+
+
+@reorientation_app.command("revise")
+def reorientation_revise(
+    base_url: str = typer.Option(..., min=1),
+    bearer_token_env: str = typer.Option(..., min=1),
+    device_id: str = typer.Option(..., min=1),
+    idempotency_key: str = typer.Option(..., min=1),
+    reason: ReorientationRevisionReason = typer.Option(...),
+) -> None:
+    """Return an incomplete assessment to reorientation-only state."""
+    with _owner_api_client(
+        base_url=base_url,
+        bearer_token_env=bearer_token_env,
+        device_id=device_id,
+    ) as client:
+        response = client.post(
+            "/api/reorientation/revision",
+            json={
+                "reason_code": reason.value,
+                "requested_by": "owner",
+                "actor_id": _owner_id(client),
+                "idempotency_key": idempotency_key,
+            },
+        )
+    if not response.is_success:
+        raise InvariantViolation(
+            f"Nanihold API HTTP {response.status_code}: {response.text}"
+        )
+    _json(_compact_activation_status(response.json()))
 
 
 @events_app.command("tail")

@@ -85,8 +85,8 @@ def main() -> None:
 
     config = (ROOT / "vsm" / "config.py").read_text("utf-8")
     require(
-        'interface.model_snapshot != "claude-fable-5"' in config,
-        "production Interface Pilot model is not fixed to claude-fable-5",
+        'interface.model_selection != "provider_configured"' in config,
+        "production Interface Pilot is not provider_configured",
     )
     require(
         'interface.effort != "high"' in config,
@@ -110,11 +110,11 @@ def main() -> None:
 
     token_lab = (ROOT / "vsm" / "token_lab" / "lab.py").read_text("utf-8")
     require(
-        '"fable" in lowered or "opus" in lowered' in token_lab,
-        "Token Efficiency Lab does not reject Fable and Opus",
+        '"opus" in lowered' in token_lab,
+        "Token Efficiency Lab does not reject Opus",
     )
 
-    golden = ROOT / "tests" / "fixtures" / "fable-owner-ux-golden-119.json"
+    golden = ROOT / "tests" / "fixtures" / "interface-owner-ux-golden-119.json"
     require(golden.is_file(), "119-case UX golden manifest is missing")
     golden_text = golden.read_text("utf-8")
     require(

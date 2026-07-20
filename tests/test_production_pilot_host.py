@@ -1,25 +1,30 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias
 
 import pytest
+from pydantic import BaseModel
 
 from scripts.production_pilot_host import (
     ConflictError,
+    InterfaceTurnRequest,
     ProductionPilotHost,
     ReceiptStore,
+    ReorientationTurnRequest,
 )
 
 
 CERTIFICATE = "a" * 64
+RequestModel: TypeAlias = type[InterfaceTurnRequest] | type[ReorientationTurnRequest]
 CLAUDE_CANDIDATE = {
     "adapter": "claude-code",
     "adapter_version": "2.1.215",
     "provider": "anthropic",
-    "model_snapshot": "claude-fable-5",
+    "selection": "provider_configured",
     "effort": "high",
     "toolset": ["mcp__history__search"],
     "sandbox_fingerprint": "sandbox:isolated",
@@ -29,6 +34,7 @@ CODEX_CANDIDATE = {
     "adapter": "codex-cli",
     "adapter_version": "0.145.0",
     "provider": "openai",
+    "selection": "exact",
     "model_snapshot": "gpt-5.6-sol",
     "effort": "xhigh",
     "toolset": ["mcp__gateway__git_status"],
@@ -51,6 +57,8 @@ def _config(tmp_path: Path) -> dict[str, Any]:
             "executable": "claude",
             "cli_version": "2.1.215",
             "working_directory": str(tmp_path),
+            "request_document_directory": str(tmp_path / "request-documents"),
+            "max_request_document_bytes": 32_768,
             "permission_mode": "sandboxed_bypass",
             "sandbox_profile_certificate_sha256": "b" * 64,
             "mcp": {
@@ -129,6 +137,190 @@ def _interface_request() -> dict[str, object]:
     }
 
 
+def _reorientation_request(
+    history_value: object = "open",
+) -> dict[str, object]:
+    return {
+        "receipt_id": "receipt:reorientation:1",
+        "idempotency_key": "idem:reorientation:1",
+        "device_identity": _identity(),
+        "candidate": CLAUDE_CANDIDATE,
+        "permission_mode": "sandboxed_bypass",
+        "max_budget_usd": 1.0,
+        "timeout_seconds": 30,
+        "root_session_id": None,
+        "fork_session": False,
+        "event_delta": _event_delta(),
+        "resume_pack": None,
+        "objective": "Review the indexed history and identify gaps.",
+        "session_index_ref": "history:index:1",
+        "open_commitment_refs": ["commitment:1"],
+        "current_state_ref": "history:state:1",
+        "history_result": {
+            "action_id": "action:history:1",
+            "operation": "get_current_state",
+            "result_json": [
+                {
+                    "state_key": "mission",
+                    "value": history_value,
+                }
+            ],
+            "result_blob_ref": f"blob:sha256:{'b' * 64}",
+            "result_sha256": "c" * 64,
+            "next_cursor": None,
+            "source_cursor": "operational:7",
+            "result_event_id": "event:history:state:1",
+            "event_cursor": 7,
+        },
+        "assessment_contract": {
+            "import_id": "history-import:primary",
+            "canonical_conversation_id": "conversation:reorientation",
+            "covered_session_index_ref": "history:index:one",
+            "covered_session_count": 1,
+            "open_commitment_ids": ["commitment:1"],
+            "resume_work_items": [
+                {
+                    "work_item_id": "work:resume",
+                    "title": "Resume real work",
+                    "description": "Finish the imported incomplete WorkItem.",
+                    "acceptance_criteria": ["The real WorkItem is resumed."],
+                    "state": "paused",
+                }
+            ],
+            "minimum_history_cursor": 3,
+        },
+        "audited_history_event_ids": [
+            "event:history:session:1",
+            "event:history:state:1",
+        ],
+        "assessment_contract_included": True,
+        "session_index_event_ids": ["event:session-index:1"],
+        "session_index_summary": {
+            "session_count": 832,
+            "source_kind_counts": {"claude": 832},
+            "first_message_at": "2026-07-01T00:00:00+00:00",
+            "last_message_at": "2026-07-20T00:00:00+00:00",
+        },
+    }
+
+
+def _submit_reorientation_action() -> dict[str, object]:
+    return {
+        "action_id": "action:reorientation-submit",
+        "kind": "reorientation.submit",
+        "assessment": {
+            "assessment_id": "assessment:one",
+            "import_id": "history-import:primary",
+            "conversation_id": "conversation:reorientation",
+            "generated_at": "2026-07-20T00:00:00+00:00",
+            "understanding": "Current state understood.",
+            "active_missions": ["Resume the real unfinished WorkItem."],
+            "decisions_and_constraints": ["Wait for owner confirmation."],
+            "open_commitment_ids": ["commitment:1"],
+            "unknowns": [],
+            "resume_work_item_ids": ["work:resume"],
+            "covered_session_index_ref": "history:index:one",
+            "covered_session_count": 1,
+            "history_cursor": 7,
+            "current_state_cursor": 7,
+            "citations": [
+                {
+                    "claim_ref": "understanding",
+                    "evidence_ref": "event:history-state-1",
+                }
+            ],
+        },
+    }
+
+
+def _canonical_sha256(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _read_request_document(
+    *,
+    argv: list[str],
+    request_document_directory: Path,
+) -> tuple[Path, bytes, dict[str, object]]:
+    assert argv.count("--append-system-prompt-file") == 1
+    path = Path(argv[argv.index("--append-system-prompt-file") + 1])
+    assert path.parent == request_document_directory.resolve()
+    assert path.suffix == ".json"
+    payload = path.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    assert path.name == f"{digest}.json"
+    assert payload.endswith(b"\n")
+    document = json.loads(payload.decode("utf-8"))
+    assert isinstance(document, dict)
+    return path, payload, document
+
+
+def _assert_request_document_identity(
+    *,
+    document: dict[str, object],
+    request: dict[str, object],
+    request_model: RequestModel,
+) -> None:
+    validated = request_model.model_validate(request)
+    assert isinstance(validated, BaseModel)
+    assert document["document_schema"] == "nanihold.interface-request-document"
+    assert document["document_schema_version"] == "1.0.0"
+    assert document["request_receipt_id"] == request["receipt_id"]
+    assert document["request_idempotency_key"] == request["idempotency_key"]
+    assert document["request_sha256"] == _canonical_sha256(
+        validated.model_dump(mode="json", exclude_computed_fields=True)
+    )
+
+
+def _assert_short_stdio(
+    *,
+    run_kwargs: dict[str, object],
+    request_document_sha256: str,
+    forbidden_fragments: tuple[str, ...],
+) -> None:
+    instruction = run_kwargs["input"]
+    assert isinstance(instruction, str)
+    assert len(instruction.encode("utf-8")) <= 256
+    assert f"Verify its SHA-256 is {request_document_sha256}." in instruction
+    for fragment in forbidden_fragments:
+        assert fragment not in instruction
+    assert run_kwargs["creationflags"] == getattr(
+        subprocess, "CREATE_NO_WINDOW", 0
+    )
+
+
+def _interface_request_with_document_bytes(
+    host: ProductionPilotHost,
+    target_bytes: int,
+) -> dict[str, object]:
+    request = _interface_request()
+    request["owner_text"] = "x"
+    validated = InterfaceTurnRequest.model_validate(request)
+    payload = host.claude._request_document_payload(
+        "/v1/interface-turn",
+        validated,
+    )
+    base_bytes = len(host.claude._encode_content_addressed_document(payload))
+    assert base_bytes <= target_bytes
+    request["owner_text"] = "x" * (target_bytes - base_bytes + 1)
+    validated = InterfaceTurnRequest.model_validate(request)
+    payload = host.claude._request_document_payload(
+        "/v1/interface-turn",
+        validated,
+    )
+    assert (
+        len(host.claude._encode_content_addressed_document(payload))
+        == target_bytes
+    )
+    return request
+
+
 def _work_request(tmp_path: Path) -> dict[str, object]:
     return {
         "receipt_id": "receipt:work:1",
@@ -177,7 +369,7 @@ def _version_result(argv: list[str]) -> subprocess.CompletedProcess[str] | None:
 
 
 def _claude_outer(
-    actual_model: str = "claude-fable-5",
+    actual_model: str = "claude-haiku-4-5-20251001",
     actions: list[dict[str, object]] | None = None,
     permission_denials: list[dict[str, object]] | None = None,
 ) -> str:
@@ -221,30 +413,56 @@ def _make_host(
     )
 
 
-def test_claude_fable_uses_exact_model_permission_mcp_and_root_fork(
+def test_health_declares_candidate_selection(tmp_path: Path, monkeypatch, provider_env):
+    def fake_run(argv, **kwargs):
+        version = _version_result(argv)
+        assert version is not None
+        return version
+
+    health = _make_host(tmp_path, monkeypatch, fake_run).health()
+    assert health["candidates"]["interface"]["selection"] == "provider_configured"
+    assert health["candidates"]["coding_s1"]["selection"] == "exact"
+    assert health["max_request_document_bytes"] == 32_768
+
+
+def test_claude_interface_uses_provider_configuration_permission_mcp_and_root_fork(
     tmp_path: Path, monkeypatch, provider_env
 ):
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], dict[str, object]]] = []
 
     def fake_run(argv, **kwargs):
         version = _version_result(argv)
         if version is not None:
             return version
-        calls.append(argv)
+        calls.append((argv, kwargs))
         assert kwargs["shell"] is False
         assert kwargs["cwd"] == tmp_path.resolve()
         return subprocess.CompletedProcess(argv, 0, _claude_outer(), "")
 
     host = _make_host(tmp_path, monkeypatch, fake_run)
-    receipt = host.execute("/v1/interface-turn", _interface_request())
+    request = _interface_request()
+    long_owner_text = (
+        "LONG_INTERFACE_OWNER_CONTEXT|"
+        + "過去の会話履歴と未完了の約束を再確認してください。" * 300
+    )
+    request["owner_text"] = long_owner_text
+    receipt = host.execute("/v1/interface-turn", request)
 
     assert receipt["status"] == "succeeded", receipt
-    assert receipt["actual_model"] == "claude-fable-5"
+    assert receipt["actual_model"] == "claude-haiku-4-5-20251001"
     assert receipt["provider_session_id"] == "fork-session-2"
     assert receipt["usage"]["classifier_triggered"] is False
-    argv = calls[0]
-    assert argv[argv.index("--model") + 1] == "claude-fable-5"
+    assert receipt["request_sha256"] == _canonical_sha256(
+        InterfaceTurnRequest.model_validate(request).model_dump(
+            mode="json", exclude_computed_fields=True
+        )
+    )
+    argv, run_kwargs = calls[0]
+    assert "--model" not in argv
     assert argv[argv.index("--effort") + 1] == "high"
+    interface_schema_json = argv[argv.index("--json-schema") + 1]
+    assert '"discriminator"' not in interface_schema_json
+    assert "oneOf" in interface_schema_json
     assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
     assert argv[argv.index("--resume") + 1] == "root-session-1"
     assert "--fork-session" in argv
@@ -256,6 +474,129 @@ def test_claude_fable_uses_exact_model_permission_mcp_and_root_fork(
     assert set(mcp["mcpServers"]) == {"history"}
     assert "history-secret" not in json.dumps(argv)
     assert "pilot-secret" not in json.dumps(argv)
+    argv_json = json.dumps(argv, ensure_ascii=False)
+    assert long_owner_text not in argv_json
+    assert "LONG_INTERFACE_OWNER_CONTEXT" not in argv_json
+    assert request["receipt_id"] not in argv_json
+    request_document_path, request_document_bytes, request_document = (
+        _read_request_document(
+            argv=argv,
+            request_document_directory=tmp_path / "request-documents",
+        )
+    )
+    _assert_request_document_identity(
+        document=request_document,
+        request=request,
+        request_model=InterfaceTurnRequest,
+    )
+    assert request_document["endpoint"] == "/v1/interface-turn"
+    assert request_document["owner_text"] == long_owner_text
+    assert "history_result" not in request_document
+    _assert_short_stdio(
+        run_kwargs=run_kwargs,
+        request_document_sha256=request_document_path.stem,
+        forbidden_fragments=(
+            long_owner_text,
+            "LONG_INTERFACE_OWNER_CONTEXT",
+            str(request["receipt_id"]),
+        ),
+    )
+    provider_io_files = list(
+        (tmp_path / "request-documents" / "provider-io").glob("*.json")
+    )
+    assert len(provider_io_files) == 1
+    provider_io_bytes = provider_io_files[0].read_bytes()
+    assert provider_io_files[0].name == (
+        f"{hashlib.sha256(provider_io_bytes).hexdigest()}.json"
+    )
+    provider_io = json.loads(provider_io_bytes)
+    assert provider_io["document_schema"] == "nanihold.provider-io-document"
+    assert provider_io["request_receipt_id"] == request["receipt_id"]
+    assert provider_io["request_sha256"] == receipt["request_sha256"]
+    assert provider_io["request_document_sha256"] == request_document_path.stem
+    assert provider_io["request_document_bytes"] == len(request_document_bytes)
+    assert provider_io["endpoint"] == "/v1/interface-turn"
+    assert provider_io["return_code"] == 0
+    assert provider_io["stdout_sha256"] == hashlib.sha256(
+        provider_io["stdout_text"].encode("utf-8")
+    ).hexdigest()
+    assert provider_io["stderr_bytes"] == 0
+
+
+def test_request_document_just_below_limit_is_persisted_and_invoked(
+    tmp_path: Path, monkeypatch, provider_env
+):
+    provider_calls = 0
+
+    def fake_run(argv, **kwargs):
+        nonlocal provider_calls
+        version = _version_result(argv)
+        if version is not None:
+            return version
+        provider_calls += 1
+        return subprocess.CompletedProcess(argv, 0, _claude_outer(), "")
+
+    host = _make_host(tmp_path, monkeypatch, fake_run)
+    request = _interface_request_with_document_bytes(host, 32_767)
+    receipt = host.execute("/v1/interface-turn", request)
+
+    assert receipt["status"] == "succeeded", receipt
+    assert provider_calls == 1
+    request_documents = list((tmp_path / "request-documents").glob("*.json"))
+    assert len(request_documents) == 1
+    assert request_documents[0].stat().st_size == 32_767
+
+
+def test_request_document_over_limit_fails_before_write_or_provider(
+    tmp_path: Path, monkeypatch, provider_env
+):
+    provider_calls = 0
+
+    def fake_run(argv, **kwargs):
+        nonlocal provider_calls
+        version = _version_result(argv)
+        if version is not None:
+            return version
+        provider_calls += 1
+        raise AssertionError("provider must not run for an oversized request document")
+
+    host = _make_host(tmp_path, monkeypatch, fake_run)
+    request = _interface_request_with_document_bytes(host, 32_769)
+    receipt = host.execute("/v1/interface-turn", request)
+
+    assert receipt["status"] == "failed"
+    assert receipt["error"]["code"] == "RequestDocumentTooLarge"
+    assert provider_calls == 0
+    assert list((tmp_path / "request-documents").glob("*.json")) == []
+    assert list(
+        (tmp_path / "request-documents" / "provider-io").glob("*.json")
+    ) == []
+
+
+@pytest.mark.parametrize("invalid_limit", [0, -1, 1.5, "32768", True])
+def test_max_request_document_bytes_must_be_a_positive_integer(
+    invalid_limit: object,
+    tmp_path: Path,
+    monkeypatch,
+    provider_env,
+):
+    config = _config(tmp_path)
+    config["claude"]["max_request_document_bytes"] = invalid_limit
+
+    def fake_run(argv, **kwargs):
+        version = _version_result(argv)
+        assert version is not None
+        return version
+
+    monkeypatch.setattr(
+        "scripts.production_pilot_host.subprocess.run",
+        fake_run,
+    )
+    with pytest.raises(RuntimeError, match="must be a positive integer"):
+        ProductionPilotHost(
+            _write_config(tmp_path, config),
+            tmp_path / "pilot.log",
+        )
 
 
 def test_codex_exec_has_exact_model_effort_cwd_sandbox_and_schema(
@@ -366,20 +707,20 @@ def test_work_execution_rejects_arbitrary_command_before_provider(
 def test_reorientation_turn_is_read_only_and_uses_the_same_root_fork(
     tmp_path: Path, monkeypatch, provider_env
 ):
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], dict[str, object]]] = []
 
     def fake_run(argv, **kwargs):
         version = _version_result(argv)
         if version is not None:
             return version
-        calls.append(argv)
+        calls.append((argv, kwargs))
         return subprocess.CompletedProcess(
             argv,
             0,
             _claude_outer(
                 actions=[
                     {
-                            "action_id": "action:history-1",
+                        "action_id": "action:history-1",
                         "kind": "history.read",
                         "operation": "search",
                         "argument": "open commitments",
@@ -391,38 +732,280 @@ def test_reorientation_turn_is_read_only_and_uses_the_same_root_fork(
         )
 
     host = _make_host(tmp_path, monkeypatch, fake_run)
-    request = {
-        "receipt_id": "receipt:reorientation:1",
-        "idempotency_key": "idem:reorientation:1",
-        "device_identity": _identity(),
-        "candidate": CLAUDE_CANDIDATE,
-        "permission_mode": "sandboxed_bypass",
-        "max_budget_usd": 1.0,
-        "timeout_seconds": 30,
-        "root_session_id": "root-session-1",
-        "fork_session": True,
-        "event_delta": _event_delta(),
-        "resume_pack": None,
-        "objective": "Review the indexed history and identify gaps.",
-        "session_index_ref": "history:index:1",
-        "open_commitment_refs": ["commitment:1"],
-        "current_state_ref": "history:state:1",
-    }
+    long_history_value = (
+        "LONG_REORIENTATION_HISTORY_RESULT|"
+        + "履歴の根拠を文書経由でのみ受け渡します。" * 300
+    )
+    request = _reorientation_request(long_history_value)
 
     receipt = host.execute("/v1/reorientation-turn", request)
 
     assert receipt["error"] is None, receipt["error"]
     assert receipt["status"] == "succeeded", receipt
     assert receipt["result"]["actions"][0]["kind"] == "history.read"
-    argv = calls[0]
-    assert argv[argv.index("--resume") + 1] == "root-session-1"
-    assert "--fork-session" in argv
-    prompt = json.loads(argv[2])
-    assert prompt["reorientation_only"] is True
-    assert "owner_text" not in prompt
+    argv, run_kwargs = calls[0]
+    assert "--resume" not in argv
+    assert "--fork-session" not in argv
+    reorientation_schema_json = argv[argv.index("--json-schema") + 1]
+    assert '"discriminator"' not in reorientation_schema_json
+    reorientation_schema = json.loads(reorientation_schema_json)
+    actions_schema = reorientation_schema["properties"]["actions"]
+    assert actions_schema["minItems"] == 1
+    assert actions_schema["maxItems"] == 1
+    assert actions_schema["items"]["oneOf"] == [
+        {"$ref": "#/$defs/ReadHistoryAction"},
+        {"$ref": "#/$defs/SubmitReorientationAction"},
+    ]
+    assert reorientation_schema["properties"]["display_text"]["maxLength"] == 1_200
+    assessment_schema = reorientation_schema["$defs"]["ReorientationAssessment"]
+    assert assessment_schema["properties"]["understanding"]["maxLength"] == 1_200
+    assert assessment_schema["properties"]["active_missions"]["maxItems"] == 8
+    assert (
+        assessment_schema["properties"]["active_missions"]["items"]["maxLength"]
+        == 500
+    )
+    assert (
+        assessment_schema["properties"]["decisions_and_constraints"]["maxItems"]
+        == 12
+    )
+    assert assessment_schema["properties"]["unknowns"]["maxItems"] == 8
+    assert assessment_schema["properties"]["citations"]["maxItems"] == 32
+    argv_json = json.dumps(argv, ensure_ascii=False)
+    assert long_history_value not in argv_json
+    assert "LONG_REORIENTATION_HISTORY_RESULT" not in argv_json
+    assert '"state_key"' not in argv_json
+    assert "history:state:1" not in json.dumps(argv)
+    request_document_path, request_document_bytes, request_document = (
+        _read_request_document(
+            argv=argv,
+            request_document_directory=tmp_path / "request-documents",
+        )
+    )
+    _assert_request_document_identity(
+        document=request_document,
+        request=request,
+        request_model=ReorientationTurnRequest,
+    )
+    assert request_document["endpoint"] == "/v1/reorientation-turn"
+    assert request_document["reorientation_only"] is True
+    assert "owner_text" not in request_document
+    assert request_document["history_result"] == request["history_result"]
+    assert request_document["history_result"]["result_json"] == [
+        {
+            "state_key": "mission",
+            "value": long_history_value,
+        }
+    ]
+    assert (
+        "paginated index without value bodies"
+        in request_document["assessment_submission_contract"]
+    )
+    assert (
+        "exact state_key from the index"
+        in request_document["assessment_submission_contract"]
+    )
+    assert (
+        "Never request that same triple again"
+        in request_document["assessment_submission_contract"]
+    )
+    assert (
+        "never pass them to resolve_reference"
+        in request_document["assessment_submission_contract"]
+    )
+    assert (
+        request_document["history_result"]["result_event_id"]
+        == "event:history:state:1"
+    )
+    assert request_document["assessment_contract"] == request["assessment_contract"]
+    assert (
+        request_document["audited_history_event_ids"]
+        == request["audited_history_event_ids"]
+    )
+    assert long_history_value.encode("utf-8") in request_document_bytes
+    _assert_short_stdio(
+        run_kwargs=run_kwargs,
+        request_document_sha256=request_document_path.stem,
+        forbidden_fragments=(
+            long_history_value,
+            "LONG_REORIENTATION_HISTORY_RESULT",
+            '"history_result"',
+            str(request["receipt_id"]),
+        ),
+    )
+
+    continuation = dict(request)
+    continuation.update(
+        {
+            "receipt_id": "receipt:reorientation:2",
+            "idempotency_key": "idem:reorientation:2",
+            "root_session_id": "provider-leaf-1",
+            "fork_session": True,
+            "assessment_contract": {
+                "import_id": "history-import:primary",
+                "canonical_conversation_id": "conversation:reorientation",
+                "contract_sha256": "d" * 64,
+                "covered_session_index_ref": "history:index:one",
+                "covered_session_count": 1,
+                "open_commitment_ids": ["commitment:1"],
+                "resume_work_items": [
+                    {
+                        "work_item_id": "work:resume",
+                        "title": "Resume real work",
+                        "description": "Finish the imported incomplete WorkItem.",
+                        "acceptance_criteria": ["The real WorkItem is resumed."],
+                        "state": "paused",
+                    }
+                ],
+                "minimum_history_cursor": 3,
+            },
+            "assessment_contract_included": False,
+        }
+    )
+    host.execute("/v1/reorientation-turn", continuation)
+    continuation_argv, continuation_kwargs = calls[1]
+    continuation_argv_json = json.dumps(continuation_argv, ensure_ascii=False)
+    assert long_history_value not in continuation_argv_json
+    assert "LONG_REORIENTATION_HISTORY_RESULT" not in continuation_argv_json
+    continuation_document_path, _, continuation_document = _read_request_document(
+        argv=continuation_argv,
+        request_document_directory=tmp_path / "request-documents",
+    )
+    _assert_request_document_identity(
+        document=continuation_document,
+        request=continuation,
+        request_model=ReorientationTurnRequest,
+    )
+    assert continuation_document["assessment_contract_included"] is False
+    assert set(continuation_document["assessment_contract"]) == {
+        "import_id",
+        "canonical_conversation_id",
+        "contract_sha256",
+        "covered_session_index_ref",
+        "covered_session_count",
+        "open_commitment_ids",
+        "resume_work_items",
+        "minimum_history_cursor",
+    }
+    assert continuation_document["assessment_contract"]["resume_work_items"] == [
+        {
+            "work_item_id": "work:resume",
+            "title": "Resume real work",
+            "description": "Finish the imported incomplete WorkItem.",
+            "acceptance_criteria": ["The real WorkItem is resumed."],
+            "state": "paused",
+        }
+    ]
+    assert continuation_document["history_result"] == continuation["history_result"]
+    assert "covered_session_ids" not in json.dumps(continuation_document)
+    assert "history-session:one" not in json.dumps(continuation_document)
+    assert "history-session:one" not in json.dumps(continuation_argv)
+    _assert_short_stdio(
+        run_kwargs=continuation_kwargs,
+        request_document_sha256=continuation_document_path.stem,
+        forbidden_fragments=(
+            long_history_value,
+            "LONG_REORIENTATION_HISTORY_RESULT",
+            '"history_result"',
+            str(continuation["receipt_id"]),
+        ),
+    )
 
 
-def test_model_mismatch_is_a_failure_receipt_and_is_not_retried(
+def test_reorientation_accepts_exactly_one_submit_action(
+    tmp_path: Path, monkeypatch, provider_env
+):
+    def fake_run(argv, **kwargs):
+        version = _version_result(argv)
+        if version is not None:
+            return version
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            _claude_outer(actions=[_submit_reorientation_action()]),
+            "",
+        )
+
+    host = _make_host(tmp_path, monkeypatch, fake_run)
+    receipt = host.execute(
+        "/v1/reorientation-turn",
+        _reorientation_request(),
+    )
+
+    assert receipt["status"] == "succeeded", receipt
+    assert receipt["error"] is None
+    assert len(receipt["result"]["actions"]) == 1
+    assert receipt["result"]["actions"][0]["kind"] == "reorientation.submit"
+    assert (
+        receipt["result"]["actions"][0]["assessment"]["assessment_id"]
+        == "assessment:one"
+    )
+
+
+@pytest.mark.parametrize(
+    "actions",
+    [
+        [],
+        [
+            {
+                "action_id": "action:history:one",
+                "kind": "history.read",
+                "operation": "search",
+                "argument": "first",
+                "page_cursor": None,
+            },
+            {
+                "action_id": "action:history:two",
+                "kind": "history.read",
+                "operation": "search",
+                "argument": "second",
+                "page_cursor": None,
+            },
+        ],
+        [
+            {
+                "action_id": "action:decision:forbidden",
+                "kind": "decision.record",
+                "statement": "This action is outside reorientation.",
+                "supersedes_decision_id": None,
+            }
+        ],
+    ],
+    ids=["zero-actions", "two-actions", "other-action"],
+)
+def test_reorientation_rejects_action_count_and_type_outside_exact_contract(
+    actions: list[dict[str, object]],
+    tmp_path: Path,
+    monkeypatch,
+    provider_env,
+):
+    provider_calls = 0
+
+    def fake_run(argv, **kwargs):
+        nonlocal provider_calls
+        version = _version_result(argv)
+        if version is not None:
+            return version
+        provider_calls += 1
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            _claude_outer(actions=actions),
+            "",
+        )
+
+    host = _make_host(tmp_path, monkeypatch, fake_run)
+    receipt = host.execute(
+        "/v1/reorientation-turn",
+        _reorientation_request(),
+    )
+
+    assert receipt["status"] == "failed"
+    assert receipt["error"]["code"] == "ProviderProtocolError"
+    assert "reorientation schema" in receipt["error"]["message"]
+    assert provider_calls == 1
+
+
+def test_provider_configured_interface_records_actual_model_evidence(
     tmp_path: Path, monkeypatch, provider_env
 ):
     provider_calls = 0
@@ -446,10 +1029,10 @@ def test_model_mismatch_is_a_failure_receipt_and_is_not_retried(
     second = host.execute("/v1/interface-turn", request)
 
     assert first == second
-    assert first["status"] == "failed"
+    assert first["status"] == "succeeded"
     assert first["actual_model"] == "claude-opus-4-6"
-    assert first["error"]["code"] == "RequestedActualModelMismatch"
-    assert first["usage"]["model_substitution"] is True
+    assert first["error"] is None
+    assert first["usage"]["model_substitution"] is False
     assert provider_calls == 1
     assert host.receipts.get("receipt:interface:1") == first
 
@@ -494,7 +1077,7 @@ def test_receipt_store_marks_interrupted_invocation_transport_unknown(
         idempotency_key="idem:unknown",
         request_sha256="d" * 64,
         candidate_key="candidate:key",
-        requested_model="claude-fable-5",
+        requested_model=None,
     )
 
     recovered = ReceiptStore(path).get("receipt:unknown")

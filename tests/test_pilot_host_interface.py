@@ -18,6 +18,7 @@ def candidate() -> ModelCandidate:
         adapter="claude-code",
         adapter_version="2.1.215",
         provider="anthropic",
+        selection="exact",
         model_snapshot="claude-haiku-4-5-20251001",
         effort="low",
         toolset=("conversation-only",),

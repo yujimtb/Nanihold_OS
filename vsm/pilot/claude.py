@@ -53,7 +53,7 @@ class ClaudePilotAdapter:
         return ClaudeLaunch(
             argv=tuple(argv),
             policy=self.policy,
-            env=(("CLAUDE_CODE_DISABLE_FABLE_OPUS_AUTO_SWITCH", "1"),),
+            env=(("CLAUDE_CODE_DISABLE_AUTO_MODEL_SWITCH", "1"),),
         )
 
     def decide_cache_warming(self, opportunity: CacheOpportunity) -> CacheDecision:
@@ -100,13 +100,11 @@ class ClaudePilotAdapter:
                 "--resume",
                 decision.root_session_id,
                 "--fork-session",
-                "--model",
-                "claude-fable-5",
                 "--effort",
                 "high",
             ),
             policy=self.policy,
-            env=(("CLAUDE_CODE_DISABLE_FABLE_OPUS_AUTO_SWITCH", "1"),),
+            env=(("CLAUDE_CODE_DISABLE_AUTO_MODEL_SWITCH", "1"),),
         )
 
     def validate_response(

@@ -16,7 +16,7 @@ from vsm.projection import OperationalProjection
 from vsm.token_lab.lab import TokenEfficiencyLab, TokenLabEventService
 
 
-GOLDEN = Path(__file__).parent / "fixtures" / "fable-owner-ux-golden-119.json"
+GOLDEN = Path(__file__).parent / "fixtures" / "interface-owner-ux-golden-119.json"
 
 
 def test_all_119_historical_owner_inputs_keep_the_continuous_interface_contract(system):

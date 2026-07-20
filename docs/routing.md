@@ -4,9 +4,12 @@
 
 統計の一意キーは次の canonical hash です。
 
-`adapter@version + provider/model snapshot + effort + toolset + sandbox/environment`
+`adapter@version + provider + selection + effort + toolset + sandbox/environment`
 
-model 名だけの統計へ混ぜません。Anthropic は同じ agent でも infrastructure 設定差で Terminal-Bench 2.0 score が最大 6 point 動いた事例を公開しており、environment を候補 identity に含める根拠になります。
+`selection`はcoding用のexact model snapshotまたはInterface用の
+`provider_configured`です。Interface candidateへ人格名や暫定モデル名を含めず、
+providerが報告したactual modelは各outcomeの証拠として保存します。exact selectionの
+model名だけの統計へ環境の異なる結果を混ぜません。Anthropic は同じ agent でも infrastructure 設定差で Terminal-Bench 2.0 score が最大 6 point 動いた事例を公開しており、environment を候補 identity に含める根拠になります。
 
 ## Prior と尤度
 
@@ -48,6 +51,6 @@ Claude の実装契約は公式公開境界だけを使います。
 
 - [Claude Code CLI reference](https://docs.anthropic.com/en/docs/claude-code/cli-usage)
 - [Claude Code model and effort configuration](https://code.claude.com/docs/en/model-config)
-- [Fable model configuration](https://support.claude.com/en/articles/11940350-claude-code-model-configuration)
+- [Claude Code model configuration](https://support.claude.com/en/articles/11940350-claude-code-model-configuration)
 
 provider 内部 classifier の仕様を Kernel invariant にしません。

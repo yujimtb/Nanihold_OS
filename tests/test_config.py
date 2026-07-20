@@ -65,5 +65,5 @@ def test_local_verification_forbids_opus(tmp_path, monkeypatch):
     monkeypatch.setenv("NANIHOLD_API_BEARER_TOKEN", "api-token")
     monkeypatch.setenv("PILOT_HOST_BEARER_TOKEN", "pilot-token")
 
-    with pytest.raises(ConfigurationError, match="forbids Fable and Opus"):
+    with pytest.raises(ConfigurationError, match="approved cheap exact"):
         load_config(config_path)

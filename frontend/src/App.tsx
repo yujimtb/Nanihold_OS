@@ -139,25 +139,25 @@ const ACTIVATION_COPY: Record<
   UNCOMMISSIONED: {
     title: "履歴の取込を待っています",
     detail:
-      "Fableはまだ起動していません。Claude、Codex、Intercom、LETHEの取込receiptが揃うまでExecutionは開始されません。",
+      "Interface Pilotはまだ起動していません。Claude、Codex、Intercom、LETHEの取込receiptが揃うまでExecutionは開始されません。",
   },
   HISTORY_IMPORTED: {
     title: "履歴の検証が完了しました",
     detail:
-      "全履歴のdigestとcursorは一致しています。Fableを履歴読解専用モードで開始できます。",
+      "全履歴のdigestとcursorは一致しています。Interface Pilotを履歴読解専用モードで開始できます。",
   },
   REORIENTATION_ONLY: {
-    title: "Fableが過去を読み直しています",
+    title: "Interface Pilotが過去を読み直しています",
     detail:
       "Personal Lakeから必要な根拠を追加取得中です。この間、WorkItem実行と外部副作用は禁止されています。",
   },
   AWAITING_OWNER_CONFIRMATION: {
-    title: "Fableが追いつきました",
+    title: "Interface Pilotが追いつきました",
     detail:
       "理解した状況を確認してください。訂正は過去を書き換えず、新しいDecisionとして保存されます。",
   },
   ACTIVE: {
-    title: "Fableは活動中です",
+    title: "Interface Pilotは活動中です",
     detail:
       "確認済みの状況を基に、Naniholdの委任、routing、Effect、監査を使って作業しています。",
   },
@@ -234,10 +234,10 @@ function ReorientationBrief({
   return (
     <div className="assessment-grid">
       <section className="assessment-understanding">
-        <p className="eyebrow">FABLE'S UNDERSTANDING</p>
+        <p className="eyebrow">INTERFACE UNDERSTANDING</p>
         <p>{assessment.understanding}</p>
         <div className="coverage">
-          <span>{assessment.covered_session_ids.length} sessions covered</span>
+          <span>{assessment.covered_session_count} sessions covered</span>
           <span>history #{assessment.history_cursor}</span>
           <span>current state #{assessment.current_state_cursor}</span>
         </div>
@@ -295,6 +295,7 @@ function ActivationPanel({
   onCorrection,
   onStart,
   onApprove,
+  onRevise,
 }: {
   snapshot: Snapshot;
   busy: boolean;
@@ -302,6 +303,7 @@ function ActivationPanel({
   onCorrection: (value: string) => void;
   onStart: () => void;
   onApprove: () => void;
+  onRevise: () => void;
 }) {
   const activation = snapshot.activation;
   const copy = ACTIVATION_COPY[activation.state];
@@ -322,13 +324,13 @@ function ActivationPanel({
           )}
         </div>
         <div>
-          <p className="eyebrow">FABLE ACTIVATION</p>
+          <p className="eyebrow">INTERFACE ACTIVATION</p>
           <h2 id="activation-title">{copy.title}</h2>
           <p>{copy.detail}</p>
         </div>
         <StatePill value={activation.state} />
       </div>
-      <ol className="activation-steps" aria-label="Fable起動段階">
+      <ol className="activation-steps" aria-label="Interface起動段階">
         {ACTIVATION_STATES.map((state, index) => (
           <li
             key={state}
@@ -366,7 +368,7 @@ function ActivationPanel({
       {activation.state === "HISTORY_IMPORTED" && (
         <button className="primary activation-action" onClick={onStart} disabled={busy}>
           <History size={16} />
-          {busy ? "開始中…" : "Fableに履歴読解を開始させる"}
+          {busy ? "開始中…" : "Interface Pilotに履歴読解を開始させる"}
         </button>
       )}
       {activation.state === "REORIENTATION_ONLY" && (
@@ -382,10 +384,26 @@ function ActivationPanel({
               {busy ? "再開中…" : "履歴読解を再開"}
             </button>
           </div>
-        ) : (
+        ) : activation.reorientation_attempt_in_progress ? (
           <div className="reading-status" role="status" aria-live="polite">
             <RefreshCw className="spin" size={16} />
-            Fableが索引とraw履歴を照合しています。画面更新はモデルを呼びません。
+            Interface Pilotが索引とraw履歴を照合しています。画面更新はモデルを呼びません。
+          </div>
+        ) : activation.pending_reorientation_revision_reason ? (
+          <div className="reading-status" role="status">
+            <History size={16} />
+            <span>
+              Assessmentの再評価理由を記録済みです。ExecutionとEffectは開始されていません。
+            </span>
+            <button className="primary" onClick={onStart} disabled={busy}>
+              <RefreshCw size={16} />
+              {busy ? "再評価中…" : "再評価を開始"}
+            </button>
+          </div>
+        ) : (
+          <div className="reading-status error-banner" role="alert">
+            <TriangleAlert size={16} />
+            再オリエンテーション状態に開始理由がありません。運用監査が必要です。
           </div>
         )
       )}
@@ -398,26 +416,39 @@ function ActivationPanel({
       )}
       {activation.state === "AWAITING_OWNER_CONFIRMATION" &&
         activation.assessment && (
-          <div className="approval-box">
-            <label htmlFor="owner-correction">
-              訂正があれば1行ずつ入力してください
-            </label>
-            <textarea
-              id="owner-correction"
-              value={correction}
-              onChange={(event) => onCorrection(event.target.value)}
-              placeholder={"例: 優先順位はAよりBが先です\n例: この約束はすでに完了しています"}
-            />
-            <div>
-              <small>
-                空欄のまま承認できます。承認後、履歴から選ばれた実在WorkItemを再開します。
-              </small>
-              <button className="primary" onClick={onApprove} disabled={busy}>
-                <ShieldCheck size={16} />
-                {busy ? "確認を保存中…" : "理解を確認してFableを起動"}
+          activation.assessment.resume_work_item_ids.length === 0 ? (
+            <div className="reading-status error-banner" role="alert">
+              <TriangleAlert size={16} />
+              <span>
+                実在する未完WorkItemが再開候補に含まれていません。この理解は承認できません。
+              </span>
+              <button className="primary" onClick={onRevise} disabled={busy}>
+                <RefreshCw size={16} />
+                {busy ? "再評価を開始中…" : "未完WorkItemを含めて再評価"}
               </button>
             </div>
-          </div>
+          ) : (
+            <div className="approval-box">
+              <label htmlFor="owner-correction">
+                訂正があれば1行ずつ入力してください
+              </label>
+              <textarea
+                id="owner-correction"
+                value={correction}
+                onChange={(event) => onCorrection(event.target.value)}
+                placeholder={"例: 優先順位はAよりBが先です\n例: この約束はすでに完了しています"}
+              />
+              <div>
+                <small>
+                  空欄のまま承認できます。承認後、履歴から選ばれた実在WorkItemを再開します。
+                </small>
+                <button className="primary" onClick={onApprove} disabled={busy}>
+                  <ShieldCheck size={16} />
+                  {busy ? "確認を保存中…" : "理解を確認してInterface Pilotを起動"}
+                </button>
+              </div>
+            </div>
+          )
         )}
     </section>
   );
@@ -577,6 +608,27 @@ export default function App() {
     }
   }
 
+  async function reviseReorientation() {
+    setBusyAction(true);
+    try {
+      await client.post("/api/reorientation/revision", {
+        reason_code: "missing_resume_work_item",
+        requested_by: "owner",
+        actor_id: ownerId(),
+        idempotency_key: `web:reorientation-revision:${crypto.randomUUID()}`,
+      });
+      await client.post("/api/reorientation/start", {
+        actor_id: ownerId(),
+        idempotency_key: `web:reorientation-revision-start:${crypto.randomUUID()}`,
+      });
+      await refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusyAction(false);
+    }
+  }
+
   async function sendMessage() {
     if (!selectedConversation || !message.trim()) return;
     const sourceMessageId = `web-message:${crypto.randomUUID()}`;
@@ -645,7 +697,7 @@ export default function App() {
           <h1 id="login-title">
             {authState === "checking"
               ? "この端末の認証を確認しています"
-              : "一度だけ、この端末をFableにつなぎます"}
+              : "一度だけ、この端末をInterface Pilotにつなぎます"}
           </h1>
           {authState === "checking" ? (
             <p className="muted" role="status">
@@ -750,7 +802,7 @@ export default function App() {
           {(
             [
               ["command", Boxes, "現在"],
-              ["conversation", MessageSquareText, "Fable"],
+              ["conversation", MessageSquareText, "Interface"],
               ["ledger", Activity, "根拠"],
               ["routing", Route, "Routing"],
               ["audit", ShieldCheck, "監査"],
@@ -782,9 +834,9 @@ export default function App() {
             <p className="eyebrow">OWNER INTERFACE NODE</p>
             <h1>
               {view === "command"
-                ? "Fableと仕事の現在地"
+                ? "Interfaceと仕事の現在地"
                 : view === "conversation"
-                  ? "Fableとの会話"
+                  ? "Interfaceとの会話"
                   : view}
             </h1>
           </div>
@@ -822,6 +874,7 @@ export default function App() {
           onCorrection={setCorrection}
           onStart={() => void startReorientation()}
           onApprove={() => void approveReorientation()}
+          onRevise={() => void reviseReorientation()}
         />
 
         {view === "command" && (
@@ -1034,7 +1087,7 @@ export default function App() {
               </div>
               <div className="composer">
                 <label className="sr-only" htmlFor="owner-message">
-                  Fableへのメッセージ
+                  Interfaceへのメッセージ
                 </label>
                 <textarea
                   id="owner-message"
@@ -1058,7 +1111,7 @@ export default function App() {
               </div>
               {snapshot.activation.state !== "ACTIVE" && (
                 <p className="composer-gate">
-                  Fableの理解をownerが確認するまで通常会話とExecutionは開始されません。
+                  Interfaceの理解をownerが確認するまで通常会話とExecutionは開始されません。
                 </p>
               )}
             </div>

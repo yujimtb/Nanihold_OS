@@ -51,6 +51,7 @@ def test_projection_rebuilds_routing_and_token_lab_services(system):
         adapter="codex",
         adapter_version="1.0.0",
         provider="openai",
+        selection="exact",
         model_snapshot="gpt-5.6-luna",
         effort="xhigh",
         toolset=("filesystem", "git"),

@@ -12,7 +12,7 @@ base_url = "http://lethe:8080"
 bearer_token_env = "LETHE_NANIHOLD_TOKEN"
 timeout_seconds = 30.0
 max_page_size = 100
-history_max_result_bytes = 262144
+history_max_result_bytes = 24000
 
 [kernel.audit_policy]
 policy_id = "policy:audit-local"
@@ -42,6 +42,7 @@ pilot_id = "pilot:local-haiku"
 adapter = "claude-code"
 adapter_version = "@@CLAUDE_VERSION@@"
 provider = "anthropic"
+model_selection = "exact"
 model_snapshot = "claude-haiku-4-5-20251001"
 effort = "low"
 toolset = ["conversation-only"]
@@ -63,6 +64,7 @@ production_exploration_enabled = false
 adapter = "claude-code"
 adapter_version = "@@CLAUDE_VERSION@@"
 provider = "anthropic"
+selection = "exact"
 model_snapshot = "claude-haiku-4-5-20251001"
 effort = "low"
 toolset = ["conversation-only"]

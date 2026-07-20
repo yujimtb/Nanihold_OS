@@ -1,9 +1,19 @@
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
+import hashlib
 
-from conftest import INTERFACE_NODE_ID, OWNER_ID, SPACE_ID
+from fastapi.testclient import TestClient
+from conftest import INTERFACE_NODE_ID, NOW, OWNER_ID, SPACE_ID
+from vsm.activation.models import (
+    ActivationState,
+    EvidenceCitation,
+    HistoryImportReceipt,
+    HistorySourceKind,
+    HistorySourceManifest,
+    ReorientationAssessment,
+)
 from vsm.dispatcher import DependencyAwareDispatcher
+from vsm.errors import InvariantViolation
 from vsm.interface.models import Conversation, SurfaceBinding
 from vsm.pilot.host import PilotHostCoordinator
 from vsm.pilot.models import DeviceIdentity
@@ -12,7 +22,9 @@ from vsm.token_lab.lab import TokenEfficiencyLab, TokenLabEventService
 from vsm.web.app import AppState, create_app
 
 
-def client(system) -> TestClient:
+def client(
+    system, *, reorientation_service=None, reorientation_max_tool_rounds=None
+) -> TestClient:
     kernel, ledger, interface, _ = system
     router = BayesianRouter(
         expected_utility_quality_weight=1,
@@ -58,6 +70,8 @@ def client(system) -> TestClient:
         owner_session_lifetime_seconds=3600,
         history_reader=object(),
         history_max_result_bytes=4096,
+        reorientation_service=reorientation_service,
+        reorientation_max_tool_rounds=reorientation_max_tool_rounds,
     )
     return TestClient(
         create_app(state, allowed_origins=("http://localhost:5173",)),
@@ -70,6 +84,210 @@ def auth() -> dict[str, str]:
         "Authorization": "Bearer test-token",
         "X-Nanihold-Device-Id": "device:test",
     }
+
+
+class FailingReorientationService:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def execute(self, **_kwargs) -> None:
+        raise self.error
+
+
+def prepare_history_imported_state(kernel) -> None:
+    kernel.activation.state = ActivationState.HISTORY_IMPORTED
+    sources = tuple(
+        HistorySourceManifest(
+            source_id=f"{kind.value}:test",
+            source_kind=kind,
+            ownership="personal",
+            owner_id=OWNER_ID,
+            record_count=0,
+            raw_bytes=0,
+            digest_sha256=hashlib.sha256(kind.value.encode("utf-8")).hexdigest(),
+            cutover_cursor=f"cursor:{kind.value}",
+        )
+        for kind in HistorySourceKind
+    )
+    kernel.activation.import_receipt = HistoryImportReceipt(
+        schema="schema:history-activation-handoff",
+        schema_version="1.0.0",
+        inventory_id="history-import:web-test",
+        data_space_id=SPACE_ID,
+        manifest_digest=hashlib.sha256(b"web-history-import").hexdigest(),
+        record_count=0,
+        raw_bytes=0,
+        cross_source_overlap_identities=0,
+        sources=sources,
+        session_count=0,
+        sessions=(),
+        session_index_ref="history-projection:sessions:sha256:" + "a" * 64,
+        open_commitments_ref="history-projection:commitments:sha256:" + "b" * 64,
+        current_state_ref="history-projection:state:sha256:" + "c" * 64,
+    )
+
+
+def test_reorientation_short_invariant_failure_is_visible_in_activation_status(system):
+    kernel, _, _, _ = system
+    prepare_history_imported_state(kernel)
+    api = client(
+        system,
+        reorientation_service=FailingReorientationService(
+            InvariantViolation("phase validation failed")
+        ),
+        reorientation_max_tool_rounds=1,
+    )
+
+    started = api.post(
+        "/api/reorientation/start",
+        headers=auth(),
+        json={"actor_id": OWNER_ID, "idempotency_key": "web:reorientation:short"},
+    )
+
+    assert started.status_code == 202, started.text
+    status = api.get("/api/activation/status", headers=auth())
+    assert status.status_code == 200
+    assert status.json()["reorientation_error"] == (
+        "InvariantViolation: phase validation failed"
+    )
+
+
+def test_reorientation_long_failure_records_only_digest_in_activation_status(system):
+    kernel, _, _, _ = system
+    prepare_history_imported_state(kernel)
+    secret_body = "secret-not-for-projection-" + "x" * 600
+    api = client(
+        system,
+        reorientation_service=FailingReorientationService(
+            InvariantViolation(secret_body)
+        ),
+        reorientation_max_tool_rounds=1,
+    )
+
+    started = api.post(
+        "/api/reorientation/start",
+        headers=auth(),
+        json={"actor_id": OWNER_ID, "idempotency_key": "web:reorientation:long"},
+    )
+
+    assert started.status_code == 202, started.text
+    error_code = api.get("/api/activation/status", headers=auth()).json()[
+        "reorientation_error"
+    ]
+    assert error_code == "InvariantViolation: sha256:" + hashlib.sha256(
+        secret_body.encode("utf-8")
+    ).hexdigest()
+    assert secret_body not in error_code
+    assert "\n" not in error_code
+
+
+def test_reorientation_revision_returns_to_read_only_without_execution_or_effect(system):
+    kernel, ledger, _, _ = system
+    assessment = ReorientationAssessment(
+        assessment_id="assessment:web-revision",
+        import_id="history-import:web-revision",
+        conversation_id="conversation:web-revision",
+        generated_at=NOW,
+        understanding="The assessment requires an owner correction.",
+        active_missions=(),
+        decisions_and_constraints=(),
+        open_commitment_ids=(),
+        unknowns=(),
+        resume_work_item_ids=("work:web-revision",),
+        covered_session_index_ref="history-index:web-revision",
+        covered_session_count=0,
+        history_cursor=1,
+        current_state_cursor=1,
+        citations=(
+            EvidenceCitation(
+                claim_ref="understanding",
+                evidence_ref="event:web-revision",
+            ),
+        ),
+    )
+    kernel.activation.state = ActivationState.AWAITING_OWNER_CONFIRMATION
+    kernel.activation.assessment = assessment
+    kernel.activation.reorientation_error = "prior-error"
+    kernel.activation.reorientation_provider_session_id = "provider:checkpoint"
+    kernel.activation.reorientation_pilot_calls = 2
+    kernel.activation.reorientation_input_tokens = 120
+    kernel.activation.reorientation_output_tokens = 30
+    api = client(system)
+
+    response = api.post(
+        "/api/reorientation/revision",
+        headers=auth(),
+        json={
+            "actor_id": OWNER_ID,
+            "idempotency_key": "web:reorientation:revision",
+            "reason_code": "owner_correction",
+            "requested_by": "owner",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    status = response.json()
+    assert status["state"] == "REORIENTATION_ONLY"
+    assert status["assessment"] is None
+    assert status["reorientation_error"] is None
+    assert status["reorientation_pilot_calls"] == 2
+    assert status["reorientation_input_tokens"] == 120
+    assert status["reorientation_output_tokens"] == 30
+    assert kernel.activation.reorientation_provider_session_id == "provider:checkpoint"
+    assert kernel.executions == {}
+    assert kernel.effect_leases == {}
+    revision_event = ledger.page(0, 100)[-1].event
+    assert revision_event.event_type == (
+        "reorientation_assessment_revision_requested"
+    )
+    assert revision_event.actor_type == "human"
+    assert revision_event.payload == {
+        "prior_assessment_id": "assessment:web-revision",
+        "reason_code": "owner_correction",
+        "state": "REORIENTATION_ONLY",
+    }
+
+
+def test_reorientation_revision_rejects_unknown_reason_code(system):
+    kernel, _, _, _ = system
+    kernel.activation.state = ActivationState.AWAITING_OWNER_CONFIRMATION
+    kernel.activation.assessment = ReorientationAssessment(
+        assessment_id="assessment:web-invalid-revision",
+        import_id="history-import:web-invalid-revision",
+        conversation_id="conversation:web-invalid-revision",
+        generated_at=NOW,
+        understanding="A valid assessment.",
+        active_missions=(),
+        decisions_and_constraints=(),
+        open_commitment_ids=(),
+        unknowns=(),
+        resume_work_item_ids=(),
+        covered_session_index_ref="history-index:web-invalid-revision",
+        covered_session_count=0,
+        history_cursor=1,
+        current_state_cursor=1,
+        citations=(
+            EvidenceCitation(
+                claim_ref="understanding",
+                evidence_ref="event:web-invalid-revision",
+            ),
+        ),
+    )
+    api = client(system)
+
+    response = api.post(
+        "/api/reorientation/revision",
+        headers=auth(),
+        json={
+            "actor_id": OWNER_ID,
+            "idempotency_key": "web:reorientation:invalid-revision",
+            "reason_code": "free_form_reason",
+            "requested_by": "owner",
+        },
+    )
+
+    assert response.status_code == 422
+    assert kernel.activation.state is ActivationState.AWAITING_OWNER_CONFIRMATION
 
 
 def test_new_resource_api_is_complete_and_old_surfaces_do_not_exist(system):

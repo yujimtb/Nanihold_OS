@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from datetime import UTC
@@ -17,6 +18,10 @@ from vsm.activation.reorientation import HistoryPage
 
 class LetheOperationalLedger:
     """Nanihold's only production Event Ledger adapter."""
+
+    _EXTERNAL_HISTORY_EVENTS = frozenset(
+        {"history.message_imported", "history.import_completed"}
+    )
 
     def __init__(
         self,
@@ -167,6 +172,41 @@ class LetheOperationalLedger:
         observation = outer.get("observation")
         if not isinstance(observation, dict):
             raise InvariantViolation("LETHE stored Observation is malformed")
+        event_type = outer.get("event_type")
+        if event_type in LetheOperationalLedger._EXTERNAL_HISTORY_EVENTS:
+            raw_event_id = outer.get("event_id")
+            raw_stream_id = outer.get("stream_id")
+            if not isinstance(raw_event_id, str) or not isinstance(raw_stream_id, str):
+                raise InvariantViolation(
+                    "LETHE external history event identity is malformed"
+                )
+            external_digest = hashlib.sha256(
+                json.dumps(
+                    {
+                        "event_id": raw_event_id,
+                        "event_type": event_type,
+                        "stream_id": raw_stream_id,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()
+            event = EventEnvelope(
+                event_id=f"event:{external_digest}",
+                data_space_id=outer["data_space_id"],
+                stream_id=raw_stream_id,
+                stream_version=outer["stream_version"],
+                event_type=event_type,
+                occurred_at=outer["occurred_at"],
+                actor_type="system",
+                actor_id=None,
+                correlation_id=None,
+                causation_id=None,
+                idempotency_key=f"lethe-external:{external_digest}",
+                payload={},
+            )
+            return StoredEvent(cursor=raw["cursor"], event=event)
         event = EventEnvelope(
             event_id=outer["event_id"],
             data_space_id=outer["data_space_id"],
@@ -261,7 +301,7 @@ class LetheHistoryClient:
     def _query(
         self,
         operation: str,
-        argument: str | None,
+        argument: dict[str, str],
         page_cursor: str | None,
     ) -> HistoryPage:
         response = self._client.post(
@@ -286,26 +326,29 @@ class LetheHistoryClient:
         return HistoryPage.model_validate(response.json())
 
     def list_sessions(self, *, page_cursor: str | None) -> HistoryPage:
-        return self._query("list_sessions", None, page_cursor)
+        return self._query("list_sessions", {}, page_cursor)
 
     def read_timeline(
         self, session_id: str, *, page_cursor: str | None
     ) -> HistoryPage:
-        return self._query("read_timeline", session_id, page_cursor)
+        return self._query("read_timeline", {"session_id": session_id}, page_cursor)
 
     def read_raw(self, message_id: str, *, page_cursor: str | None) -> HistoryPage:
-        return self._query("read_raw", message_id, page_cursor)
+        return self._query("read_raw", {"message_id": message_id}, page_cursor)
 
     def search(self, query: str, *, page_cursor: str | None) -> HistoryPage:
-        return self._query("search", query, page_cursor)
+        return self._query("search", {"query": query}, page_cursor)
 
     def resolve_reference(
         self, reference_id: str, *, page_cursor: str | None
     ) -> HistoryPage:
-        return self._query("resolve_reference", reference_id, page_cursor)
+        return self._query(
+            "resolve_reference", {"reference_id": reference_id}, page_cursor
+        )
 
     def list_open_commitments(self, *, page_cursor: str | None) -> HistoryPage:
-        return self._query("list_open_commitments", None, page_cursor)
+        return self._query("list_open_commitments", {}, page_cursor)
 
-    def get_current_state(self, *, page_cursor: str | None) -> HistoryPage:
-        return self._query("get_current_state", None, page_cursor)
+    def get_current_state(self, *, state_key: str | None, page_cursor: str | None) -> HistoryPage:
+        argument = {} if state_key is None else {"state_key": state_key}
+        return self._query("get_current_state", argument, page_cursor)

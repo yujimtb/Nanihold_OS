@@ -82,13 +82,14 @@ def _assessment() -> ReorientationAssessment:
         import_id="import:owner-history",
         conversation_id="conversation:owner-main",
         generated_at=datetime(2026, 7, 20, tzinfo=UTC),
-        understanding="Naniholdの完全稼働とFable再起動を進めています。",
-        active_missions=("Fable UXを回復する",),
+        understanding="Naniholdの完全稼働とInterface再起動を進めています。",
+        active_missions=("Interface UXを回復する",),
         decisions_and_constraints=("初回だけowner確認を要求する",),
         open_commitment_ids=("commitment:one",),
         unknowns=("production quotaの実測値",),
         resume_work_item_ids=("work-item:resume",),
-        covered_session_ids=("history-session:claude", "history-session:intercom"),
+        covered_session_index_ref="history-projection:sessions:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        covered_session_count=2,
         history_cursor=220,
         current_state_cursor=224,
         citations=(
@@ -98,6 +99,10 @@ def _assessment() -> ReorientationAssessment:
             ),
         ),
     )
+
+
+def _assessment_without_resume_work() -> ReorientationAssessment:
+    return _assessment().model_copy(update={"resume_work_item_ids": ()})
 
 
 def test_render_dashboard_is_deterministic_and_owner_centered() -> None:
@@ -128,11 +133,43 @@ def test_render_dashboard_is_deterministic_and_owner_centered() -> None:
     assert rendered == render_dashboard(snapshot, width=88)
     assert "AWAITING_OWNER_CONFIRMATION — owner確認待ち" in rendered
     assert "履歴: 268 records / 2 sources" in rendered
-    assert "Fableが追いつきました" in rendered
-    assert "Naniholdの完全稼働とFable再起動" in rendered
+    assert "Interfaceが追いつきました" in rendered
+    assert "Naniholdの完全稼働とInterface再起動" in rendered
     assert "次の操作:" in rendered
     assert "Bearer" not in rendered
     assert "\x1b" not in rendered
+
+
+def test_dashboard_blocks_approval_when_resume_work_is_empty() -> None:
+    status = ActivationStatus(
+        state=ActivationState.AWAITING_OWNER_CONFIRMATION,
+        import_receipt=_receipt(),
+        assessment=_assessment_without_resume_work(),
+        approved_at=None,
+        status_model_calls=0,
+        reorientation_pilot_calls=1,
+        reorientation_input_tokens=1200,
+        reorientation_output_tokens=300,
+        reorientation_error=None,
+        work_graph_snapshot_id="work-graph:cutover",
+    )
+
+    rendered = render_dashboard(
+        TuiOperationalSnapshot(
+            activation=status,
+            current_work=(),
+            waiting_work=(),
+            delegations=(),
+            cost_usd=None,
+            quota=None,
+            evidence_refs=(),
+        ),
+        width=88,
+    )
+
+    assert "このassessmentは承認できません" in rendered
+    assert "vsm reorientation revise" in rendered
+    assert "ExecutionとEffectは開始されていません" in rendered
 
 
 def test_pre_activation_dashboard_states_hard_gate() -> None:

@@ -82,7 +82,10 @@ class PilotHostInterfacePilot:
             raise InvariantViolation("PilotHost response candidate key mismatch")
         if (
             result.actual_provider != self.candidate.provider
-            or result.actual_model_snapshot != self.candidate.model_snapshot
+            or (
+                self.candidate.selection == "exact"
+                and result.actual_model_snapshot != self.candidate.model_snapshot
+            )
         ):
             raise ModelMismatch(
                 "RequestedActualModelMismatch: "

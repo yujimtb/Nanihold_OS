@@ -78,7 +78,7 @@ class PilotHostReceipt(StrictModel):
     request_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     status: Literal["in_progress", "succeeded", "failed", "transport_unknown"]
     candidate_key: NonBlank
-    requested_model: NonBlank
+    requested_model: NonBlank | None
     actual_model: NonBlank | None
     provider_session_id: NonBlank | None
     usage: dict[str, Any] | None
@@ -230,6 +230,16 @@ class ProductionPilotHostClient:
                 "session_index_ref": context.session_index_ref,
                 "open_commitment_refs": list(context.open_commitment_refs),
                 "current_state_ref": context.current_state_ref,
+                "history_result": context.history_result.model_dump(mode="json"),
+                "assessment_contract": context.assessment_contract.model_dump(
+                    mode="json"
+                ),
+                "audited_history_event_ids": list(context.audited_history_event_ids),
+                "session_index_event_ids": list(context.session_index_event_ids),
+                "session_index_summary": context.session_index_summary.model_dump(
+                    mode="json"
+                ),
+                "assessment_contract_included": context.assessment_contract_included,
             }
         )
         receipt = self._post_receipt(
@@ -379,8 +389,6 @@ class ProductionPilotHostClient:
     def _interface_response(
         self, receipt: PilotHostReceipt, *, root_session_id: str | None
     ) -> StructuredInterfaceResponse:
-        if receipt.actual_model != self.interface_candidate.model_snapshot:
-            raise ModelMismatch("RequestedActualModelMismatch")
         if receipt.usage is None or receipt.result is None:
             raise InvariantViolation("succeeded Interface receipt lacks result or usage")
         result = receipt.result
@@ -433,6 +441,7 @@ class ProductionPilotHostClient:
             actual = candidates.get(role)
             if not isinstance(actual, dict) or (
                 actual.get("candidate_key") != candidate.key
+                or actual.get("selection") != candidate.selection
                 or actual.get("model_snapshot") != candidate.model_snapshot
                 or actual.get("effort") != candidate.effort
             ):
@@ -469,7 +478,10 @@ class ProductionPilotHostClient:
             or receipt.idempotency_key != payload["idempotency_key"]
             or receipt.request_sha256 != request_sha256
             or receipt.candidate_key != candidate.key
-            or receipt.requested_model != candidate.model_snapshot
+            or (
+                candidate.selection == "exact"
+                and receipt.requested_model != candidate.model_snapshot
+            )
         ):
             raise InvariantViolation("PilotHost receipt does not match its request")
 

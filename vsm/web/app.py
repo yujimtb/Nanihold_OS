@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import (
     BackgroundTasks,
@@ -25,6 +26,7 @@ from vsm.activation.models import (
     CurrentWorkGraphSnapshot,
     HistoryImportReceipt,
     ReorientationAssessment,
+    ReorientationRevisionReason,
 )
 from vsm.activation.reorientation import (
     HistoryReader,
@@ -95,10 +97,16 @@ class CreateConversationRequest(StrictRequest):
 class HistoryImportRequest(CommandMetadata):
     work_graph_snapshot: CurrentWorkGraphSnapshot
     receipt: HistoryImportReceipt
+    reorientation_conversation_id: str = Field(min_length=1)
 
 
 class ReorientationAssessmentRequest(CommandMetadata):
     assessment: ReorientationAssessment
+
+
+class ReorientationRevisionRequest(CommandMetadata):
+    reason_code: ReorientationRevisionReason
+    requested_by: Literal["owner", "system"]
 
 
 class HistoryQueryRequest(CommandMetadata):
@@ -179,6 +187,17 @@ class AppState:
     reorientation_service: ReorientationService | None = None
     reorientation_max_tool_rounds: int | None = None
     coding_pilot_id: str | None = None
+
+
+def _reorientation_failure_code(exc: Exception) -> str:
+    """Return a bounded, non-sensitive activation error suitable for projections."""
+    error_type = type(exc).__name__
+    message = str(exc).replace("\r", "").replace("\n", "")
+    candidate = f"{error_type}: {message}" if message else error_type
+    if isinstance(exc, NaniholdError) and len(candidate.encode("utf-8")) <= 512:
+        return candidate
+    digest = hashlib.sha256(message.encode("utf-8")).hexdigest()
+    return f"{error_type}: sha256:{digest}"
 
 
 def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
@@ -452,6 +471,17 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
         "/api/history/imports", dependencies=[Depends(authorize)], status_code=201
     )
     def register_history_import(request: HistoryImportRequest):
+        conversation = state.interface.conversations.get(
+            request.reorientation_conversation_id
+        )
+        if conversation is None:
+            raise InvariantViolation(
+                "history import requires an existing canonical Conversation"
+            )
+        if conversation.data_space_id != state.kernel.data_space.data_space_id:
+            raise InvariantViolation("canonical Conversation DataSpace mismatch")
+        if conversation.owner_id != state.kernel.data_space.owner_id:
+            raise InvariantViolation("canonical Conversation owner mismatch")
         state.kernel.import_current_work_graph(
             request.work_graph_snapshot,
             actor_id=request.actor_id,
@@ -459,6 +489,7 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
         )
         state.kernel.activation.register_history_import(
             request.receipt,
+            reorientation_conversation_id=request.reorientation_conversation_id,
             actor_id=request.actor_id,
             idempotency_key=request.idempotency_key,
         )
@@ -515,7 +546,7 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
         initial_action = ReadHistoryAction(
             action_id=new_id("action"),
             kind="history.read",
-            operation="list_sessions",
+            operation="get_current_state",
             argument=None,
             page_cursor=None,
         )
@@ -529,7 +560,11 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
                     max_tool_rounds=state.reorientation_max_tool_rounds,
                     objective=(
                         "Review the complete indexed history, resolve uncertainty "
-                        "with bounded LETHE queries, and submit ReorientationAssessment."
+                        "with bounded LETHE queries, and submit ReorientationAssessment. "
+                        "Treat historical interface or model display names as "
+                        "non-authoritative: the persistent subject is the owner "
+                        "Interface Node and canonical Conversation. Do not assign or "
+                        "assume a personal or role name for the unnamed Interface Pilot."
                     ),
                     session_index_ref=receipt.session_index_ref,
                     open_commitment_refs=(receipt.open_commitments_ref,),
@@ -537,7 +572,7 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
                 )
             except Exception as exc:
                 state.kernel.activation.record_reorientation_failure(
-                    error_code=type(exc).__name__,
+                    error_code=_reorientation_failure_code(exc),
                     actor_id=request.actor_id,
                     idempotency_key=f"{request.idempotency_key}:failure",
                 )
@@ -555,6 +590,20 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
                 if item.state == "open"
             ),
             existing_work_item_ids=state.kernel.work_items,
+            session_index_listed_to_end=False,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        return state.kernel.activation.status()
+
+    @app.post(
+        "/api/reorientation/revision",
+        dependencies=[Depends(authorize)],
+    )
+    def revise_reorientation(request: ReorientationRevisionRequest):
+        state.kernel.activation.request_assessment_revision(
+            request.reason_code,
+            requested_by=request.requested_by,
             actor_id=request.actor_id,
             idempotency_key=request.idempotency_key,
         )
@@ -577,12 +626,16 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
         assessment = state.kernel.activation.assessment
         if assessment is None or not assessment.resume_work_item_ids:
             raise InvariantViolation(
-                "Fable activity start requires at least one assessed real WorkItem"
+                "Interface activity start requires at least one assessed real WorkItem"
             )
         if state.coding_pilot_id is None:
             raise InvariantViolation("production coding Pilot is not configured")
         if request.conversation_id not in state.interface.conversations:
             raise InvariantViolation("Conversation not found")
+        if request.conversation_id != assessment.conversation_id:
+            raise InvariantViolation(
+                "owner approval must use the assessed canonical Conversation"
+            )
         for work_item_id in assessment.resume_work_item_ids:
             state.kernel.validate_owner_confirmed_resume(work_item_id)
         bindings = tuple(

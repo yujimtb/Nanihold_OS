@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from vsm.activation.models import ReorientationInterruptionReason
 from vsm.config import LoadedConfig, load_config
 from vsm.dispatcher import DependencyAwareDispatcher
 from vsm.activation.reorientation import ReorientationService
@@ -38,6 +39,27 @@ class Runtime:
         self.interface.pilot.close()
         self.history_reader.close()
         self.ledger.close()
+
+
+def _interrupt_reorientation_lost_on_runtime_restart(kernel: Kernel) -> bool:
+    activation = kernel.activation
+    if not activation.reorientation_attempt_in_progress:
+        return False
+    attempt_version = activation.reorientation_attempt_started_stream_version
+    if attempt_version is None:
+        raise RuntimeError(
+            "projected reorientation attempt lacks its start stream version"
+        )
+    activation.interrupt_reorientation_attempt(
+        reason_code=(
+            ReorientationInterruptionReason.PROCESS_RESTART_INTERRUPTED_ATTEMPT
+        ),
+        actor_id="system:runtime-bootstrap",
+        idempotency_key=(
+            f"reorientation:runtime-restart-interruption:{attempt_version}"
+        ),
+    )
+    return True
 
 
 def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtime:
@@ -76,11 +98,11 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
             candidate.adapter == interface_config.adapter
             and candidate.adapter_version == interface_config.adapter_version
             and candidate.provider == interface_config.provider
+            and candidate.selection == interface_config.model_selection
             and candidate.model_snapshot == interface_config.model_snapshot
             and candidate.effort == interface_config.effort
             and candidate.toolset == interface_config.toolset
-            and candidate.sandbox_fingerprint
-            == interface_config.sandbox_fingerprint
+            and candidate.sandbox_fingerprint == interface_config.sandbox_fingerprint
             and candidate.environment_fingerprint
             == interface_config.environment_fingerprint
         )
@@ -111,9 +133,7 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
             interface_candidate=interface_candidate,
             coding_candidate=coding_candidates[0],
             permission_mode=config.pilot.mode,
-            interface_max_budget_usd=(
-                production_config.interface_max_budget_usd
-            ),
+            interface_max_budget_usd=(production_config.interface_max_budget_usd),
             interface_timeout_seconds=interface_config.timeout_seconds,
             work_profile=WorkExecutionProfile(
                 cwd=production_config.work_cwd,
@@ -123,9 +143,7 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
                 max_total_tokens=production_config.work_max_total_tokens,
                 timeout_seconds=production_config.work_timeout_seconds,
             ),
-            transport_timeout_seconds=(
-                production_config.transport_timeout_seconds
-            ),
+            transport_timeout_seconds=(production_config.transport_timeout_seconds),
         )
     else:
         pilot = PilotHostInterfacePilot(
@@ -172,6 +190,7 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
         token_lab_events=token_lab_events,
     )
     projection.rebuild()
+    _interrupt_reorientation_lost_on_runtime_restart(kernel)
     if require_active_route:
         active_snapshot_id = config.routing.active_route_snapshot_id
         stored_snapshot = kernel.route_snapshots.get(active_snapshot_id)
@@ -194,9 +213,7 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
             pilot.close()
             history_reader.close()
             ledger.close()
-            raise RuntimeError(
-                "active RouteSnapshot evidence cursor is stale"
-            )
+            raise RuntimeError("active RouteSnapshot evidence cursor is stale")
     dispatcher = DependencyAwareDispatcher(
         kernel=kernel,
         router=router,
@@ -204,9 +221,7 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
         model_registry=registry if production_config is not None else None,
         work_executor=pilot if production_config is not None else None,
         max_parallelism=(
-            production_config.max_parallelism
-            if production_config is not None
-            else None
+            production_config.max_parallelism if production_config is not None else None
         ),
     )
     reorientation = (
@@ -242,9 +257,7 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
             else None
         ),
         coding_pilot_id=(
-            production_config.coding_pilot_id
-            if production_config is not None
-            else None
+            production_config.coding_pilot_id if production_config is not None else None
         ),
         owner_session_lifetime_seconds=config.server.owner_session_lifetime_seconds,
         history_reader=history_reader,

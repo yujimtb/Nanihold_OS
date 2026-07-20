@@ -2,9 +2,9 @@
 
 ## 目的
 
-この環境は、production の Fable 設定を変えずに、WebUI から LETHE、Nanihold API、外部 PilotHost、実 Claude Code CLI までをローカルで確認するためのものです。
+この環境は、production の Interface Pilot 設定を変えずに、WebUI から LETHE、Nanihold API、外部 PilotHost、実 Claude Code CLI までをローカルで確認するためのものです。
 
-検証候補は起動時にインストール済み Claude Code の版を固定し、`claude-haiku-4-5-20251001 / low`、`observe_only`、tools disabled として登録します。Fable と Opus、write Effect、permission classifier、model fallback は使いません。一回の Interface turn の上限は USD 0.05 です。
+検証候補は起動時にインストール済み Claude Code の版を固定し、設定で明示した安価なexact candidate allowlistのモデル、`low`、`observe_only`、tools disabled として登録します。allowlist外candidate、write Effect、permission classifier、model fallback は使いません。暫定的なモデル名を禁止語として判定しません。一回の Interface turn の上限は USD 0.05 です。
 
 ## 前提
 
@@ -59,7 +59,7 @@ CLI から一回だけ疎通する場合:
 - Claude Codeの実versionとcandidateの`adapter_version`が違う
 - requested modelとClaude Codeが報告したactual modelが違う
 - PilotHostのcandidate key、Bearer token、接続先が違う
-- local modeでeffortが`low`以外、Fable/Opus、書込可能、または`observe_only`以外
+- local modeでeffortが`low`以外、exact candidate allowlist外、書込可能、または`observe_only`以外
 - LETHE、DataSpace、承認済みRouteSnapshot、必須secretが欠ける
 
 PilotHostはWindows側に動的portで立ち、ランダムBearer tokenで保護されます。Docker Desktop上のNaniholdは`host.docker.internal`から認証付きで直接接続し、Nanihold KernelへClaude固有CLI flagを持ち込みません。WSL内の別Docker daemonや中継containerには依存しません。

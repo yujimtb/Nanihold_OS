@@ -83,8 +83,8 @@ class PilotHost:
         model = candidate.get("model_snapshot")
         if not isinstance(model, str) or not model:
             raise RuntimeError("local PilotHost model snapshot is required")
-        if "fable" in model.lower() or "opus" in model.lower():
-            raise RuntimeError("local PilotHost forbids Fable and Opus")
+        if "opus" in model.lower():
+            raise RuntimeError("local PilotHost forbids Opus")
         if candidate.get("toolset") != ["conversation-only"]:
             raise RuntimeError(
                 "local PilotHost requires the conversation-only toolset"

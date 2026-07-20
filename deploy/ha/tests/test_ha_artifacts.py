@@ -112,7 +112,10 @@ def test_nanihold_has_two_pinned_pilot_hosts_and_typed_config() -> None:
     assert "kubernetes.io/hostname: nh-control-a" in manifest
     assert "kubernetes.io/hostname: nh-control-b" in manifest
     assert "externalTrafficPolicy: Cluster" in manifest
-    assert "model_snapshot = 'claude-fable-5'" in renderer
+    assert "selection = 'provider_configured'" in renderer
+    assert "selection = 'exact'" in renderer
+    assert "request_document_directory =" in renderer
+    assert "max_request_document_bytes = 32768" in renderer
     assert "effort = 'high'" in renderer
     assert "$deployment.mcp_allowlist" in renderer
     assert "mcp__history__*" in renderer

@@ -62,16 +62,21 @@ class ModelCandidate(StrictModel):
     adapter: NonBlank
     adapter_version: NonBlank
     provider: NonBlank
-    model_snapshot: NonBlank
+    selection: Literal["exact", "provider_configured"]
+    model_snapshot: NonBlank | None = None
     effort: NonBlank
     toolset: tuple[NonBlank, ...]
     sandbox_fingerprint: NonBlank
     environment_fingerprint: NonBlank
 
     @model_validator(mode="after")
-    def toolset_is_nonempty_and_unique(self) -> "ModelCandidate":
-        if not self.toolset or len(self.toolset) != len(set(self.toolset)):
-            raise ValueError("ModelCandidate toolset must be non-empty and unique")
+    def toolset_is_unique(self) -> "ModelCandidate":
+        if self.selection == "exact" and self.model_snapshot is None:
+            raise ValueError("exact ModelCandidate requires model_snapshot")
+        if self.selection == "provider_configured" and self.model_snapshot is not None:
+            raise ValueError("provider_configured ModelCandidate forbids model_snapshot")
+        if len(self.toolset) != len(set(self.toolset)):
+            raise ValueError("ModelCandidate toolset must be unique")
         return self
 
     @computed_field
@@ -82,6 +87,7 @@ class ModelCandidate(StrictModel):
                 "adapter": self.adapter,
                 "adapter_version": self.adapter_version,
                 "provider": self.provider,
+                "selection": self.selection,
                 "model_snapshot": self.model_snapshot,
                 "effort": self.effort,
                 "toolset": sorted(self.toolset),
@@ -238,7 +244,7 @@ class InterfacePilotUsage(StrictModel):
 
 
 class StructuredInterfaceResponse(StrictModel):
-    display_text: NonBlank
+    display_text: Annotated[str, Field(min_length=1, max_length=1_200)]
     actions: tuple[InterfaceAction, ...]
     provider_session_id: NonBlank
     pilot_usage: InterfacePilotUsage
@@ -264,8 +270,8 @@ class JudgeObservation(StrictModel):
             if self.judge_model is None or self.judge_effort != "low":
                 raise ValueError("cheap AI Judge requires an explicit model at low effort")
             lowered = self.judge_model.lower()
-            if "fable" in lowered or "opus" in lowered:
-                raise ValueError("Fable and Opus are forbidden in Token Efficiency Lab")
+            if "opus" in lowered:
+                raise ValueError("Token Efficiency Lab forbids Opus")
         elif self.judge_model is not None or self.judge_effort is not None:
             raise ValueError(
                 "deterministic and human Judges cannot declare a model"

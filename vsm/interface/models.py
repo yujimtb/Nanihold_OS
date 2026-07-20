@@ -74,7 +74,7 @@ class ConversationMessage(StrictModel):
     message_id: Identifier
     conversation_id: Identifier
     role: Literal["owner", "interface"]
-    display_text: NonBlank | None
+    display_text: Annotated[str, Field(min_length=1, max_length=1_200)] | None
     blob_ref: BlobRef | None
     occurred_at: datetime
     source: MessageSource | None

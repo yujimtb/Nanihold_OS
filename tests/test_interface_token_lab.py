@@ -131,7 +131,7 @@ def test_typed_work_directive_materializes_work_item(system):
         work_item_id="work:from-interface",
         data_space_id=SPACE_ID,
         title="Materialized",
-        description="Created from one Fable response.",
+        description="Created from one Interface response.",
         owner_node_id=INTERFACE_NODE_ID,
         delegated_to_node_id=worker.node_id,
         integration_owner_node_id=INTERFACE_NODE_ID,
@@ -215,10 +215,10 @@ def test_token_lab_uses_logic_first_and_counts_classifier_misoperation():
         "single_event:permission_classifier"
     ]
     assert direct[0].logic_only
-    with pytest.raises(InvariantViolation):
-        lab.authorize_model_experiment(
-            direct[0], model="claude-fable-5", effort="low"
-        )
+    cheap = lab.authorize_model_experiment(
+        direct[0], model="claude-haiku-4-5-20251001", effort="low"
+    )
+    assert not cheap.logic_only
     with pytest.raises(InvariantViolation):
         lab.authorize_model_experiment(
             direct[0], model="gpt-5.6-luna", effort="high"

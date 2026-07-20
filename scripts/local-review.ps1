@@ -364,14 +364,23 @@ function Invoke-LiveSmoke {
     $envMap = Get-EnvMap
     $composeMap = Get-ComposeMap
     $body = @{
+        action_id = "action:local-live-smoke:$([guid]::NewGuid().ToString('N'))"
+        kind = "owner_message"
         text = "ローカル確認です。現在のモデル名と、書き込み操作を行わないモードであることを簡潔に説明してください。"
         idempotency_key = "local-live-smoke:$([guid]::NewGuid())"
-        force_new_pilot = $true
-    } | ConvertTo-Json
+        source = @{
+            surface = "web"
+            source_session_id = "local-verification-browser"
+            source_message_id = "message:local-live-smoke:$([guid]::NewGuid().ToString('N'))"
+            author_id = "owner:local"
+            channel_id = "owner"
+            occurred_at = (Get-Date).ToUniversalTime().ToString("o")
+        }
+    } | ConvertTo-Json -Depth 4
     $response = Invoke-RestMethod `
         -Method Post `
-        -Uri "http://127.0.0.1:$($composeMap["NANIHOLD_API_HOST_PORT"])/api/conversations/conversation:local-verification/messages" `
-        -Headers @{ Authorization = "Bearer $($envMap["NANIHOLD_API_BEARER_TOKEN"])" } `
+        -Uri "http://127.0.0.1:$($composeMap["NANIHOLD_API_HOST_PORT"])/api/conversations/conversation:local-verification/actions" `
+        -Headers @{ Authorization = "Bearer $($envMap["NANIHOLD_API_BEARER_TOKEN"])"; "X-Nanihold-Device-Id" = "device:owner-local" } `
         -ContentType "application/json; charset=utf-8" `
         -Body $body `
         -TimeoutSec 150

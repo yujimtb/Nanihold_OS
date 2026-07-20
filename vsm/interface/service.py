@@ -5,7 +5,7 @@ import json
 from collections import Counter
 from collections.abc import Callable
 from datetime import datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from vsm.errors import InvariantViolation
 from vsm.ids import deterministic_event_id, new_id
@@ -43,6 +43,9 @@ from vsm.token_lab.lab import (
     TokenLabEventService,
     TokenObservation,
 )
+
+if TYPE_CHECKING:
+    from vsm.activation.models import ReorientationAssessment
 
 
 class InterfacePilot(Protocol):
@@ -559,7 +562,7 @@ class InterfaceService:
             session = PilotSession(
                 pilot_session_id=pilot_session_id,
                 conversation_id=conversation.conversation_id,
-                pilot_id="pilot:fable",
+                pilot_id="pilot:interface",
                 root_provider_session_id=response.provider_session_id,
                 provider_session_id=response.provider_session_id,
                 last_event_cursor=cursor,
@@ -631,13 +634,89 @@ class InterfaceService:
         session = PilotSession(
             pilot_session_id=pilot_session_id,
             conversation_id=conversation_id,
-            pilot_id="pilot:fable",
+            pilot_id="pilot:interface",
             root_provider_session_id=root_provider_session_id,
             provider_session_id=provider_session_id,
             last_event_cursor=cursor,
         )
         self.pilot_sessions[pilot_session_id] = session
         return session
+
+    def materialize_history_commitments(
+        self,
+        *,
+        conversation_id: str,
+        commitments: tuple[Commitment, ...],
+        history_result_event_ids: tuple[str, ...],
+        actor_id: str,
+        idempotency_key: str,
+    ) -> None:
+        if conversation_id not in self.conversations:
+            raise InvariantViolation("history commitment materialization needs Conversation")
+        if len({item.commitment_id for item in commitments}) != len(commitments):
+            raise InvariantViolation("history commitment identities must be unique")
+        if any(item.conversation_id != conversation_id for item in commitments):
+            raise InvariantViolation("history commitment Conversation mismatch")
+        self._record(
+            conversation_id=conversation_id,
+            event_type="history_commitments_materialized",
+            payload={
+                "commitments": [item.model_dump(mode="json") for item in commitments],
+                "history_result_event_ids": list(history_result_event_ids),
+            },
+            actor_type="system",
+            actor_id=actor_id,
+            idempotency_key=idempotency_key,
+        )
+        for commitment in commitments:
+            existing = self.commitments.get(commitment.commitment_id)
+            if existing is not None and existing != commitment:
+                raise InvariantViolation("history commitment identity collision")
+            self.commitments[commitment.commitment_id] = commitment
+
+    def materialize_reorientation_assessment(
+        self,
+        *,
+        assessment: ReorientationAssessment,
+        actor_id: str,
+        idempotency_key: str,
+    ) -> None:
+        conversation = self.conversations.get(assessment.conversation_id)
+        if conversation is None:
+            raise InvariantViolation("reorientation assessment Conversation not found")
+        assessment_blob_ref = self.kernel.ledger.put_blob(
+            assessment.model_dump_json().encode("utf-8")
+        )
+        memory = NodeMemory(
+            memory_id=new_id("memory"),
+            node_id=conversation.interface_node_id,
+            statement=assessment.understanding,
+            source_blob_ref=assessment_blob_ref,
+        )
+        decisions = tuple(
+            Decision(
+                decision_id=new_id("decision"),
+                conversation_id=conversation.conversation_id,
+                statement=statement,
+                supersedes_decision_id=None,
+            )
+            for statement in assessment.decisions_and_constraints
+        )
+        self._record(
+            conversation_id=conversation.conversation_id,
+            event_type="reorientation_assessment_materialized",
+            payload={
+                "assessment_id": assessment.assessment_id,
+                "memory": memory.model_dump(mode="json"),
+                "decisions": [item.model_dump(mode="json") for item in decisions],
+            },
+            actor_type="pilot",
+            actor_id=actor_id,
+            idempotency_key=idempotency_key,
+        )
+        self.node_memories[memory.memory_id] = memory
+        for decision in decisions:
+            self.decisions[decision.decision_id] = decision
 
     def _resume_pack(self, conversation: Conversation) -> InterfaceResumePack:
         superseded = {

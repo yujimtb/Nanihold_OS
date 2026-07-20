@@ -29,6 +29,15 @@ class ActivationState(StrEnum):
     ACTIVE = "ACTIVE"
 
 
+class ReorientationRevisionReason(StrEnum):
+    MISSING_RESUME_WORK_ITEM = "missing_resume_work_item"
+    OWNER_CORRECTION = "owner_correction"
+
+
+class ReorientationInterruptionReason(StrEnum):
+    PROCESS_RESTART_INTERRUPTED_ATTEMPT = "process_restart_interrupted_attempt"
+
+
 class HistorySourceKind(StrEnum):
     CLAUDE_CODE = "claude_code"
     CLAUDE_AI = "claude_ai"
@@ -90,8 +99,12 @@ class HistoryImportReceipt(StrictModel):
         source_ids = [source.source_id for source in self.sources]
         if len(source_ids) != len(set(source_ids)):
             raise ValueError("history source identities must be unique")
-        if {source.source_kind for source in self.sources} != REQUIRED_HISTORY_SOURCE_KINDS:
-            raise ValueError("history handoff must contain the exact seven source kinds")
+        if {
+            source.source_kind for source in self.sources
+        } != REQUIRED_HISTORY_SOURCE_KINDS:
+            raise ValueError(
+                "history handoff must contain the exact seven source kinds"
+            )
         if sum(source.record_count for source in self.sources) != self.record_count:
             raise ValueError("history handoff record_count differs from sources")
         if sum(source.raw_bytes for source in self.sources) != self.raw_bytes:
@@ -123,6 +136,8 @@ class CurrentWorkGraphSnapshot(StrictModel):
 
     def calculated_sha256(self) -> str:
         payload = self.model_dump(mode="json", exclude={"snapshot_sha256"})
+        for node in payload["nodes"]:
+            node["resident_functions"] = sorted(node["resident_functions"])
         canonical = json.dumps(
             payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
         ).encode("utf-8")
@@ -140,9 +155,7 @@ class CurrentWorkGraphSnapshot(StrictModel):
             item.state not in (WorkState.COMPLETED, WorkState.CANCELLED)
             for item in self.work_items
         ):
-            raise ValueError(
-                "Work Graph snapshot requires a real incomplete WorkItem"
-            )
+            raise ValueError("Work Graph snapshot requires a real incomplete WorkItem")
         if len(self.edges) != len(set(self.edges)):
             raise ValueError("Work Graph snapshot edges must be unique")
         return self
@@ -153,21 +166,38 @@ class EvidenceCitation(StrictModel):
     evidence_ref: Identifier
 
 
+AssessmentUnderstanding = Annotated[str, Field(min_length=1, max_length=1_200)]
+AssessmentItem = Annotated[str, Field(min_length=1, max_length=500)]
+
+
 class ReorientationAssessment(StrictModel):
     assessment_id: Identifier
     import_id: Identifier
     conversation_id: Identifier
     generated_at: datetime
-    understanding: NonBlank
-    active_missions: tuple[NonBlank, ...]
-    decisions_and_constraints: tuple[NonBlank, ...]
+    understanding: AssessmentUnderstanding
+    active_missions: Annotated[
+        tuple[AssessmentItem, ...],
+        Field(max_length=8),
+    ]
+    decisions_and_constraints: Annotated[
+        tuple[AssessmentItem, ...],
+        Field(max_length=12),
+    ]
     open_commitment_ids: tuple[Identifier, ...]
-    unknowns: tuple[NonBlank, ...]
+    unknowns: Annotated[
+        tuple[AssessmentItem, ...],
+        Field(max_length=8),
+    ]
     resume_work_item_ids: tuple[Identifier, ...]
-    covered_session_ids: tuple[Identifier, ...]
+    covered_session_index_ref: NonBlank
+    covered_session_count: Annotated[int, Field(ge=0)]
     history_cursor: Annotated[int, Field(ge=0)]
     current_state_cursor: Annotated[int, Field(ge=0)]
-    citations: tuple[EvidenceCitation, ...]
+    citations: Annotated[
+        tuple[EvidenceCitation, ...],
+        Field(max_length=32),
+    ]
 
 
 class ActivationStatus(StrictModel):
@@ -176,8 +206,11 @@ class ActivationStatus(StrictModel):
     assessment: ReorientationAssessment | None
     approved_at: datetime | None
     status_model_calls: Literal[0]
+    reorientation_attempt_in_progress: bool = False
+    pending_reorientation_revision_reason: ReorientationRevisionReason | None = None
     reorientation_pilot_calls: Annotated[int, Field(ge=0)]
     reorientation_input_tokens: Annotated[int, Field(ge=0)]
     reorientation_output_tokens: Annotated[int, Field(ge=0)]
     reorientation_error: NonBlank | None = None
     work_graph_snapshot_id: Identifier | None = None
+    reorientation_conversation_id: Identifier | None = None

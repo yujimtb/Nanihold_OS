@@ -16,7 +16,7 @@ base_url = "https://lethe.example.invalid"
 bearer_token_env = "LETHE_BEARER_TOKEN"
 timeout_seconds = 30.0
 max_page_size = 100
-history_max_result_bytes = 262144
+history_max_result_bytes = 24000
 
 [kernel.audit_policy]
 policy_id = "policy:audit-primary"
@@ -51,11 +51,11 @@ expires_at = 2027-07-19T00:00:00Z
 
 [interface_pilot]
 node_id = "node:owner-interface"
-pilot_id = "pilot:fable"
+pilot_id = "pilot:interface"
 adapter = "claude-code"
 adapter_version = "1.0.0"
 provider = "anthropic"
-model_snapshot = "claude-fable-5"
+model_selection = "provider_configured"
 effort = "high"
 toolset = ["nanihold-api"]
 sandbox_fingerprint = "sandbox-profile-sha256:replace"
@@ -76,7 +76,7 @@ work_max_output_tokens = 2000
 work_max_total_tokens = 12000
 work_timeout_seconds = 300.0
 max_parallelism = 3
-reorientation_max_tool_rounds = 32
+reorientation_max_tool_rounds = 8
 
 [routing]
 active_route_snapshot_id = "route:coding-production"
@@ -90,7 +90,7 @@ production_exploration_enabled = false
 adapter = "claude-code"
 adapter_version = "1.0.0"
 provider = "anthropic"
-model_snapshot = "claude-fable-5"
+selection = "provider_configured"
 effort = "high"
 toolset = ["nanihold-api"]
 sandbox_fingerprint = "sandbox-profile-sha256:replace"
@@ -112,6 +112,7 @@ log_latency_samples = [4.605170]
 adapter = "codex"
 adapter_version = "1.0.0"
 provider = "openai"
+selection = "exact"
 model_snapshot = "gpt-5.6-luna"
 effort = "xhigh"
 toolset = ["filesystem", "git", "tests"]
@@ -134,6 +135,7 @@ log_latency_samples = [4.605170]
 adapter = "codex"
 adapter_version = "1.0.0"
 provider = "openai"
+selection = "exact"
 model_snapshot = "gpt-5.6-sol"
 effort = "xhigh"
 toolset = ["filesystem", "git", "tests"]

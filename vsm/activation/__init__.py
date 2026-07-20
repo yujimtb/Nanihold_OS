@@ -8,6 +8,8 @@ from vsm.activation.models import (
     HistorySourceKind,
     HistorySourceManifest,
     ReorientationAssessment,
+    ReorientationInterruptionReason,
+    ReorientationRevisionReason,
 )
 from vsm.activation.service import ActivationService
 
@@ -22,4 +24,6 @@ __all__ = [
     "HistorySourceKind",
     "HistorySourceManifest",
     "ReorientationAssessment",
+    "ReorientationInterruptionReason",
+    "ReorientationRevisionReason",
 ]

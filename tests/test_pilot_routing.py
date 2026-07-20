@@ -38,6 +38,7 @@ def candidate(
         adapter="codex" if model.startswith("gpt") else "claude-code",
         adapter_version="1.0.0",
         provider="openai" if model.startswith("gpt") else "anthropic",
+        selection="exact",
         model_snapshot=model,
         effort=effort,
         toolset=("filesystem", "git"),
@@ -229,7 +230,7 @@ def test_claude_permission_modes_are_isolated_and_model_mismatch_stops():
         permission_classifier_enabled=False,
         writes_allowed=True,
     )
-    model = candidate("claude-fable-5", "high")
+    model = candidate("claude-haiku-4-5-20251001", "high")
     adapter = ClaudePilotAdapter(adapter_version="1.0.0", policy=policy)
     request = PilotRequest(
         execution_id="execution:test",

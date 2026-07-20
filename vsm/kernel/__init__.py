@@ -13,8 +13,6 @@ from vsm.kernel.models import (
     UVSMNode,
     WorkItem,
 )
-from vsm.kernel.service import Kernel
-
 __all__ = [
     "AuditPolicy",
     "BudgetReservation",
@@ -26,7 +24,6 @@ __all__ = [
     "EventEnvelope",
     "Execution",
     "InMemoryOperationalLedger",
-    "Kernel",
     "OperationalLedger",
     "ReferenceGrant",
     "UVSMNode",
