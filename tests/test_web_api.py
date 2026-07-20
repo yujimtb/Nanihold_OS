@@ -45,6 +45,7 @@ def client(
     model_candidates: tuple[ModelCandidate, ...] = (),
     dispatcher=None,
     coding_pilot_id: str | None = None,
+    owner_auth_disabled: bool = False,
 ) -> TestClient:
     kernel, ledger, interface, _ = system
     router = BayesianRouter(
@@ -115,6 +116,7 @@ def client(
         reorientation_service=reorientation_service,
         reorientation_max_tool_rounds=reorientation_max_tool_rounds,
         coding_pilot_id=coding_pilot_id,
+        owner_auth_disabled=owner_auth_disabled,
     )
     return TestClient(
         create_app(state, allowed_origins=("http://localhost:5173",)),
@@ -388,6 +390,61 @@ def test_new_resource_api_is_complete_and_old_surfaces_do_not_exist(system):
     ):
         assert api.get(removed, headers=auth()).status_code == 404
     assert api.get("/api/nodes").status_code == 401
+
+
+def test_auth_enabled_by_default_rejects_unauthenticated_requests(system):
+    # Default (owner_auth_disabled omitted / False) keeps authentication on.
+    api = client(system)
+    assert api.get("/api/activation/status").status_code == 401
+    assert api.get("/api/nodes").status_code == 401
+    assert api.get("/api/activation/status", headers=auth()).status_code == 200
+
+
+def test_owner_auth_disabled_bypasses_all_authentication(system):
+    api = client(system, owner_auth_disabled=True)
+    # No Authorization header, no device id, no owner session cookie required.
+    for path in (
+        "/api/activation/status",
+        "/api/nodes",
+        "/api/data-spaces",
+        "/api/conversations",
+    ):
+        response = api.get(path)
+        assert response.status_code == 200, (path, response.text)
+
+
+def test_owner_auth_disabled_keeps_bootstrap_endpoints_from_500(system):
+    api = client(system, owner_auth_disabled=True)
+    # Issue is protected by authorize (now bypassed): a valid origin succeeds and
+    # an untrusted origin fails cleanly with 409 rather than 500.
+    issued = api.post(
+        "/api/owner-bootstrap/issues",
+        json={
+            "base_url": "http://localhost:5173",
+            "lifetime_seconds": 60,
+            "idempotency_key": "auth-disabled:issue",
+        },
+    )
+    assert issued.status_code == 201, issued.text
+    rejected = api.post(
+        "/api/owner-bootstrap/issues",
+        json={
+            "base_url": "https://untrusted.example",
+            "lifetime_seconds": 60,
+            "idempotency_key": "auth-disabled:untrusted",
+        },
+    )
+    assert rejected.status_code == 409, rejected.text
+    # Exchange with an unknown code fails cleanly (not 500) as well.
+    exchanged = api.post(
+        "/api/owner-bootstrap/exchange",
+        json={
+            "code": "code:does-not-exist",
+            "device_id": "owner-browser",
+            "idempotency_key": "auth-disabled:exchange",
+        },
+    )
+    assert exchanged.status_code != 500, exchanged.text
 
 
 def test_active_work_item_can_be_explicitly_dispatched(system):

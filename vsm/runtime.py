@@ -263,6 +263,7 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
         owner_session_lifetime_seconds=config.server.owner_session_lifetime_seconds,
         history_reader=history_reader,
         history_max_result_bytes=config.kernel.lethe.history_max_result_bytes,
+        owner_auth_disabled=config.server.owner_auth_disabled,
     )
     return Runtime(
         loaded=loaded,
