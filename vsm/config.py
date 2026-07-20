@@ -179,6 +179,11 @@ class ServerConfig(StrictConfig):
     allowed_origins: tuple[str, ...]
     authorized_device_ids: tuple[str, ...]
     owner_session_lifetime_seconds: int = Field(gt=0)
+    # Owner opt-out for localhost-only deployments. Default False keeps
+    # authentication enabled; when True the Bearer + X-Nanihold-Device-Id and
+    # owner bootstrap session checks are bypassed. This is an explicit, reversible
+    # flag (set back to False to restore auth) — the auth code itself is retained.
+    owner_auth_disabled: bool = False
 
     @model_validator(mode="after")
     def device_identities_are_explicit(self) -> "ServerConfig":

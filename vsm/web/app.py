@@ -224,6 +224,14 @@ class AppState:
     reorientation_service: ReorientationService | None = None
     reorientation_max_tool_rounds: int | None = None
     coding_pilot_id: str | None = None
+    # Explicit owner opt-out (localhost-only deployments). Default False keeps
+    # authentication enabled; when True the authorize dependency short-circuits
+    # to a fixed device identity so no Bearer/device-id/session is required.
+    owner_auth_disabled: bool = False
+
+
+# Fixed device identity returned by authorize() when owner_auth_disabled is True.
+OWNER_LOCAL_DEVICE_ID = "device:owner-local"
 
 
 def _reorientation_failure_code(exc: Exception) -> str:
@@ -278,6 +286,11 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
             str | None, Cookie(alias="nanihold_owner_session")
         ] = None,
     ) -> str:
+        if state.owner_auth_disabled:
+            # Explicit owner opt-out: bypass Bearer/device-id and owner session
+            # checks entirely and return a fixed local device identity. Restore
+            # authentication by setting server.owner_auth_disabled back to False.
+            return OWNER_LOCAL_DEVICE_ID
         if owner_session is not None:
             try:
                 return state.kernel.owner_bootstrap.authenticate(owner_session)
