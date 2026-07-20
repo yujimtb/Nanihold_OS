@@ -57,12 +57,19 @@ scoreも再計算しません。別の`PUBLISHED`が残るrouteへのpublishはf
 
 ## Coding escalation
 
-明示 override は `gpt-5.6-luna/xhigh → gpt-5.6-sol/xhigh` です。失敗のたびに、
+本番 route `coding:personal-production` の候補は
+`gpt-5.6-luna/xhigh` を第一候補、`gpt-5.6-sol/xhigh` を明示 override 先として
+登録します。通常の route 選択は Luna から始め、Sol を候補順位の競争相手として
+通常選択しません。明示 override は `gpt-5.6-luna/xhigh → gpt-5.6-sol/xhigh` です。
+Luna の実行が自然発生した失敗（未達 acceptance または gate 差分を含む）になった
+ときだけ、失敗ごとに、
 
 - Luna を続けた期待残 token
 - WorkItem、未達 acceptance、gate 差分、artifact/decision ref だけを渡して Sol へ移る期待残 token
 
-を再計算します。固定 retry 回数はありません。人工的な本番発火はせず、自然発生した Escalation Trace だけを計測します。
+を再計算します。Sol 移行側の期待残 tokenが小さい場合だけ overrideし、それ以外は
+Luna継続を選びます。固定 retry 回数はありません。人工的な本番発火はせず、自然発生した
+Escalation Trace だけを計測します。
 
 ## Provider boundary
 

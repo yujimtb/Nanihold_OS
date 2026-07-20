@@ -75,6 +75,11 @@ model-free probeは認証を要求しません。
 
 RouteSnapshot の `evidence_cursor` は登録時点の verified outcome cursor と完全一致しなければなりません。candidate key は `adapter@version + provider + selection + effort + toolset + sandbox + environment` の canonical hash です。`selection`はcoding用のexact model snapshotまたはInterface用の`provider_configured`であり、Interfaceの人格名や暫定モデル名を含めません。
 
+`coding:personal-production` の RouteSnapshot は `gpt-5.6-luna/xhigh` の候補キーを
+先頭に置き、`gpt-5.6-sol/xhigh` を2番目の明示エスカレーション候補として続けなければ
+なりません。登録・CLI publishともこの順序を検証し、通常の dispatcher 選択は Luna から
+開始します。
+
 同じ`route_key`に複数の`PUBLISHED` snapshotは許可しません。後継はS3*、ownerの
 順で`OWNER_APPROVED`まで進め、旧`PUBLISHED`へ
 `POST /api/route-snapshots/{id}/retirements`を実行した後、後継を明示的にpublishします。

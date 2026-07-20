@@ -25,6 +25,8 @@ from vsm.routing.bayesian import (
     BenchmarkPrior,
     RoutingEvidenceService,
     VerifiedRouteOutcome,
+    require_coding_escalation_candidates,
+    require_coding_route_candidate_keys,
 )
 
 
@@ -76,6 +78,48 @@ def test_candidate_key_separates_version_and_environment():
         "gpt-5.6-luna", "xhigh", environment="windows-amd64:2026-07"
     )
     assert base.key != changed.key
+
+
+def test_production_coding_route_requires_luna_first_and_sol_override():
+    luna = candidate("gpt-5.6-luna", "xhigh")
+    sol = candidate("gpt-5.6-sol", "xhigh")
+    registry = {luna.key: luna, sol.key: sol}
+
+    assert require_coding_escalation_candidates((sol, luna)) == (luna, sol)
+    require_coding_route_candidate_keys(
+        "coding:personal-production",
+        (luna.key, sol.key),
+        registry,
+    )
+    with pytest.raises(InvariantViolation, match="gpt-5.6-luna/xhigh then gpt-5.6-sol"):
+        require_coding_route_candidate_keys(
+            "coding:personal-production",
+            (sol.key, luna.key),
+            registry,
+        )
+    with pytest.raises(InvariantViolation, match="requires exactly"):
+        require_coding_escalation_candidates((luna,))
+
+
+def test_coding_route_normal_selection_is_luna_even_when_sol_scores_higher():
+    route = router()
+    luna = candidate("gpt-5.6-luna", "xhigh")
+    sol = candidate("gpt-5.6-sol", "xhigh")
+    route.register(luna, (prior(1, 9),))
+    route.register(sol, (prior(9, 1),))
+    snapshot = RouteSnapshot(
+        snapshot_id="route:coding-personal-production",
+        data_space_id="space:personal",
+        route_key="coding:personal-production",
+        evidence_cursor=0,
+        candidate_keys=(luna.key, sol.key),
+        production_objective="quality_max",
+        state=RouteSnapshotState.PUBLISHED,
+        s3_star_approval_event_id="event:s3",
+        owner_approval_event_id="event:owner",
+    )
+
+    assert route.select_production(snapshot).candidate_key == luna.key
 
 
 def test_three_objectives_and_ai_judge_cannot_promote_alone():

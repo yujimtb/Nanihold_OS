@@ -1,9 +1,42 @@
 from pathlib import Path
+import copy
+import tomllib
 
 import pytest
+from pydantic import ValidationError
 
-from vsm.config import load_config
+from vsm.config import NaniholdConfig, load_config
 from vsm.errors import ConfigurationError
+
+
+def _production_example_data() -> dict[str, object]:
+    example = Path(__file__).parents[1] / "config" / "nanihold.example.toml"
+    data = tomllib.loads(example.read_text("utf-8"))
+    for registration in data["routing"]["candidates"]:  # type: ignore[index]
+        for prior in registration["priors"]:  # type: ignore[index]
+            prior["version"] = "2026-07"  # type: ignore[index]
+            prior["harness"] = "verified-production"  # type: ignore[index]
+    return data
+
+
+def test_production_config_requires_both_coding_escalation_candidates():
+    data = _production_example_data()
+    config = NaniholdConfig.model_validate(data)
+    models = {
+        registration.candidate.model_snapshot
+        for registration in config.routing.candidates
+        if registration.candidate.model_snapshot is not None
+    }
+    assert {"gpt-5.6-luna", "gpt-5.6-sol"}.issubset(models)
+
+    missing_sol = copy.deepcopy(data)
+    missing_sol["routing"]["candidates"] = [  # type: ignore[index]
+        registration
+        for registration in missing_sol["routing"]["candidates"]  # type: ignore[index]
+        if registration["candidate"].get("model_snapshot") != "gpt-5.6-sol"  # type: ignore[index]
+    ]
+    with pytest.raises(ValidationError, match="requires exactly"):
+        NaniholdConfig.model_validate(missing_sol)
 
 
 def test_example_benchmark_evidence_cannot_start_runtime():

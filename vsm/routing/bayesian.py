@@ -20,6 +20,57 @@ from vsm.pilot.models import (
 )
 
 
+CODING_ROUTE_KEY = "coding:personal-production"
+CODING_ROUTE_CANDIDATE_MODELS = ("gpt-5.6-luna", "gpt-5.6-sol")
+
+
+def require_coding_escalation_candidates(
+    candidates: tuple[ModelCandidate, ...],
+) -> tuple[ModelCandidate, ModelCandidate]:
+    """Validate and return the ordered Luna-first coding candidate pair."""
+    by_model: dict[str, ModelCandidate] = {}
+    for candidate in candidates:
+        model = candidate.model_snapshot
+        if model not in CODING_ROUTE_CANDIDATE_MODELS:
+            continue
+        if (
+            candidate.provider != "openai"
+            or candidate.selection != "exact"
+            or candidate.effort != "xhigh"
+        ):
+            raise InvariantViolation(
+                "coding escalation candidates must be exact openai/xhigh models"
+            )
+        if model in by_model:
+            raise InvariantViolation(
+                f"coding escalation candidate is registered more than once: {model}"
+            )
+        by_model[model] = candidate
+    if set(by_model) != set(CODING_ROUTE_CANDIDATE_MODELS):
+        raise InvariantViolation(
+            "production coding route requires exactly gpt-5.6-luna and "
+            "gpt-5.6-sol candidates"
+        )
+    return by_model["gpt-5.6-luna"], by_model["gpt-5.6-sol"]
+
+
+def require_coding_route_candidate_keys(
+    route_key: str,
+    candidate_keys: tuple[str, ...],
+    registry: dict[str, ModelCandidate],
+) -> None:
+    """Enforce the published production coding route's Luna-first ordering."""
+    if route_key != CODING_ROUTE_KEY:
+        return
+    coding_candidates = require_coding_escalation_candidates(tuple(registry.values()))
+    expected_keys = tuple(candidate.key for candidate in coding_candidates)
+    if candidate_keys != expected_keys:
+        raise InvariantViolation(
+            "coding:personal-production requires candidate keys in "
+            "gpt-5.6-luna/xhigh then gpt-5.6-sol/xhigh order"
+        )
+
+
 class BenchmarkPrior(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -323,9 +374,19 @@ class BayesianRouter:
     def select_production(self, snapshot: RouteSnapshot) -> RouteScore:
         if snapshot.state is not RouteSnapshotState.PUBLISHED:
             raise InvariantViolation("production routing requires a published RouteSnapshot")
+        if snapshot.route_key == CODING_ROUTE_KEY:
+            require_coding_route_candidate_keys(
+                snapshot.route_key,
+                snapshot.candidate_keys,
+                {key: posterior.candidate for key, posterior in self._posteriors.items()},
+            )
         scores = self.scores(snapshot.candidate_keys)
         objective = snapshot.production_objective
-        selected = min(scores, key=lambda score: score.ranks[objective])
+        selected = (
+            scores[0]
+            if snapshot.route_key == CODING_ROUTE_KEY
+            else min(scores, key=lambda score: score.ranks[objective])
+        )
         posterior = self._require(selected.candidate_key)
         if (
             posterior.verified_samples > 0

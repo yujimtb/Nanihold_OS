@@ -9,14 +9,14 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from vsm.errors import ConfigurationError
+from vsm.errors import ConfigurationError, InvariantViolation
 from vsm.kernel.models import (
     AuditPolicy,
     ControlPolicy,
     DataSpace,
 )
 from vsm.pilot.models import ModelCandidate, PilotMode, PilotPolicy, SandboxProfile
-from vsm.routing.bayesian import BenchmarkPrior
+from vsm.routing.bayesian import BenchmarkPrior, require_coding_escalation_candidates
 
 
 class StrictConfig(BaseModel):
@@ -252,15 +252,18 @@ class NaniholdConfig(StrictConfig):
                 raise ValueError(
                     "production requires production_pilot_host receipt contract"
                 )
-            coding_matches = [
-                item.candidate
-                for item in self.routing.candidates
-                if item.candidate.model_snapshot
-                == self.production_pilot_host.coding_candidate_model_snapshot
-            ]
-            if len(coding_matches) != 1:
+            try:
+                require_coding_escalation_candidates(
+                    tuple(item.candidate for item in self.routing.candidates)
+                )
+            except InvariantViolation as exc:
+                raise ValueError(str(exc)) from exc
+            if (
+                self.production_pilot_host.coding_candidate_model_snapshot
+                != "gpt-5.6-sol"
+            ):
                 raise ValueError(
-                    "production coding candidate must match exactly one registry entry"
+                    "production PilotHost coding candidate must be gpt-5.6-sol"
                 )
             if any(
                 prior.source == "local-verification"

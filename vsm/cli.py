@@ -29,6 +29,7 @@ from vsm.kernel.models import (
     UVSMNode,
     VSMFunction,
 )
+from vsm.routing.bayesian import require_coding_route_candidate_keys
 
 app = typer.Typer(
     name="vsm",
@@ -149,6 +150,14 @@ def route_publish(
         unknown = sorted(set(candidate_key) - set(runtime.state.model_registry))
         if unknown:
             raise typer.BadParameter(f"unregistered ModelCandidate keys: {unknown}")
+        try:
+            require_coding_route_candidate_keys(
+                route_key,
+                tuple(candidate_key),
+                runtime.state.model_registry,
+            )
+        except InvariantViolation as exc:
+            raise typer.BadParameter(str(exc)) from exc
         snapshot = RouteSnapshot(
             snapshot_id=snapshot_id,
             data_space_id=runtime.kernel.data_space.data_space_id,

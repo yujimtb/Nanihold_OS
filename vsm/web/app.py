@@ -61,6 +61,7 @@ from vsm.routing.bayesian import (
     BayesianRouter,
     RoutingEvidenceService,
     VerifiedRouteOutcome,
+    require_coding_route_candidate_keys,
 )
 from vsm.token_lab.lab import (
     TokenBaseline,
@@ -882,6 +883,11 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
             raise InvariantViolation(
                 f"RouteSnapshot references unregistered ModelCandidates: {sorted(unknown)}"
             )
+        require_coding_route_candidate_keys(
+            snapshot.route_key,
+            snapshot.candidate_keys,
+            state.model_registry,
+        )
         state.kernel.register_route_snapshot(
             snapshot,
             actor_id=request.actor_id,
@@ -945,6 +951,11 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
                     "replacement RouteSnapshot references unregistered "
                     f"ModelCandidates: {sorted(unknown)}"
                 )
+            require_coding_route_candidate_keys(
+                replacement.route_key,
+                replacement.candidate_keys,
+                state.model_registry,
+            )
         state.kernel.retire_route_snapshot(
             snapshot_id,
             reason_code=request.reason_code,
