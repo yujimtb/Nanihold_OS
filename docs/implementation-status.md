@@ -191,10 +191,9 @@ production traffic の50%/70% token削減率は、7日間かつ比較可能WorkI
 - 2026-07-20、先行architecture commitについて両integration branchの公開remote pushを確認
 - 2026-07-20、local verification拡張を実装・live smoke・再起動復元まで確認
 - 2026-07-20、完全稼働・再オリエンテーション差分:
-  - Nanihold `318afbe`を`agent/fable-activation`へ公開push。当時の暫定呼称を含む
-    branch名であり、現行の人格名・役割名・モデル設定ではない
-  - LETHE `f1b1ef3`を`agent/nanihold-history-ingestion`へ公開push
-  - Intercom `2dcd342`をlocal commit。repositoryにremoteがないため未push
-- 最終Nanihold Docker pytest gateが未実行のため、今回のfeature branchは
-  `main/master`へ未merge。先行integration commitと混同しない
+  - Nanihold `00687a3`を`agent/interface-activation`へ公開push
+  - LETHE `b4d574f`を`agent/nanihold-history-ingestion`へ公開push
+  - Intercom `c468aad`をlocal commit。repositoryにremoteがないため未push
+- 今回のfeature branchは`main/master`へ未merge。公開pushとintegration mergeを
+  混同しない
 - production deploy: 対象外、未実施
