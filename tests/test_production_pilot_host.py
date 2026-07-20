@@ -354,10 +354,35 @@ def _work_request(tmp_path: Path) -> dict[str, object]:
 
 
 @pytest.fixture
-def provider_env(monkeypatch):
+def provider_env(monkeypatch, tmp_path):
     monkeypatch.setenv("TEST_PILOT_BEARER", "pilot-secret")
     monkeypatch.setenv("TEST_HISTORY_BEARER", "history-secret")
     monkeypatch.setenv("TEST_GATEWAY_BEARER", "gateway-secret")
+    # The Codex actual-model gate reads the resolved model/effort from codex's own
+    # session rollout under CODEX_HOME/sessions; pin it to a hermetic temp home.
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+
+
+def _codex_home(tmp_path: Path) -> Path:
+    return tmp_path / "codex-home"
+
+
+def _write_codex_rollout(
+    codex_home: Path, thread_id: str, *, model: str, effort: str
+) -> None:
+    # Mirror how codex exec writes a per-session rollout whose turn_context record
+    # authoritatively reports the resolved model and reasoning effort.
+    sessions = Path(codex_home) / "sessions" / "2026" / "07" / "21"
+    sessions.mkdir(parents=True, exist_ok=True)
+    path = sessions / f"rollout-2026-07-21T06-15-34-{thread_id}.jsonl"
+    records = [
+        {"type": "session_meta", "payload": {"session_id": thread_id}},
+        {"type": "turn_context", "payload": {"model": model, "effort": effort}},
+    ]
+    path.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _version_result(argv: list[str]) -> subprocess.CompletedProcess[str] | None:
@@ -632,6 +657,14 @@ def test_codex_exec_has_exact_model_effort_cwd_sandbox_and_schema(
             ),
             encoding="utf-8",
         )
+        # codex exec --json reports the thread id in the stream but not the
+        # resolved model/effort; those live in the session rollout turn_context.
+        _write_codex_rollout(
+            _codex_home(tmp_path),
+            "codex-thread-1",
+            model="gpt-5.6-sol",
+            effort="xhigh",
+        )
         stdout = "\n".join(
             (
                 json.dumps(
@@ -640,12 +673,11 @@ def test_codex_exec_has_exact_model_effort_cwd_sandbox_and_schema(
                 json.dumps(
                     {
                         "type": "turn.completed",
-                        "model": "gpt-5.6-sol",
-                        "model_reasoning_effort": "xhigh",
                         "usage": {
                             "input_tokens": 400,
                             "cached_input_tokens": 200,
                             "output_tokens": 100,
+                            "reasoning_output_tokens": 40,
                         },
                     }
                 ),
@@ -680,6 +712,87 @@ def test_codex_exec_has_exact_model_effort_cwd_sandbox_and_schema(
         "artifact_refs",
         "token_budget",
     }
+
+
+def _codex_stdout(thread_id: str = "codex-thread-1") -> str:
+    return "\n".join(
+        (
+            json.dumps({"type": "thread.started", "thread_id": thread_id}),
+            json.dumps(
+                {
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 400,
+                        "cached_input_tokens": 200,
+                        "output_tokens": 100,
+                        "reasoning_output_tokens": 40,
+                    },
+                }
+            ),
+        )
+    )
+
+
+def _codex_last_message(output_path: Path) -> None:
+    output_path.write_text(
+        json.dumps(
+            {
+                "summary": "Implemented and tested.",
+                "acceptance_results": [
+                    {
+                        "criterion": "targeted tests pass",
+                        "satisfied": True,
+                        "evidence_refs": ["artifact:test-log"],
+                    }
+                ],
+                "artifact_refs": ["artifact:commit"],
+                "event_notes": ["tests passed"],
+                "completed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_codex_actual_model_unverifiable_when_rollout_missing(
+    tmp_path: Path, monkeypatch, provider_env
+):
+    def fake_run(argv, **kwargs):
+        version = _version_result(argv)
+        if version is not None:
+            return version
+        _codex_last_message(Path(argv[argv.index("--output-last-message") + 1]))
+        # Deliberately do not write any session rollout for the thread.
+        return subprocess.CompletedProcess(argv, 0, _codex_stdout(), "")
+
+    host = _make_host(tmp_path, monkeypatch, fake_run)
+    receipt = host.execute("/v1/work-executions", _work_request(tmp_path))
+
+    assert receipt["status"] == "failed"
+    assert receipt["error"]["code"] == "ActualModelUnverifiable"
+
+
+def test_codex_rejects_actual_model_mismatch_from_rollout(
+    tmp_path: Path, monkeypatch, provider_env
+):
+    def fake_run(argv, **kwargs):
+        version = _version_result(argv)
+        if version is not None:
+            return version
+        _codex_last_message(Path(argv[argv.index("--output-last-message") + 1]))
+        _write_codex_rollout(
+            _codex_home(tmp_path),
+            "codex-thread-1",
+            model="gpt-5.6-luna",
+            effort="xhigh",
+        )
+        return subprocess.CompletedProcess(argv, 0, _codex_stdout(), "")
+
+    host = _make_host(tmp_path, monkeypatch, fake_run)
+    receipt = host.execute("/v1/work-executions", _work_request(tmp_path))
+
+    assert receipt["status"] == "failed"
+    assert receipt["error"]["code"] == "RequestedActualModelMismatch"
 
 
 def test_work_execution_rejects_arbitrary_command_before_provider(

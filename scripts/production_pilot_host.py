@@ -1177,6 +1177,15 @@ class CodexAdapter:
         self.timeout_seconds = _positive_number(
             data["timeout_seconds"], "Codex timeout"
         )
+        # Codex exec --json does not emit the resolved model/effort in its stdout
+        # event stream (confirmed on codex-cli 0.144.5). The authoritative record
+        # of the actual model and reasoning effort is the per-session rollout file
+        # that codex writes under CODEX_HOME/sessions. Resolve the same home codex
+        # itself resolves so the actual-model gate reads codex's own record rather
+        # than inferring the actual model from the requested flags.
+        self.codex_home = Path(
+            os.environ.get("CODEX_HOME") or (Path.home() / ".codex")
+        ).resolve()
         self._validate_version()
 
     def _validate_version(self) -> None:
@@ -1314,14 +1323,10 @@ class CodexAdapter:
                 "Codex exec did not report a thread ID",
             )
         turn = completed_events[0]
-        actual_model = turn.get("model")
-        actual_effort = turn.get("model_reasoning_effort")
         usage = turn.get("usage")
-        if not isinstance(actual_model, str) or not isinstance(actual_effort, str):
-            raise ProviderInvocationError(
-                "ActualModelUnverifiable",
-                "Codex exec JSONL did not report actual model and reasoning effort",
-            )
+        actual_model, actual_effort = self._verify_actual_model_effort(
+            provider_session_id
+        )
         parsed_usage = self._validate_usage(usage)
         if (
             actual_model != self.candidate.model_snapshot
@@ -1385,13 +1390,76 @@ class CodexAdapter:
             provider_session_id,
         )
 
+    def _verify_actual_model_effort(self, thread_id: str) -> tuple[str, str]:
+        # codex exec --json reports the thread (session) id but not the resolved
+        # model/effort. Read them from codex's own authoritative session rollout
+        # `turn_context` record, located by thread id under CODEX_HOME/sessions.
+        # This is a direct read of codex's actual-model record, not an inference
+        # from the requested flags; any failure to read it fails the gate closed.
+        sessions_root = self.codex_home / "sessions"
+        try:
+            matches = sorted(sessions_root.rglob(f"rollout-*-{thread_id}.jsonl"))
+        except OSError as exc:
+            raise ProviderInvocationError(
+                "ActualModelUnverifiable",
+                "Codex session rollout directory could not be scanned",
+            ) from exc
+        if len(matches) != 1:
+            raise ProviderInvocationError(
+                "ActualModelUnverifiable",
+                "Codex session rollout for the thread was not uniquely found",
+            )
+        model: str | None = None
+        effort: str | None = None
+        try:
+            for line in matches[0].read_text("utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ProviderInvocationError(
+                        "ActualModelUnverifiable",
+                        "Codex session rollout contained invalid JSONL",
+                    ) from exc
+                if (
+                    not isinstance(record, dict)
+                    or record.get("type") != "turn_context"
+                ):
+                    continue
+                payload = record.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                candidate_model = payload.get("model")
+                candidate_effort = payload.get("effort")
+                if isinstance(candidate_model, str) and isinstance(
+                    candidate_effort, str
+                ):
+                    model, effort = candidate_model, candidate_effort
+        except OSError as exc:
+            raise ProviderInvocationError(
+                "ActualModelUnverifiable",
+                "Codex session rollout could not be read for model verification",
+            ) from exc
+        if model is None or effort is None:
+            raise ProviderInvocationError(
+                "ActualModelUnverifiable",
+                "Codex session rollout did not report actual model and effort",
+            )
+        return model, effort
+
     def _validate_usage(self, raw: object) -> dict[str, object]:
         if not isinstance(raw, dict):
             raise ProviderInvocationError(
                 "ProviderUsageMissing",
                 "Codex exec did not report token usage",
             )
-        required = {"input_tokens", "cached_input_tokens", "output_tokens"}
+        required = {
+            "input_tokens",
+            "cached_input_tokens",
+            "output_tokens",
+            "reasoning_output_tokens",
+        }
         if set(raw) != required:
             raise ProviderInvocationError(
                 "ProviderUsageMissing",
