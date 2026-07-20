@@ -189,7 +189,7 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
         routing_evidence=routing_evidence,
         token_lab_events=token_lab_events,
     )
-    projection.rebuild()
+    projection_cursor = projection.rebuild()
     _interrupt_reorientation_lost_on_runtime_restart(kernel)
     if require_active_route:
         active_snapshot_id = config.routing.active_route_snapshot_id
@@ -218,6 +218,7 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
         kernel=kernel,
         router=router,
         evidence_cursor=lambda: routing_evidence.evidence_cursor,
+        startup_projection_cursor=projection_cursor,
         model_registry=registry if production_config is not None else None,
         work_executor=pilot if production_config is not None else None,
         max_parallelism=(

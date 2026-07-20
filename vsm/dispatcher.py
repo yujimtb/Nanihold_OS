@@ -81,6 +81,7 @@ class DependencyAwareDispatcher:
         kernel: Kernel,
         router: BayesianRouter,
         evidence_cursor: Callable[[], int],
+        startup_projection_cursor: int,
         model_registry: dict[str, ModelCandidate] | None = None,
         work_executor: WorkExecutor | None = None,
         max_parallelism: int | None = None,
@@ -88,6 +89,14 @@ class DependencyAwareDispatcher:
         self.kernel = kernel
         self.router = router
         self.evidence_cursor = evidence_cursor
+        if startup_projection_cursor < 0:
+            raise InvariantViolation(
+                "startup Projection cursor must be non-negative"
+            )
+        # Projection has already verified every event through this cursor at
+        # runtime bootstrap.  A worker must never receive that reconstructed
+        # history as a fresh delta.
+        self._event_delta_cursor = startup_projection_cursor
         self.model_registry = model_registry
         self.work_executor = work_executor
         if work_executor is None:
@@ -427,21 +436,32 @@ class DependencyAwareDispatcher:
         )
 
     def _event_delta(self) -> EventDeltaSummary:
-        cursor = 0
-        counts: Counter[str] = Counter()
-        streams: set[str] = set()
-        while True:
-            page = self.kernel.ledger.page(cursor, 500)
-            if not page:
-                break
-            for stored in page:
-                counts[stored.event.event_type] += 1
-                streams.add(stored.event.stream_id)
-                cursor = stored.cursor
-        return EventDeltaSummary(
-            after_cursor=0,
-            through_cursor=cursor,
-            event_count=sum(counts.values()),
-            event_type_counts=dict(sorted(counts.items())),
-            changed_stream_ids=tuple(sorted(streams)),
-        )
+        # A dispatch batch can be prepared concurrently with completion
+        # callbacks.  Serialising cursor allocation makes each delta a
+        # disjoint ledger interval; no worker can be handed an already-sent
+        # historical interval.
+        with self._lock:
+            after_cursor = self._event_delta_cursor
+            cursor = after_cursor
+            counts: Counter[str] = Counter()
+            streams: set[str] = set()
+            while True:
+                page = self.kernel.ledger.page(cursor, 500)
+                if not page:
+                    break
+                for stored in page:
+                    if stored.cursor != cursor + 1:
+                        raise InvariantViolation(
+                            "Event Ledger cursor is not contiguous"
+                        )
+                    counts[stored.event.event_type] += 1
+                    streams.add(stored.event.stream_id)
+                    cursor = stored.cursor
+            self._event_delta_cursor = cursor
+            return EventDeltaSummary(
+                after_cursor=after_cursor,
+                through_cursor=cursor,
+                event_count=sum(counts.values()),
+                event_type_counts=dict(sorted(counts.items())),
+                changed_stream_ids=tuple(sorted(streams)),
+            )

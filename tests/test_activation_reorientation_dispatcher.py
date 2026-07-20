@@ -46,8 +46,6 @@ from vsm.pilot.claude import ClaudePilotAdapter
 from vsm.pilot.models import (
     CacheOpportunity,
     InterfacePilotUsage,
-    JudgeKind,
-    JudgeObservation,
     ModelCandidate,
     PilotMode,
     PilotPolicy,
@@ -923,7 +921,7 @@ def candidate():
     )
 
 
-def router_with_verified_candidate():
+def router_with_prior_only_candidate():
     model = candidate()
     router = BayesianRouter(
         expected_utility_quality_weight=1,
@@ -947,25 +945,51 @@ def router_with_verified_candidate():
             ),
         ),
     )
-    router.update_verified(
-        candidate_key=model.key,
-        success=True,
-        tokens=10,
-        cost=0.1,
-        latency_ms=10,
-        judge=JudgeObservation(
-            candidate_key=model.key,
-            kind=JudgeKind.DETERMINISTIC,
-            predicted_success=True,
-            verified_success=True,
-            judge_model=None,
-            judge_effort=None,
-        ),
-    )
     return router, model
 
 
-def test_dispatcher_selects_published_route_and_parallelizes_independent_work(system):
+def test_dispatcher_event_delta_starts_after_projection_and_advances_cursor(system):
+    """The in-memory ledger stands in for LETHE without replaying its history."""
+    kernel, ledger, _, _ = system
+    startup_cursor = ledger.page(0, 10_000)[-1].cursor
+    dispatcher = DependencyAwareDispatcher(
+        kernel=kernel,
+        router=BayesianRouter(
+            expected_utility_quality_weight=1,
+            expected_utility_cost_weight=0,
+            expected_utility_latency_weight=0,
+        ),
+        evidence_cursor=lambda: 0,
+        startup_projection_cursor=startup_cursor,
+    )
+
+    first = make_node("node:delta-first", name="Delta first", kind=NodeKind.UNIT)
+    kernel.register_node(first, actor_id=OWNER_ID, idempotency_key="node:delta-first")
+    initial_delta = dispatcher._event_delta()
+
+    assert initial_delta.after_cursor == startup_cursor
+    assert initial_delta.through_cursor == startup_cursor + 1
+    assert initial_delta.event_count == 1
+    assert initial_delta.changed_stream_ids == (first.node_id,)
+
+    empty_delta = dispatcher._event_delta()
+    assert empty_delta.after_cursor == initial_delta.through_cursor
+    assert empty_delta.through_cursor == initial_delta.through_cursor
+    assert empty_delta.event_count == 0
+    assert empty_delta.changed_stream_ids == ()
+
+    second = make_node("node:delta-second", name="Delta second", kind=NodeKind.UNIT)
+    kernel.register_node(second, actor_id=OWNER_ID, idempotency_key="node:delta-second")
+    next_delta = dispatcher._event_delta()
+    dispatcher.close()
+
+    assert next_delta.after_cursor == initial_delta.through_cursor
+    assert next_delta.through_cursor == initial_delta.through_cursor + 1
+    assert next_delta.event_count == 1
+    assert next_delta.changed_stream_ids == (second.node_id,)
+
+
+def test_dispatcher_bootstraps_from_prior_only_route_and_parallelizes_work(system):
     kernel, _, _, _ = system
     worker = make_node("node:worker", name="Worker", kind=NodeKind.UNIT)
     kernel.register_node(worker, actor_id=OWNER_ID, idempotency_key="node:worker")
@@ -989,7 +1013,7 @@ def test_dispatcher_selects_published_route_and_parallelizes_independent_work(sy
             actor_id=OWNER_ID,
             idempotency_key=f"work:{suffix}",
         )
-    router, model = router_with_verified_candidate()
+    router, model = router_with_prior_only_candidate()
     snapshot = RouteSnapshot(
         snapshot_id="route:dispatcher",
         data_space_id=SPACE_ID,
@@ -1049,6 +1073,7 @@ def test_dispatcher_selects_published_route_and_parallelizes_independent_work(sy
         kernel=kernel,
         router=router,
         evidence_cursor=lambda: 0,
+        startup_projection_cursor=0,
         model_registry={model.key: model},
         work_executor=executor,
         max_parallelism=2,

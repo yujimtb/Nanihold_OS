@@ -36,6 +36,25 @@ posterior:
 
 三つを常に計算・表示し、本番は現在 `quality_max` です。AI Judge だけの候補は production 選択できません。outcome Event が追加されると evidence cursor が変わるため、古い RouteSnapshot は再承認が必要です。
 
+公開benchmark priorだけでverified outcomeがまだない初期状態は、独立S3*とownerの承認を
+持つ`PUBLISHED` RouteSnapshotに限ってbootstrapできます。verified outcomeが一件でも
+追加された後、それらがすべてcheap AI Judge由来でdeterministic/human検証がゼロなら、
+production選択をfail-fastします。`verified_samples=0`をAI Judge evidenceとして数えません。
+
+## RouteSnapshot lifecycle
+
+同一`route_key`でroutableなsnapshotは一つだけです。通常の切替は後継を
+`DRAFT → S3_STAR_APPROVED → OWNER_APPROVED`まで進め、旧`PUBLISHED`を
+`superseded_by_approved_snapshot`理由のhuman Eventで`RETIRED`にしてから、後継を
+別commandで`PUBLISHED`にします。旧版のretirementと後継publishを黙って一操作へ
+まとめません。後継candidateのregistry登録とcurrent evidence cursorはretirement時にも
+再検査します。
+
+後継のないroute廃止は`route_decommissioned`を使い、
+`replacement_snapshot_id=null`を明示します。`RETIRED`はdispatcherの選択対象外で、
+scoreも再計算しません。別の`PUBLISHED`が残るrouteへのpublishはfail-fastし、先に
+明示retirementを要求します。
+
 ## Coding escalation
 
 明示 override は `gpt-5.6-luna/xhigh → gpt-5.6-sol/xhigh` です。失敗のたびに、

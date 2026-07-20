@@ -26,6 +26,7 @@ from vsm.kernel.models import (
     ExecutionState,
     ReferenceGrant,
     RouteSnapshot,
+    RouteSnapshotRetirementReason,
     RouteSnapshotState,
     S3StarFinding,
     S3StarSeverity,
@@ -1071,6 +1072,16 @@ class Kernel:
         snapshot = self.route_snapshots.get(snapshot_id)
         if snapshot is None or snapshot.state is not RouteSnapshotState.OWNER_APPROVED:
             raise InvariantViolation("only an owner-approved RouteSnapshot can publish")
+        if any(
+            other.snapshot_id != snapshot_id
+            and other.route_key == snapshot.route_key
+            and other.state is RouteSnapshotState.PUBLISHED
+            for other in self.route_snapshots.values()
+        ):
+            raise InvariantViolation(
+                "retire the published RouteSnapshot for this route_key "
+                "before publishing"
+            )
         event = self._record(
             stream_id=snapshot_id,
             event_type="route_snapshot_published",
@@ -1084,6 +1095,85 @@ class Kernel:
             update={"state": RouteSnapshotState.PUBLISHED}
         )
         return event
+
+    def retire_route_snapshot(
+        self,
+        snapshot_id: str,
+        *,
+        reason_code: RouteSnapshotRetirementReason,
+        replacement_snapshot_id: str | None,
+        actor_id: str,
+        idempotency_key: str,
+    ) -> EventEnvelope:
+        valid_reason = isinstance(
+            reason_code, RouteSnapshotRetirementReason
+        ) and reason_code in (
+            RouteSnapshotRetirementReason.SUPERSEDED_BY_APPROVED_SNAPSHOT,
+            RouteSnapshotRetirementReason.ROUTE_DECOMMISSIONED,
+        )
+        if not valid_reason:
+            raise InvariantViolation("unsupported RouteSnapshot retirement reason")
+        snapshot = self.route_snapshots.get(snapshot_id)
+        if snapshot is None:
+            raise InvariantViolation("RouteSnapshot not found")
+        if snapshot.state is not RouteSnapshotState.PUBLISHED:
+            raise InvariantViolation("only a published RouteSnapshot can retire")
+        if reason_code is RouteSnapshotRetirementReason.ROUTE_DECOMMISSIONED:
+            if replacement_snapshot_id is not None:
+                raise InvariantViolation(
+                    "decommissioned route must not have a replacement RouteSnapshot"
+                )
+        elif replacement_snapshot_id is None:
+            raise InvariantViolation(
+                "superseded RouteSnapshot requires a replacement RouteSnapshot"
+            )
+        else:
+            self._validate_route_snapshot_replacement(
+                snapshot=snapshot,
+                replacement_snapshot_id=replacement_snapshot_id,
+            )
+        event = self._record(
+            stream_id=snapshot_id,
+            event_type="route_snapshot_retired",
+            payload={
+                "reason_code": reason_code,
+                "replacement_snapshot_id": replacement_snapshot_id,
+                "state": RouteSnapshotState.RETIRED,
+            },
+            actor_type="human",
+            actor_id=actor_id,
+            idempotency_key=idempotency_key,
+            correlation_id=snapshot_id,
+        )
+        self.route_snapshots[snapshot_id] = snapshot.model_copy(
+            update={"state": RouteSnapshotState.RETIRED}
+        )
+        return event
+
+    def _validate_route_snapshot_replacement(
+        self,
+        *,
+        snapshot: RouteSnapshot,
+        replacement_snapshot_id: str,
+    ) -> None:
+        if replacement_snapshot_id == snapshot.snapshot_id:
+            raise InvariantViolation(
+                "replacement RouteSnapshot must differ from retired RouteSnapshot"
+            )
+        replacement = self.route_snapshots.get(replacement_snapshot_id)
+        if replacement is None:
+            raise InvariantViolation("replacement RouteSnapshot not found")
+        if replacement.route_key != snapshot.route_key:
+            raise InvariantViolation(
+                "replacement RouteSnapshot must have the same route_key"
+            )
+        if replacement.state not in (
+            RouteSnapshotState.OWNER_APPROVED,
+            RouteSnapshotState.PUBLISHED,
+        ):
+            raise InvariantViolation(
+                "replacement RouteSnapshot must be owner-approved or published"
+            )
 
 
 def utc_now() -> datetime:

@@ -39,6 +39,7 @@ from vsm.kernel.models import (
     ExecutionState,
     ReferenceGrant,
     RouteSnapshot,
+    RouteSnapshotRetirementReason,
     RouteSnapshotState,
     S3StarFinding,
     UVSMNode,
@@ -371,6 +372,80 @@ class OperationalProjection:
         snapshot = self.kernel.route_snapshots[event.stream_id]
         self.kernel.route_snapshots[event.stream_id] = snapshot.model_copy(
             update={"state": RouteSnapshotState.PUBLISHED}
+        )
+        self._kernel_version(event)
+
+    def _on_route_snapshot_retired(self, event) -> None:
+        if event.actor_type != "human" or event.actor_id is None:
+            raise InvariantViolation(
+                "RouteSnapshot retirement must be an explicit human event"
+            )
+        if set(event.payload) != {
+            "reason_code",
+            "replacement_snapshot_id",
+            "state",
+        }:
+            raise InvariantViolation("RouteSnapshot retirement payload is invalid")
+        try:
+            reason_code = RouteSnapshotRetirementReason(
+                event.payload["reason_code"]
+            )
+            next_state = RouteSnapshotState(event.payload["state"])
+        except (TypeError, ValueError) as exc:
+            raise InvariantViolation(
+                "RouteSnapshot retirement payload has invalid enum values"
+            ) from exc
+        if (
+            reason_code
+            not in (
+                RouteSnapshotRetirementReason.SUPERSEDED_BY_APPROVED_SNAPSHOT,
+                RouteSnapshotRetirementReason.ROUTE_DECOMMISSIONED,
+            )
+            or next_state is not RouteSnapshotState.RETIRED
+        ):
+            raise InvariantViolation("RouteSnapshot retirement transition is invalid")
+        snapshot = self.kernel.route_snapshots.get(event.stream_id)
+        if snapshot is None or snapshot.state is not RouteSnapshotState.PUBLISHED:
+            raise InvariantViolation(
+                "RouteSnapshot retirement requires a published source"
+            )
+        replacement_snapshot_id = event.payload["replacement_snapshot_id"]
+        if reason_code is RouteSnapshotRetirementReason.ROUTE_DECOMMISSIONED:
+            if replacement_snapshot_id is not None:
+                raise InvariantViolation(
+                    "decommissioned RouteSnapshot cannot have a replacement"
+                )
+            self.kernel.route_snapshots[event.stream_id] = snapshot.model_copy(
+                update={"state": RouteSnapshotState.RETIRED}
+            )
+            self._kernel_version(event)
+            return
+        if not isinstance(replacement_snapshot_id, str):
+            raise InvariantViolation(
+                "RouteSnapshot retirement replacement identity is invalid"
+            )
+        if replacement_snapshot_id == snapshot.snapshot_id:
+            raise InvariantViolation(
+                "RouteSnapshot retirement replacement must differ from source"
+            )
+        replacement = self.kernel.route_snapshots.get(replacement_snapshot_id)
+        if replacement is None:
+            raise InvariantViolation(
+                "RouteSnapshot retirement replacement does not exist"
+            )
+        if replacement.route_key != snapshot.route_key:
+            raise InvariantViolation(
+                "RouteSnapshot retirement replacement route_key mismatch"
+            )
+        if replacement.state not in (
+            RouteSnapshotState.OWNER_APPROVED,
+            RouteSnapshotState.PUBLISHED,
+        ):
+            raise InvariantViolation(
+                "RouteSnapshot retirement replacement is not approved"
+            )
+        self.kernel.route_snapshots[event.stream_id] = snapshot.model_copy(
+            update={"state": RouteSnapshotState.RETIRED}
         )
         self._kernel_version(event)
 

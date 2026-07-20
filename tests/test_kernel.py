@@ -14,6 +14,7 @@ from vsm.kernel.models import (
     ExecutionState,
     NodeKind,
     RouteSnapshot,
+    RouteSnapshotRetirementReason,
     RouteSnapshotState,
     S3StarFinding,
     S3StarSeverity,
@@ -269,17 +270,39 @@ def test_pilot_disconnect_pauses_only_its_executions(system):
 
 def test_route_snapshot_approval_order_and_projection_rebuild(system):
     kernel, ledger, interface, pilot = system
-    snapshot = RouteSnapshot(
-        snapshot_id="route:current",
-        data_space_id=SPACE_ID,
-        route_key="coding_s1",
-        evidence_cursor=1,
-        candidate_keys=("candidate:one",),
-        production_objective="quality_max",
-        state=RouteSnapshotState.DRAFT,
-        s3_star_approval_event_id=None,
-        owner_approval_event_id=None,
-    )
+    def draft(snapshot_id: str, route_key: str = "coding_s1") -> RouteSnapshot:
+        return RouteSnapshot(
+            snapshot_id=snapshot_id,
+            data_space_id=SPACE_ID,
+            route_key=route_key,
+            evidence_cursor=1,
+            candidate_keys=("candidate:one",),
+            production_objective="quality_max",
+            state=RouteSnapshotState.DRAFT,
+            s3_star_approval_event_id=None,
+            owner_approval_event_id=None,
+        )
+
+    def register_and_approve(snapshot: RouteSnapshot, suffix: str) -> None:
+        kernel.register_route_snapshot(
+            snapshot,
+            actor_id=OWNER_ID,
+            idempotency_key=f"route:{suffix}:register",
+        )
+        kernel.approve_route_snapshot(
+            snapshot.snapshot_id,
+            approval="s3_star",
+            actor_id=OWNER_ID,
+            idempotency_key=f"route:{suffix}:s3",
+        )
+        kernel.approve_route_snapshot(
+            snapshot.snapshot_id,
+            approval="owner",
+            actor_id=OWNER_ID,
+            idempotency_key=f"route:{suffix}:owner",
+        )
+
+    snapshot = draft("route:current")
     kernel.register_route_snapshot(
         snapshot, actor_id=OWNER_ID, idempotency_key="route:register"
     )
@@ -307,6 +330,75 @@ def test_route_snapshot_approval_order_and_projection_rebuild(system):
         actor_id=OWNER_ID,
         idempotency_key="route:publish",
     )
+    replacement = draft("route:replacement")
+    register_and_approve(replacement, "replacement")
+    with pytest.raises(InvariantViolation, match="retire"):
+        kernel.publish_route_snapshot(
+            replacement.snapshot_id,
+            actor_id=OWNER_ID,
+            idempotency_key="route:replacement:publish-early",
+        )
+    wrong_route = draft("route:wrong", "research_s1")
+    register_and_approve(wrong_route, "wrong")
+    with pytest.raises(InvariantViolation, match="same route_key"):
+        kernel.retire_route_snapshot(
+            snapshot.snapshot_id,
+            reason_code=(
+                RouteSnapshotRetirementReason.SUPERSEDED_BY_APPROVED_SNAPSHOT
+            ),
+            replacement_snapshot_id=wrong_route.snapshot_id,
+            actor_id=OWNER_ID,
+            idempotency_key="route:retire:wrong-route",
+        )
+    with pytest.raises(InvariantViolation, match="unsupported"):
+        kernel.retire_route_snapshot(
+            snapshot.snapshot_id,
+            reason_code="free_form_reason",  # type: ignore[arg-type]
+            replacement_snapshot_id=replacement.snapshot_id,
+            actor_id=OWNER_ID,
+            idempotency_key="route:retire:invalid-reason",
+        )
+    retired = kernel.retire_route_snapshot(
+        snapshot.snapshot_id,
+        reason_code=RouteSnapshotRetirementReason.SUPERSEDED_BY_APPROVED_SNAPSHOT,
+        replacement_snapshot_id=replacement.snapshot_id,
+        actor_id=OWNER_ID,
+        idempotency_key="route:retire",
+    )
+    assert retired.event_type == "route_snapshot_retired"
+    assert retired.actor_type == "human"
+    assert retired.payload == {
+        "reason_code": (
+            RouteSnapshotRetirementReason.SUPERSEDED_BY_APPROVED_SNAPSHOT
+        ),
+        "replacement_snapshot_id": replacement.snapshot_id,
+        "state": RouteSnapshotState.RETIRED,
+    }
+    assert (
+        kernel.route_snapshots[snapshot.snapshot_id].state
+        is RouteSnapshotState.RETIRED
+    )
+    kernel.publish_route_snapshot(
+        replacement.snapshot_id,
+        actor_id=OWNER_ID,
+        idempotency_key="route:replacement:publish",
+    )
+    kernel.publish_route_snapshot(
+        wrong_route.snapshot_id,
+        actor_id=OWNER_ID,
+        idempotency_key="route:wrong:publish",
+    )
+    kernel.retire_route_snapshot(
+        wrong_route.snapshot_id,
+        reason_code=RouteSnapshotRetirementReason.ROUTE_DECOMMISSIONED,
+        replacement_snapshot_id=None,
+        actor_id=OWNER_ID,
+        idempotency_key="route:wrong:decommission",
+    )
+    assert (
+        kernel.route_snapshots[wrong_route.snapshot_id].state
+        is RouteSnapshotState.RETIRED
+    )
 
     from vsm.interface.service import InterfaceService
     from vsm.kernel.service import Kernel
@@ -329,8 +421,6 @@ def test_route_snapshot_approval_order_and_projection_rebuild(system):
         kernel=rebuilt_kernel, interface=rebuilt_interface
     )
     projection.rebuild(page_size=2)
-    assert rebuilt_kernel.route_snapshots[snapshot.snapshot_id] == (
-        kernel.route_snapshots[snapshot.snapshot_id]
-    )
+    assert rebuilt_kernel.route_snapshots == kernel.route_snapshots
     assert rebuilt_kernel.nodes == kernel.nodes
     assert projection.cursor == len(ledger.page(0, 1000))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 
 from fastapi.testclient import TestClient
 from conftest import INTERFACE_NODE_ID, NOW, OWNER_ID, SPACE_ID
@@ -12,18 +13,38 @@ from vsm.activation.models import (
     HistorySourceManifest,
     ReorientationAssessment,
 )
-from vsm.dispatcher import DependencyAwareDispatcher
+from vsm.dispatcher import (
+    DependencyAwareDispatcher,
+    DispatchAssignment,
+    DispatchBatch,
+)
 from vsm.errors import InvariantViolation
 from vsm.interface.models import Conversation, SurfaceBinding
 from vsm.pilot.host import PilotHostCoordinator
-from vsm.pilot.models import DeviceIdentity
-from vsm.routing.bayesian import BayesianRouter, RoutingEvidenceService
+from vsm.kernel.models import (
+    RouteSnapshot,
+    RouteSnapshotState,
+    WorkItem,
+    WorkState,
+)
+from vsm.pilot.models import DeviceIdentity, ModelCandidate
+from vsm.routing.bayesian import (
+    BayesianRouter,
+    BenchmarkPrior,
+    RoutingEvidenceService,
+)
 from vsm.token_lab.lab import TokenEfficiencyLab, TokenLabEventService
 from vsm.web.app import AppState, create_app
 
 
 def client(
-    system, *, reorientation_service=None, reorientation_max_tool_rounds=None
+    system,
+    *,
+    reorientation_service=None,
+    reorientation_max_tool_rounds=None,
+    model_candidates: tuple[ModelCandidate, ...] = (),
+    dispatcher=None,
+    coding_pilot_id: str | None = None,
 ) -> TestClient:
     kernel, ledger, interface, _ = system
     router = BayesianRouter(
@@ -31,6 +52,20 @@ def client(
         expected_utility_cost_weight=0,
         expected_utility_latency_weight=0,
     )
+    prior = BenchmarkPrior(
+        source="local-verification",
+        benchmark_family="interface",
+        version="test",
+        sample_count=1,
+        harness="deterministic",
+        successes=1,
+        failures=0,
+        log_token_samples=(math.log(10),),
+        log_cost_samples=(math.log(0.001),),
+        log_latency_samples=(math.log(10),),
+    )
+    for candidate in model_candidates:
+        router.register(candidate, (prior,))
     routing_evidence = RoutingEvidenceService(
         router=router,
         ledger=ledger,
@@ -59,19 +94,27 @@ def client(
         routing_evidence=routing_evidence,
         token_lab=token_lab,
         token_lab_events=token_lab_events,
-        model_registry={},
+        model_registry={
+            candidate.key: candidate for candidate in model_candidates
+        },
         api_bearer_token="test-token",
         authorized_device_ids=frozenset({"device:test"}),
-        dispatcher=DependencyAwareDispatcher(
-            kernel=kernel,
-            router=router,
-            evidence_cursor=lambda: routing_evidence.evidence_cursor,
+        dispatcher=(
+            dispatcher
+            if dispatcher is not None
+            else DependencyAwareDispatcher(
+                kernel=kernel,
+                router=router,
+                evidence_cursor=lambda: routing_evidence.evidence_cursor,
+                startup_projection_cursor=0,
+            )
         ),
         owner_session_lifetime_seconds=3600,
         history_reader=object(),
         history_max_result_bytes=4096,
         reorientation_service=reorientation_service,
         reorientation_max_tool_rounds=reorientation_max_tool_rounds,
+        coding_pilot_id=coding_pilot_id,
     )
     return TestClient(
         create_app(state, allowed_origins=("http://localhost:5173",)),
@@ -92,6 +135,32 @@ class FailingReorientationService:
 
     def execute(self, **_kwargs) -> None:
         raise self.error
+
+
+class RecordingDispatcher:
+    def __init__(self) -> None:
+        self.preflight_calls = []
+        self.dispatch_calls = []
+
+    def preflight_ready(self, bindings, **kwargs) -> None:
+        self.preflight_calls.append((bindings, kwargs))
+
+    def dispatch_ready(self, bindings, **kwargs) -> DispatchBatch:
+        self.dispatch_calls.append((bindings, kwargs))
+        work_item_id = next(iter(kwargs["allowed_work_item_ids"]))
+        return DispatchBatch(
+            assignments=(
+                DispatchAssignment(
+                    work_item_id=work_item_id,
+                    execution_id="execution:web-dispatch",
+                    pilot_id=bindings[0].pilot_id,
+                    pilot_host_id=bindings[0].pilot_host_id,
+                    model_candidate_key="candidate:web-dispatch",
+                ),
+            ),
+            parallelism=1,
+            model_calls=1,
+        )
 
 
 def prepare_history_imported_state(kernel) -> None:
@@ -319,6 +388,276 @@ def test_new_resource_api_is_complete_and_old_surfaces_do_not_exist(system):
     ):
         assert api.get(removed, headers=auth()).status_code == 404
     assert api.get("/api/nodes").status_code == 401
+
+
+def test_active_work_item_can_be_explicitly_dispatched(system):
+    kernel, _, _, _ = system
+    kernel.activation.state = ActivationState.ACTIVE
+    work_item = WorkItem(
+        work_item_id="work:web-dispatch",
+        data_space_id=SPACE_ID,
+        title="Dispatch through the typed API",
+        description="Resume one real ready WorkItem.",
+        owner_node_id=INTERFACE_NODE_ID,
+        delegated_to_node_id=INTERFACE_NODE_ID,
+        integration_owner_node_id=INTERFACE_NODE_ID,
+        parent_work_item_id=None,
+        acceptance_criteria=("typed dispatch is recorded",),
+        route_key="coding_s1",
+        state=WorkState.READY,
+        blocking_s3_star_finding_ids=(),
+        completion_evidence=None,
+    )
+    kernel.create_work_item(
+        work_item,
+        actor_id=OWNER_ID,
+        idempotency_key="web:dispatch:create-work",
+    )
+    dispatcher = RecordingDispatcher()
+    api = client(
+        system,
+        dispatcher=dispatcher,
+        coding_pilot_id="pilot:coding-s1",
+    )
+
+    response = api.post(
+        f"/api/work-items/{work_item.work_item_id}/dispatches",
+        headers=auth(),
+        json={
+            "actor_id": OWNER_ID,
+            "idempotency_key": "web:dispatch:start",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["assignments"][0]["work_item_id"] == work_item.work_item_id
+    assert response.json()["model_calls"] == 1
+    preflight_bindings, preflight_options = dispatcher.preflight_calls[0]
+    assert preflight_bindings[0].node_id == INTERFACE_NODE_ID
+    assert preflight_bindings[0].pilot_id == "pilot:coding-s1"
+    assert preflight_options["allowed_work_item_ids"] == frozenset(
+        {work_item.work_item_id}
+    )
+    dispatch_bindings, dispatch_options = dispatcher.dispatch_calls[0]
+    assert dispatch_bindings == preflight_bindings
+    assert dispatch_options["idempotency_key"] == "web:dispatch:start"
+
+
+def test_route_snapshot_retirement_requires_typed_approved_replacement(system):
+    kernel, _, _, _ = system
+    candidate = ModelCandidate(
+        adapter="fake",
+        adapter_version="1.0",
+        provider="test",
+        selection="exact",
+        model_snapshot="fake-model",
+        effort="low",
+        toolset=("filesystem",),
+        sandbox_fingerprint="sandbox:test",
+        environment_fingerprint="environment:test",
+    )
+    api = client(system, model_candidates=(candidate,))
+
+    def snapshot(
+        snapshot_id: str,
+        candidate_key: str,
+        route_key: str = "coding_s1",
+    ) -> RouteSnapshot:
+        return RouteSnapshot(
+            snapshot_id=snapshot_id,
+            data_space_id=SPACE_ID,
+            route_key=route_key,
+            evidence_cursor=0,
+            candidate_keys=(candidate_key,),
+            production_objective="quality_max",
+            state=RouteSnapshotState.DRAFT,
+            s3_star_approval_event_id=None,
+            owner_approval_event_id=None,
+        )
+
+    def register_and_approve(route_snapshot: RouteSnapshot, suffix: str) -> None:
+        registered = api.post(
+            "/api/route-snapshots",
+            headers=auth(),
+            json={
+                "actor_id": OWNER_ID,
+                "idempotency_key": f"web:route:{suffix}:register",
+                "route_snapshot": route_snapshot.model_dump(mode="json"),
+            },
+        )
+        assert registered.status_code == 201, registered.text
+        for approval in ("s3_star", "owner"):
+            approved = api.post(
+                f"/api/route-snapshots/{route_snapshot.snapshot_id}/approvals",
+                headers=auth(),
+                json={
+                    "actor_id": OWNER_ID,
+                    "idempotency_key": (
+                        f"web:route:{suffix}:approve:{approval}"
+                    ),
+                    "approval": approval,
+                },
+            )
+            assert approved.status_code == 200, approved.text
+
+    current = snapshot("route:web-current", candidate.key)
+    replacement = snapshot("route:web-replacement", candidate.key)
+    register_and_approve(current, "current")
+    published = api.post(
+        f"/api/route-snapshots/{current.snapshot_id}/publish",
+        headers=auth(),
+        json={
+            "actor_id": OWNER_ID,
+            "idempotency_key": "web:route:current:publish",
+        },
+    )
+    assert published.status_code == 200, published.text
+    register_and_approve(replacement, "replacement")
+
+    duplicate_publish = api.post(
+        f"/api/route-snapshots/{replacement.snapshot_id}/publish",
+        headers=auth(),
+        json={
+            "actor_id": OWNER_ID,
+            "idempotency_key": "web:route:replacement:publish-early",
+        },
+    )
+    assert duplicate_publish.status_code == 409
+    invalid_reason = api.post(
+        f"/api/route-snapshots/{current.snapshot_id}/retirements",
+        headers=auth(),
+        json={
+            "actor_id": OWNER_ID,
+            "idempotency_key": "web:route:retire:invalid-reason",
+            "reason_code": "free_form_reason",
+            "replacement_snapshot_id": replacement.snapshot_id,
+        },
+    )
+    assert invalid_reason.status_code == 422
+    missing_replacement = api.post(
+        f"/api/route-snapshots/{current.snapshot_id}/retirements",
+        headers=auth(),
+        json={
+            "actor_id": OWNER_ID,
+            "idempotency_key": "web:route:retire:missing-replacement",
+            "reason_code": "superseded_by_approved_snapshot",
+        },
+    )
+    assert missing_replacement.status_code == 422
+    decommission_with_replacement = api.post(
+        f"/api/route-snapshots/{current.snapshot_id}/retirements",
+        headers=auth(),
+        json={
+            "actor_id": OWNER_ID,
+            "idempotency_key": "web:route:retire:invalid-decommission",
+            "reason_code": "route_decommissioned",
+            "replacement_snapshot_id": replacement.snapshot_id,
+        },
+    )
+    assert decommission_with_replacement.status_code == 422
+
+    unknown_candidate = snapshot("route:web-unknown-candidate", "candidate:unknown")
+    kernel.register_route_snapshot(
+        unknown_candidate,
+        actor_id=OWNER_ID,
+        idempotency_key="web:route:unknown:register",
+    )
+    kernel.approve_route_snapshot(
+        unknown_candidate.snapshot_id,
+        approval="s3_star",
+        actor_id=OWNER_ID,
+        idempotency_key="web:route:unknown:approve:s3",
+    )
+    kernel.approve_route_snapshot(
+        unknown_candidate.snapshot_id,
+        approval="owner",
+        actor_id=OWNER_ID,
+        idempotency_key="web:route:unknown:approve:owner",
+    )
+    unregistered = api.post(
+        f"/api/route-snapshots/{current.snapshot_id}/retirements",
+        headers=auth(),
+        json={
+            "actor_id": OWNER_ID,
+            "idempotency_key": "web:route:retire:unknown-candidate",
+            "reason_code": "superseded_by_approved_snapshot",
+            "replacement_snapshot_id": unknown_candidate.snapshot_id,
+        },
+    )
+    assert unregistered.status_code == 409
+    assert "unregistered ModelCandidates" in unregistered.json()["error"]
+    del kernel.route_snapshots[unknown_candidate.snapshot_id]
+
+    retired = api.post(
+        f"/api/route-snapshots/{current.snapshot_id}/retirements",
+        headers=auth(),
+        json={
+            "actor_id": OWNER_ID,
+            "idempotency_key": "web:route:retire",
+            "reason_code": "superseded_by_approved_snapshot",
+            "replacement_snapshot_id": replacement.snapshot_id,
+        },
+    )
+    assert retired.status_code == 201, retired.text
+    assert retired.json()["state"] == "retired"
+    route_list = api.get("/api/route-snapshots", headers=auth()).json()
+    assert route_list["scores"][current.snapshot_id] is None
+    assert route_list["routable"][current.snapshot_id] is False
+    assert route_list["routable"][replacement.snapshot_id] is False
+
+    decommissioned = snapshot(
+        "route:web-decommissioned",
+        "candidate:unregistered-decommissioned",
+        "interface-and-coding:personal-production",
+    )
+    kernel.register_route_snapshot(
+        decommissioned,
+        actor_id=OWNER_ID,
+        idempotency_key="web:route:decommissioned:register",
+    )
+    kernel.approve_route_snapshot(
+        decommissioned.snapshot_id,
+        approval="s3_star",
+        actor_id=OWNER_ID,
+        idempotency_key="web:route:decommissioned:approve:s3",
+    )
+    kernel.approve_route_snapshot(
+        decommissioned.snapshot_id,
+        approval="owner",
+        actor_id=OWNER_ID,
+        idempotency_key="web:route:decommissioned:approve:owner",
+    )
+    kernel.publish_route_snapshot(
+        decommissioned.snapshot_id,
+        actor_id=OWNER_ID,
+        idempotency_key="web:route:decommissioned:publish",
+    )
+    decommission_response = api.post(
+        f"/api/route-snapshots/{decommissioned.snapshot_id}/retirements",
+        headers=auth(),
+        json={
+            "actor_id": OWNER_ID,
+            "idempotency_key": "web:route:decommissioned:retire",
+            "reason_code": "route_decommissioned",
+            "replacement_snapshot_id": None,
+        },
+    )
+    assert decommission_response.status_code == 201
+    route_list = api.get("/api/route-snapshots", headers=auth()).json()
+    assert route_list["scores"][decommissioned.snapshot_id] is None
+    assert route_list["routable"][decommissioned.snapshot_id] is False
+
+    replacement_publish = api.post(
+        f"/api/route-snapshots/{replacement.snapshot_id}/publish",
+        headers=auth(),
+        json={
+            "actor_id": OWNER_ID,
+            "idempotency_key": "web:route:replacement:publish",
+        },
+    )
+    assert replacement_publish.status_code == 200, replacement_publish.text
+    route_list = api.get("/api/route-snapshots", headers=auth()).json()
+    assert route_list["routable"][replacement.snapshot_id] is True
 
 
 def test_owner_turn_api_is_one_structured_interface_call(system):

@@ -327,7 +327,10 @@ class BayesianRouter:
         objective = snapshot.production_objective
         selected = min(scores, key=lambda score: score.ranks[objective])
         posterior = self._require(selected.candidate_key)
-        if posterior.deterministic_or_human_samples == 0:
+        if (
+            posterior.verified_samples > 0
+            and posterior.deterministic_or_human_samples == 0
+        ):
             raise InvariantViolation(
                 "AI Judge evidence alone cannot promote a production route"
             )

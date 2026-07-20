@@ -296,6 +296,12 @@ class RouteSnapshotState(StrEnum):
     S3_STAR_APPROVED = "s3_star_approved"
     OWNER_APPROVED = "owner_approved"
     PUBLISHED = "published"
+    RETIRED = "retired"
+
+
+class RouteSnapshotRetirementReason(StrEnum):
+    SUPERSEDED_BY_APPROVED_SNAPSHOT = "superseded_by_approved_snapshot"
+    ROUTE_DECOMMISSIONED = "route_decommissioned"
 
 
 class RouteSnapshot(StrictModel):

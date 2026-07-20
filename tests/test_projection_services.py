@@ -1,7 +1,16 @@
 import math
 
+import pytest
+
 from conftest import NOW, OWNER_ID, SPACE_ID
+from vsm.errors import InvariantViolation
 from vsm.interface.service import InterfaceService
+from vsm.kernel.models import (
+    EventEnvelope,
+    RouteSnapshot,
+    RouteSnapshotRetirementReason,
+    RouteSnapshotState,
+)
 from vsm.kernel.service import Kernel
 from vsm.pilot.models import JudgeKind, JudgeObservation, ModelCandidate
 from vsm.projection import OperationalProjection
@@ -160,3 +169,90 @@ def test_projection_rebuilds_routing_and_token_lab_services(system):
     assert rebuilt_router._posteriors[candidate.key].verified_samples == 1
     assert rebuilt_lab.baselines["coding"].approved_mean_input_tokens == 1000
     assert rebuilt_lab.observations[0].observation_id == "observation:projection"
+
+
+def test_projection_rejects_non_human_route_snapshot_retirement(system):
+    kernel, ledger, interface, pilot = system
+
+    def approved(snapshot_id: str) -> RouteSnapshot:
+        snapshot = RouteSnapshot(
+            snapshot_id=snapshot_id,
+            data_space_id=SPACE_ID,
+            route_key="coding_s1",
+            evidence_cursor=0,
+            candidate_keys=("candidate:test",),
+            production_objective="quality_max",
+            state=RouteSnapshotState.DRAFT,
+            s3_star_approval_event_id=None,
+            owner_approval_event_id=None,
+        )
+        kernel.register_route_snapshot(
+            snapshot,
+            actor_id=OWNER_ID,
+            idempotency_key=f"{snapshot_id}:register",
+        )
+        kernel.approve_route_snapshot(
+            snapshot_id,
+            approval="s3_star",
+            actor_id=OWNER_ID,
+            idempotency_key=f"{snapshot_id}:s3",
+        )
+        kernel.approve_route_snapshot(
+            snapshot_id,
+            approval="owner",
+            actor_id=OWNER_ID,
+            idempotency_key=f"{snapshot_id}:owner",
+        )
+        return snapshot
+
+    source = approved("route:projection-source")
+    replacement = approved("route:projection-replacement")
+    kernel.publish_route_snapshot(
+        source.snapshot_id,
+        actor_id=OWNER_ID,
+        idempotency_key="route:projection-source:publish",
+    )
+    ledger.append(
+        EventEnvelope(
+            event_id="event:projection-invalid-retirement",
+            data_space_id=SPACE_ID,
+            stream_id=source.snapshot_id,
+            stream_version=5,
+            event_type="route_snapshot_retired",
+            occurred_at=NOW,
+            actor_type="system",
+            actor_id=None,
+            correlation_id=source.snapshot_id,
+            causation_id=None,
+            idempotency_key="route:projection-invalid-retirement",
+            payload={
+                "reason_code": (
+                    RouteSnapshotRetirementReason.SUPERSEDED_BY_APPROVED_SNAPSHOT
+                ),
+                "replacement_snapshot_id": replacement.snapshot_id,
+                "state": RouteSnapshotState.RETIRED,
+            },
+        ),
+        4,
+    )
+    rebuilt_kernel = Kernel(
+        data_space=kernel.data_space,
+        ledger=ledger,
+        audit_policy=kernel.audit_policy,
+        control_policy=kernel.control_policy,
+        clock=kernel.clock,
+    )
+    rebuilt_interface = InterfaceService(
+        kernel=rebuilt_kernel,
+        ledger=ledger,
+        pilot=pilot,
+        token_lab_events=interface.token_lab_events,
+        clock=kernel.clock,
+    )
+    projection = OperationalProjection(
+        kernel=rebuilt_kernel,
+        interface=rebuilt_interface,
+    )
+
+    with pytest.raises(InvariantViolation, match="explicit human event"):
+        projection.rebuild()

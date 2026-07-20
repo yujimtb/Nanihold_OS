@@ -19,7 +19,7 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from vsm.errors import InvariantViolation, NaniholdError
 from vsm.activation.models import (
@@ -42,7 +42,14 @@ from vsm.interface.models import (
 )
 from vsm.interface.service import InterfaceService
 from vsm.ids import new_id
-from vsm.kernel.models import Execution, RouteSnapshot, UVSMNode, WorkItem
+from vsm.kernel.models import (
+    Execution,
+    RouteSnapshot,
+    RouteSnapshotRetirementReason,
+    RouteSnapshotState,
+    UVSMNode,
+    WorkItem,
+)
 from vsm.kernel.service import Kernel
 from vsm.pilot.host import PilotHostCoordinator
 from vsm.pilot.models import (
@@ -123,6 +130,10 @@ class WorkDelegationRequest(CommandMetadata):
     delegated_to_node_id: str
 
 
+class DispatchWorkItemRequest(CommandMetadata):
+    pass
+
+
 class EffectApprovalRequest(CommandMetadata):
     pass
 
@@ -150,6 +161,26 @@ class RouteApprovalRequest(CommandMetadata):
 
 class RegisterRouteSnapshotRequest(CommandMetadata):
     route_snapshot: RouteSnapshot
+
+
+class RetireRouteSnapshotRequest(CommandMetadata):
+    reason_code: RouteSnapshotRetirementReason
+    replacement_snapshot_id: Annotated[str, Field(min_length=1)] | None
+
+    @model_validator(mode="after")
+    def replacement_matches_reason(self) -> "RetireRouteSnapshotRequest":
+        if (
+            self.reason_code
+            is RouteSnapshotRetirementReason.SUPERSEDED_BY_APPROVED_SNAPSHOT
+            and self.replacement_snapshot_id is None
+        ):
+            raise ValueError("superseded RouteSnapshot requires a replacement")
+        if (
+            self.reason_code is RouteSnapshotRetirementReason.ROUTE_DECOMMISSIONED
+            and self.replacement_snapshot_id is not None
+        ):
+            raise ValueError("decommissioned route forbids a replacement")
+        return self
 
 
 class VerifiedRouteOutcomeRequest(CommandMetadata):
@@ -341,6 +372,44 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
             idempotency_key=request.idempotency_key,
         )
         return state.kernel.work_items[work_item_id]
+
+    @app.post(
+        "/api/work-items/{work_item_id}/dispatches",
+        dependencies=[Depends(authorize)],
+        status_code=202,
+    )
+    def dispatch_work_item(
+        work_item_id: str,
+        request: DispatchWorkItemRequest,
+    ):
+        work_item = state.kernel.work_items.get(work_item_id)
+        if work_item is None:
+            raise InvariantViolation("WorkItem not found")
+        if state.coding_pilot_id is None:
+            raise InvariantViolation("production coding Pilot is not configured")
+        bindings = (
+            PilotBinding(
+                node_id=work_item.delegated_to_node_id,
+                pilot_id=state.coding_pilot_id,
+                pilot_host_id=state.pilot_hosts.expected_identity.pilot_host_id,
+            ),
+        )
+        allowed_work_item_ids = frozenset({work_item_id})
+        state.dispatcher.preflight_ready(
+            bindings,
+            allowed_work_item_ids=allowed_work_item_ids,
+        )
+        batch = state.dispatcher.dispatch_ready(
+            bindings,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+            allowed_work_item_ids=allowed_work_item_ids,
+        )
+        if len(batch.assignments) != 1:
+            raise InvariantViolation(
+                "WorkItem dispatch did not create exactly one Execution"
+            )
+        return batch
 
     @app.post(
         "/api/work-items/{work_item_id}/interventions",
@@ -748,7 +817,17 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
         return {
             "items": snapshots,
             "scores": {
-                snapshot.snapshot_id: state.router.scores(snapshot.candidate_keys)
+                snapshot.snapshot_id: (
+                    None
+                    if snapshot.state is RouteSnapshotState.RETIRED
+                    else state.router.scores(snapshot.candidate_keys)
+                )
+                for snapshot in snapshots
+            },
+            "routable": {
+                snapshot.snapshot_id: (
+                    snapshot.state is RouteSnapshotState.PUBLISHED
+                )
                 for snapshot in snapshots
             },
         }
@@ -794,6 +873,46 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
     def publish_route_snapshot(snapshot_id: str, request: CommandMetadata):
         state.kernel.publish_route_snapshot(
             snapshot_id,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        return state.kernel.route_snapshots[snapshot_id]
+
+    @app.post(
+        "/api/route-snapshots/{snapshot_id}/retirements",
+        dependencies=[Depends(authorize)],
+        status_code=201,
+    )
+    def retire_route_snapshot(
+        snapshot_id: str, request: RetireRouteSnapshotRequest
+    ):
+        if (
+            request.reason_code
+            is RouteSnapshotRetirementReason.SUPERSEDED_BY_APPROVED_SNAPSHOT
+        ):
+            replacement = state.kernel.route_snapshots.get(
+                request.replacement_snapshot_id
+            )
+            if replacement is None:
+                raise InvariantViolation("replacement RouteSnapshot not found")
+            if (
+                replacement.evidence_cursor
+                != state.routing_evidence.evidence_cursor
+            ):
+                raise InvariantViolation(
+                    "replacement RouteSnapshot evidence_cursor must equal current "
+                    "verified evidence cursor"
+                )
+            unknown = set(replacement.candidate_keys) - set(state.model_registry)
+            if unknown:
+                raise InvariantViolation(
+                    "replacement RouteSnapshot references unregistered "
+                    f"ModelCandidates: {sorted(unknown)}"
+                )
+        state.kernel.retire_route_snapshot(
+            snapshot_id,
+            reason_code=request.reason_code,
+            replacement_snapshot_id=request.replacement_snapshot_id,
             actor_id=request.actor_id,
             idempotency_key=request.idempotency_key,
         )

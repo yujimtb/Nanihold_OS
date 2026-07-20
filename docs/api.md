@@ -14,6 +14,7 @@ codeは短寿命で再利用不可、Ledgerにはhashだけを保存します。
 | GET/POST | `/api/nodes` | Node Tree、CapabilityGrant、ReferenceGrant |
 | GET/POST | `/api/work-items` | WorkItem と Work Graph |
 | POST | `/api/work-items/{id}/delegations` | delegated Nodeを確定 |
+| POST | `/api/work-items/{id}/dispatches` | ACTIVE時に単一WorkItemを明示的にPilotへdispatch |
 | POST | `/api/work-items/{id}/interventions` | 対象WorkItem、Execution、Effectだけを停止 |
 | GET/POST | `/api/executions` | Execution、Effect Lease、BudgetReservation |
 | POST | `/api/effects/{id}/approval` | planned Effectをowner承認 |
@@ -38,6 +39,7 @@ codeは短寿命で再利用不可、Ledgerにはhashだけを保存します。
 | GET/POST | `/api/route-snapshots` | route score と snapshot 登録 |
 | POST | `/api/route-snapshots/{id}/approvals` | `s3_star` の後に `owner` |
 | POST | `/api/route-snapshots/{id}/publish` | owner-approved snapshot を公開 |
+| POST | `/api/route-snapshots/{id}/retirements` | 承認済み後継を指定して公開snapshotを廃止 |
 | GET | `/api/token-lab` | baseline と observation |
 | POST | `/api/token-lab/baselines` | 承認済み baseline を Event 化 |
 | POST | `/api/token-lab/observations` | 観測を保存してロジック判定 |
@@ -70,6 +72,22 @@ model-free probeは認証を要求しません。
 | GET | `/health/ready` | Event Ledger read可否とactivation state、`model_calls=0` |
 
 RouteSnapshot の `evidence_cursor` は登録時点の verified outcome cursor と完全一致しなければなりません。candidate key は `adapter@version + provider + selection + effort + toolset + sandbox + environment` の canonical hash です。`selection`はcoding用のexact model snapshotまたはInterface用の`provider_configured`であり、Interfaceの人格名や暫定モデル名を含めません。
+
+同じ`route_key`に複数の`PUBLISHED` snapshotは許可しません。後継はS3*、ownerの
+順で`OWNER_APPROVED`まで進め、旧`PUBLISHED`へ
+`POST /api/route-snapshots/{id}/retirements`を実行した後、後継を明示的にpublishします。
+retirement requestの理由と後継指定は次のexact contractです。
+
+- `superseded_by_approved_snapshot`: 別IDかつ同一`route_key`の
+  `OWNER_APPROVED`または既存`PUBLISHED`後継を必須とする。後継candidateは現在の
+  registryに全件登録済みで、後継`evidence_cursor`も現在値と一致しなければ409。
+- `route_decommissioned`: `replacement_snapshot_id`を明示的な`null`とし、
+  routeを後継なしで廃止する。値の省略や後継指定は422。
+
+retirementが後継を暗黙publishすることはありません。後継切替の二操作間は意図的に
+routeなしとなります。`GET /api/route-snapshots`は各snapshotの`routable`を返し、
+`RETIRED`にはscoreを再計算せず`null`を返します。このため廃止済みsnapshotの
+未登録candidateが一覧全体の取得を妨げることもありません。
 
 Conversation作成requestは`conversation`、`surface_binding`、`idempotency_key`のexact schemaです。
 owner入力はsource surface/session/message/author/channel/timeを含む`OwnerMessageAction`です。

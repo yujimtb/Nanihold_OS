@@ -137,6 +137,27 @@ def test_three_objectives_and_ai_judge_cannot_promote_alone():
     assert route.select_production(snapshot).candidate_key == second.key
 
 
+def test_human_approved_route_can_bootstrap_from_public_prior_only():
+    route = router()
+    candidate_with_prior = candidate("gpt-5.6-sol", "xhigh")
+    route.register(candidate_with_prior, (prior(9, 1),))
+    snapshot = RouteSnapshot(
+        snapshot_id="route:prior-only",
+        data_space_id="space:personal",
+        route_key="coding_s1",
+        evidence_cursor=0,
+        candidate_keys=(candidate_with_prior.key,),
+        production_objective="quality_max",
+        state=RouteSnapshotState.PUBLISHED,
+        s3_star_approval_event_id="event:s3",
+        owner_approval_event_id="event:owner",
+    )
+
+    assert (
+        route.select_production(snapshot).candidate_key == candidate_with_prior.key
+    )
+
+
 def test_luna_to_sol_has_no_retry_count_and_recomputes_expected_remaining_tokens():
     route = router()
     luna = candidate("gpt-5.6-luna", "xhigh")
