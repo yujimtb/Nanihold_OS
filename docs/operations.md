@@ -63,13 +63,19 @@ production objective は `quality_max` です。production exploration は禁止
 
 ## 4. 初回履歴取込とowner activation
 
-1. Claude、Codex、Intercom、LETHE Personal、旧Nanihold、現況の全sourceをdry-runする。
-2. ambiguous ownershipをすべて解決し、manifestとreceiptの件数・bytes・digest・cursorを一致させる。
-3. current Work Graph snapshotとLETHE activation handoffを同じ
+1. 旧Naniholdのownership assignmentをmachine-readable JSONで固定する。現在の
+   cutover決定は15 sourceすべて`space:personal-primary`であり、過去sessionを
+   sourceごとのConversationとして維持する。旧内部Node senderをownerへ推測変換しない。
+2. Claude、Codex、Intercom、LETHE Personal、旧Nanihold、現況の全sourceをdry-runする。
+3. assignmentのsource集合がlegacy scanと完全一致することを確認し、manifestとreceiptの
+   件数・bytes・digest・cursorを一致させる。
+4. Intercom受付停止は新Naniholdのactivation/history/Conversation APIとLETHE import先が
+   readyになってから行う。停止後にpending 0を再確認し、最終deltaをexportする。
+5. current Work Graph snapshotとLETHE activation handoffを同じ
    `/api/history/imports` requestへ登録し、`HISTORY_IMPORTED`を確認する。
-4. reorientationを開始する。FableはLETHE HistoryReaderで必要箇所だけをpage照会する。
-5. 全session coverage、citation、open commitment、最新現況を満たすAssessmentを確認する。
-6. ownerが訂正・承認する。全resume対象、route、PilotHostを無変更でpreflightした後だけ
+6. reorientationを開始する。FableはLETHE HistoryReaderで必要箇所だけをpage照会する。
+7. 全session coverage、citation、open commitment、最新現況を満たすAssessmentを確認する。
+8. ownerが訂正・承認する。全resume対象、route、PilotHostを無変更でpreflightした後だけ
    `ACTIVE`となり、依存関係上開始可能な実WorkItemがdispatchされる。
    それ以前はExecutionとEffectがfail-fastする。
 

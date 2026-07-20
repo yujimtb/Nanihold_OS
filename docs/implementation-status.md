@@ -66,14 +66,28 @@ legacy scan:
 - 540 files、4,295,099 bytes、24 event logs
 - import候補944 records
 - manifest SHA-256 `4fedffaab3ddff9c00267e64369ab051e1c484d202832451f3b0363d012af5d3`
-- 15 sourceの所有先が未確定のため、仕様どおりdry-run/importは停止
+- 2026-07-20、ownerが15 sourceすべてをPersonalへ割り当てた
+- 正本assignmentはworkspace外部cutover artifact
+  `_cutover_20260720_fable_activation/ownership-assignment.json`
+- assignment file SHA-256
+  `8c95359d0ee4c2ac64720a4412cf9b0ea1891cae4304104b4c7286d723fa83d8`
+- `space:personal-primary`、`owner:primary`、`node:owner-interface`へ15/15を
+  過不足なく割り当て、旧sourceごとに15個のConversationを維持した
+- 旧S1–S5内部senderを人間発言へ誤帰属しないため、推測による
+  `owner_senders`指定は行っていない
+- Docker上のproduction migration codeによる再dry-runは実行環境gate待ち
 
 production traffic の 50%/70% token 削減率は未測定であり、合格扱いにしません。
 
 ## 未完了・fail-fast境界
 
-- 15 legacy sourceの所有先が未確定であるため、実history importは開始していない
-- Intercom drain、最終cutover cursor、実system snapshotは未確定
+- legacy ownership gateは解消したが、production migration codeによるmanifest再照合と
+  HistoryRawRecord exportは未実行
+- Intercom再inventoryは250 records、pending 0。受付稼働中なので
+  `ready_for_cutover=false`であり、最終drain/cursorは未確定
+- 現在127.0.0.1:51870で稼働する旧APIにはactivation、history、model-free healthが
+  ないため、新runtimeへの切替前にsystem snapshot/current Work Graph receiptを
+  作らない
 - PostgreSQL実server conformance、NAS backup、RPO 0/RTO 5分のlive測定は未実施
 - 現行production PilotHostはHTTP active/standby。計画の外向きresumable streamは未実装
 - LETHE HA canary、restore-state、分離projection process、canonical backup image契約は未実装
