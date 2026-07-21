@@ -9,6 +9,7 @@ from vsm.errors import InvariantViolation, ReconciliationRequired
 from vsm.activation.service import ActivationService
 from vsm.activation.models import ActivationState, CurrentWorkGraphSnapshot
 from vsm.agent_naming import (
+    RESERVED_AGENT_NAME,
     AgentIdentityRegistration,
     AgentNameAssignment,
     AgentNameRegistry,
@@ -550,6 +551,14 @@ class Kernel:
     def _validate_agent_message_identity(
         self, notification: AgentNotification
     ) -> None:
+        # Sender/recipient identities must be issued by the agent-name
+        # registry OR be the reserved S5 owner-interface seat, RESERVED_AGENT_NAME
+        # ("Nagi", node:owner-interface). Per openspec ACR-02/ACR-07
+        # (openspec/changes/add-agent-comm-routing/specs/agent-comm-routing/spec.md
+        # sections "宛先種別" and the Nagi-aggregation scenarios), Nagi is a
+        # first-class agent-to-agent sender and recipient even though it is
+        # never issued through the naming pipeline — see
+        # Kernel.agent_name_is_registered for the reserved-seat carve-out.
         sender = notification.sender_agent_name
         if sender is None or not self.agent_name_is_registered(sender):
             raise InvariantViolation(
@@ -578,6 +587,26 @@ class Kernel:
             )
 
     def agent_name_is_registered(self, agent_name: str) -> bool:
+        """Return whether ``agent_name`` is a valid kernel-known identity.
+
+        This covers registry-issued ``AgentNameAssignment`` /
+        ``AgentIdentityRegistration`` identities *and* the reserved S5
+        owner-interface seat name (``RESERVED_AGENT_NAME`` = "Nagi",
+        ``node:owner-interface``). Per openspec ACR-02/ACR-06/ACR-07
+        (openspec/changes/add-agent-comm-routing/specs/agent-comm-routing/spec.md),
+        Nagi is a first-class agent-message sender/recipient — the owner's
+        S5 standing seat, target of unattributable-reply aggregation, and a
+        named party in agent-to-agent messaging — even though ACR-06
+        deliberately excludes it from the naming engine's rotating
+        allocation pool (see ``AgentNameRow.is_reserved`` in
+        vsm/agent_naming.py) so it can never be issued to a pilot by the
+        pipeline or an out-of-pipeline registration. Treating it as
+        registered here does not create a fabricated
+        AgentIdentityRegistration; it only makes identity *validation*
+        recognize the seat that already structurally exists.
+        """
+        if agent_name == RESERVED_AGENT_NAME:
+            return True
         return any(
             identity.agent_name == agent_name
             for identity in (
