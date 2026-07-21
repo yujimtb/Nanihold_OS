@@ -1,6 +1,6 @@
 # Implementation status
 
-基準日: 2026-07-21
+基準日: 2026-07-22
 
 ## 実装済み
 
@@ -87,6 +87,9 @@
 - EnvironmentInstance の論理パス・CLI・`CODEX_HOME` 束縛、契約 fingerprint と分離した
   instance fingerprint、candidate/verified/active/retired ライフサイクルを実装し、
   Operational Ledger への登録・検証・稼働化・退役記録を追加した
+- PreflightGate を正式な EnvironmentContract / `environment_fingerprint()` へ統合し、
+  合格証拠を `EnvironmentInstanceService.preflight_evidence_hook()` から
+  instance fingerprint 付き Operational Ledger Event へ記録する
 - 同一契約の verified 実体への自律 failover と、適合実体が無い場合の再プロビジョニング
   要求イベント／注入フック、および dispatcher の failover 接続点を実装した
 
@@ -117,6 +120,9 @@
   壊していないことを確認
 - Windows PilotHost launcher: 3 passed。親`PATH`保持、認証付きready、
   2秒後のprocess生存、長いstderr非転送を検証
+- EEP 3トラック統合後のNanihold全体回帰: 167 passed、3 skipped。
+  正式EnvironmentContract、dispatch preflight、EnvironmentInstance lifecycle、
+  ACR#3通知配送・個名割当を同一構成で検証
 
 履歴取込前のlegacy scan:
 

@@ -4,7 +4,7 @@
 
 - [x] A1 環境契約(EnvironmentContract)スキーマを定義する(能力要件 / `supported_sandboxes` / 最低要求 CLI バージョン(任意) / パス論理名。具体名列挙なし)
   - Spec: EEP-01 / 受け入れ: 能力要件で表され機械固有情報・実行場所名を含まないことの確認
-- [ ] A2 環境実体(EnvironmentInstance)スキーマを定義する(論理名→機械固有パス / CLI 実体パス / `CODEX_HOME`)
+- [x] A2 環境実体(EnvironmentInstance)スキーマを定義する(論理名→機械固有パス / CLI 実体パス / `CODEX_HOME`)
   - Spec: EEP-03 / 受け入れ: 実体識別情報が identity ハッシュに含まれないことの確認
 - [x] A3 `environment_fingerprint` を環境契約の正規化ハッシュとして定義する
   - Spec: EEP-02 / 受け入れ: 実体変更で fingerprint 不変
@@ -29,8 +29,8 @@
 
 - [x] D1 codex を 1 回試走させ rollout の `sandbox_policy` と契約の他能力要件を実測する
   - Spec: EEP-06 / 受け入れ: 契約適合の実測
-- [ ] D2 契約に不適合(サイレント降格等)で当該実体の実行を拒否・fail-fast し、合格実体を instance fingerprint 付きで Operational Ledger に記録する
-  - Track B: fail-fast、証拠生成、記録フックまで実装。Ledger 接続は Track C の残作業。
+- [x] D2 契約に不適合(サイレント降格等)で当該実体の実行を拒否・fail-fast し、合格実体を instance fingerprint 付きで Operational Ledger に記録する
+  - Track B の fail-fast・証拠生成と Track C の `EnvironmentInstanceService.preflight_evidence_hook()` を接続済み。
   - Spec: EEP-06 / 受け入れ: 不適合時の拒否 + 合格実体の記録
 
 ## Track D-bis. dispatch 時バージョン検証 + preflight キャッシュ
@@ -52,7 +52,7 @@
   - Spec: EEP-07 / 受け入れ: 別 candidate 化
 - [ ] E2 RouteSnapshot 承認制(register → S3* → owner → publish、旧 RETIRE)の枠内で切替える
   - Spec: EEP-07 / 受け入れ: 承認フロー遵守
-- [ ] E3 同一契約を満たす実体間のフェイルオーバーで fingerprint が不変・RouteSnapshot 再発行不要を確認する
+- [x] E3 同一契約を満たす実体間のフェイルオーバーで fingerprint が不変・RouteSnapshot 再発行不要を確認する
   - Spec: EEP-07 / 受け入れ: 実体切替で candidate 不変
 
 ## Track F. オーナー承認境界と S3 自律ライフサイクル
@@ -60,8 +60,10 @@
 - [x] F1 オーナー(S5)の承認対象を環境契約 + 調達ポリシー境界に限定する
   - Spec: EEP-10 / 受け入れ: 個別実体操作がオーナー承認対象外
 - [ ] F2 S3 が契約適合実体を発見・構築・検証・廃棄し合格実体を Operational Ledger へ記録する
+  - 登録・preflight証拠検証・稼働化・退役とLedger記録は実装済み。実体の発見・構築を行う本番provisionerは未実装。
   - Spec: EEP-11 / 受け入れ: 合格実体の instance fingerprint 付き記録
 - [ ] F3 実体破損時のフェイルオーバー(別適合実体選択 / 境界内での新実体構築)を承認不要・非同期通知で実装する
+  - 同一契約のverified実体選択と再構築要求hookは実装済み。境界内provisionerと非同期通知の本番接続は未実装。
   - Spec: EEP-12 / 受け入れ: 承認不要のフェイルオーバー + 境界内再構築
 
 ## Track G. 段階導入

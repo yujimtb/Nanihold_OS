@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from vsm.environment import EnvironmentContract, environment_fingerprint
+
 
 class PreflightError(RuntimeError):
     """Base error for a closed-gate preflight failure."""
@@ -96,87 +98,6 @@ class CliVersionReader:
 
 
 @dataclass(frozen=True)
-class EnvironmentContract:
-    """Portable capability requirements for one candidate environment."""
-
-    environment_fingerprint: str
-    required_sandbox: str
-    supported_sandboxes: tuple[str, ...]
-    workspace_writable: bool = False
-    endpoint_reachable: tuple[str, ...] = ()
-    minimum_memory_bytes: int | None = None
-    minimum_cli_version: str | None = None
-
-    @classmethod
-    def from_mapping(cls, value: Mapping[str, object]) -> "EnvironmentContract":
-        required = {
-            "environment_fingerprint",
-            "required_sandbox",
-            "supported_sandboxes",
-        }
-        if set(value) - {
-            *required,
-            "workspace_writable",
-            "endpoint_reachable",
-            "minimum_memory_bytes",
-            "minimum_cli_version",
-        }:
-            raise PreflightContractError(
-                "environment contract contains unsupported or machine-specific fields"
-            )
-        missing = required - set(value)
-        if missing:
-            raise PreflightContractError(
-                f"environment contract is missing fields: {', '.join(sorted(missing))}"
-            )
-        environment_fingerprint = _nonblank(
-            value["environment_fingerprint"], "environment_fingerprint"
-        )
-        required_sandbox = _nonblank(value["required_sandbox"], "required_sandbox")
-        supported_raw = value["supported_sandboxes"]
-        if (
-            not isinstance(supported_raw, Sequence)
-            or isinstance(supported_raw, (str, bytes))
-            or not supported_raw
-        ):
-            raise PreflightContractError("supported_sandboxes must be a non-empty sequence")
-        supported = tuple(_nonblank(item, "supported_sandboxes item") for item in supported_raw)
-        if len(set(supported)) != len(supported):
-            raise PreflightContractError("supported_sandboxes must be unique")
-        if required_sandbox not in supported:
-            raise PreflightContractError("required_sandbox must be supported")
-        workspace_writable = value.get("workspace_writable", False)
-        if not isinstance(workspace_writable, bool):
-            raise PreflightContractError("workspace_writable must be boolean")
-        endpoints_raw = value.get("endpoint_reachable", ())
-        if (
-            not isinstance(endpoints_raw, Sequence)
-            or isinstance(endpoints_raw, (str, bytes))
-        ):
-            raise PreflightContractError("endpoint_reachable must be a sequence")
-        endpoints = tuple(_nonblank(item, "endpoint_reachable item") for item in endpoints_raw)
-        minimum_memory = value.get("minimum_memory_bytes")
-        if minimum_memory is not None and (
-            not isinstance(minimum_memory, int)
-            or isinstance(minimum_memory, bool)
-            or minimum_memory <= 0
-        ):
-            raise PreflightContractError("minimum_memory_bytes must be a positive integer")
-        minimum_cli_version = value.get("minimum_cli_version")
-        if minimum_cli_version is not None:
-            minimum_cli_version = _nonblank(minimum_cli_version, "minimum_cli_version")
-        return cls(
-            environment_fingerprint=environment_fingerprint,
-            required_sandbox=required_sandbox,
-            supported_sandboxes=supported,
-            workspace_writable=workspace_writable,
-            endpoint_reachable=endpoints,
-            minimum_memory_bytes=minimum_memory,
-            minimum_cli_version=minimum_cli_version,
-        )
-
-
-@dataclass(frozen=True)
 class VerificationTuple:
     cli_version: str
     sandbox_mode: str
@@ -214,6 +135,8 @@ class PreflightObservation:
                 "workspace_writable",
                 "endpoint_reachable",
                 "memory_bytes",
+                "shell",
+                "path_mappings",
             }
         }
         merged = dict(capabilities)
@@ -363,7 +286,7 @@ class PreflightGate:
     def __init__(
         self,
         *,
-        contract: EnvironmentContract | Mapping[str, object],
+        contract: EnvironmentContract,
         instance_fingerprint: str,
         version_reader: CliVersionReader,
         cache_path: Path,
@@ -375,11 +298,9 @@ class PreflightGate:
         evidence_hook: Callable[[PreflightEvidence], object] | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
-        self.contract = (
-            contract
-            if isinstance(contract, EnvironmentContract)
-            else EnvironmentContract.from_mapping(contract)
-        )
+        if type(contract) is not EnvironmentContract:
+            raise TypeError("contract must be an EnvironmentContract")
+        self.contract = contract
         self.instance_fingerprint = _nonblank(instance_fingerprint, "instance_fingerprint")
         self.version_reader = version_reader
         self.cache_path = cache_path
@@ -408,8 +329,8 @@ class PreflightGate:
         cli_version = self.version_reader.read()
         verification_tuple = VerificationTuple(
             cli_version=cli_version.version,
-            sandbox_mode=self.contract.required_sandbox,
-            environment_fingerprint=self.contract.environment_fingerprint,
+            sandbox_mode=self.contract.required_sandbox.value,
+            environment_fingerprint=environment_fingerprint(self.contract),
         )
         cached = self._find_cached(verification_tuple, cli_version.version_file_mtime_ns)
         if cached is not None:
@@ -466,7 +387,10 @@ class PreflightGate:
         verification_tuple: VerificationTuple,
         observation: PreflightObservation,
     ) -> None:
-        if observation.sandbox_policy not in self.contract.supported_sandboxes:
+        supported_sandboxes = {
+            sandbox.value for sandbox in self.contract.supported_sandboxes
+        }
+        if observation.sandbox_policy not in supported_sandboxes:
             raise PreflightContractError(
                 "measured sandbox_policy is not supported by the environment contract"
             )
@@ -478,36 +402,57 @@ class PreflightGate:
         if self.contract.workspace_writable and capabilities.get("workspace_writable") is not True:
             raise PreflightContractError("workspace write capability was not measured")
         endpoint_values = capabilities.get("endpoint_reachable")
-        if self.contract.endpoint_reachable:
-            if isinstance(endpoint_values, Mapping):
-                missing = [
-                    endpoint
-                    for endpoint in self.contract.endpoint_reachable
-                    if endpoint_values.get(endpoint) is not True
-                ]
-            elif isinstance(endpoint_values, Sequence) and not isinstance(
-                endpoint_values, (str, bytes)
-            ):
-                reachable = set(endpoint_values)
-                missing = [
-                    endpoint
-                    for endpoint in self.contract.endpoint_reachable
-                    if endpoint not in reachable
-                ]
-            else:
-                missing = list(self.contract.endpoint_reachable)
-            if missing:
-                raise PreflightContractError(
-                    f"required endpoints were not measured as reachable: {', '.join(missing)}"
-                )
-        if self.contract.minimum_memory_bytes is not None:
-            memory = capabilities.get("memory_bytes")
-            if (
-                not isinstance(memory, int)
-                or isinstance(memory, bool)
-                or memory < self.contract.minimum_memory_bytes
-            ):
-                raise PreflightContractError("minimum memory capability was not met")
+        if isinstance(endpoint_values, Mapping):
+            missing_endpoints = [
+                endpoint
+                for endpoint in self.contract.required_endpoints
+                if endpoint_values.get(endpoint) is not True
+            ]
+        elif isinstance(endpoint_values, Sequence) and not isinstance(
+            endpoint_values, (str, bytes)
+        ):
+            reachable = set(endpoint_values)
+            missing_endpoints = [
+                endpoint
+                for endpoint in self.contract.required_endpoints
+                if endpoint not in reachable
+            ]
+        else:
+            missing_endpoints = list(self.contract.required_endpoints)
+        if missing_endpoints:
+            raise PreflightContractError(
+                "required endpoints were not measured as reachable: "
+                + ", ".join(missing_endpoints)
+            )
+        memory = capabilities.get("memory_bytes")
+        minimum_memory_bytes = self.contract.minimum_memory_mb * 1024 * 1024
+        if (
+            not isinstance(memory, int)
+            or isinstance(memory, bool)
+            or memory < minimum_memory_bytes
+        ):
+            raise PreflightContractError("minimum memory capability was not met")
+        if capabilities.get("shell") != self.contract.required_shell.value:
+            raise PreflightContractError("required shell capability was not measured")
+        path_mappings = capabilities.get("path_mappings")
+        if isinstance(path_mappings, Mapping):
+            measured_path_names = set(path_mappings)
+        elif isinstance(path_mappings, Sequence) and not isinstance(
+            path_mappings, (str, bytes)
+        ):
+            measured_path_names = set(path_mappings)
+        else:
+            measured_path_names = set()
+        missing_path_names = [
+            name
+            for name in self.contract.path_mapping_names
+            if name not in measured_path_names
+        ]
+        if missing_path_names:
+            raise PreflightContractError(
+                "required path mappings were not measured: "
+                + ", ".join(missing_path_names)
+            )
         if self.contract.minimum_cli_version is not None and _compare_versions(
             verification_tuple.cli_version, self.contract.minimum_cli_version
         ) < 0:
@@ -632,7 +577,6 @@ __all__ = [
     "CliVersion",
     "CliVersionReader",
     "DeclarationUpdateEvent",
-    "EnvironmentContract",
     "PreflightCacheError",
     "PreflightContractError",
     "PreflightError",

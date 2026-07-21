@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from vsm.environment import EnvironmentContract, environment_fingerprint
 from vsm.preflight import (
     CliVersionReader,
-    EnvironmentContract,
     PreflightContractError,
     PreflightGate,
     VersionReadError,
@@ -28,6 +28,35 @@ def _write_version(path: Path, version: str, *, mtime_ns: int | None = None) -> 
         os.utime(path, ns=(mtime_ns, mtime_ns))
 
 
+CONTRACT = EnvironmentContract(
+    required_shell="posix",
+    required_endpoints=("api.openai.com",),
+    workspace_writable=True,
+    minimum_memory_mb=1,
+    supported_sandboxes=("workspace-write", "read-only"),
+    required_sandbox="workspace-write",
+    path_mapping_names=("workspace-root",),
+)
+CONTRACT_FINGERPRINT = environment_fingerprint(CONTRACT)
+
+
+def _observation(
+    *,
+    sandbox_policy: str = "workspace-write",
+    workspace_writable: bool = True,
+    rollout_ref: str | None = None,
+) -> dict[str, object]:
+    return {
+        "sandbox_policy": sandbox_policy,
+        "workspace_writable": workspace_writable,
+        "endpoint_reachable": ["api.openai.com"],
+        "memory_bytes": 2 * 1024 * 1024,
+        "shell": "posix",
+        "path_mappings": ["workspace-root"],
+        "rollout_ref": rollout_ref,
+    }
+
+
 def _gate(
     tmp_path: Path,
     *,
@@ -41,14 +70,8 @@ def _gate(
     version_file.parent.mkdir(parents=True, exist_ok=True)
     if not version_file.exists():
         _write_version(version_file, version)
-    contract = EnvironmentContract(
-        environment_fingerprint="contract:workspace-write",
-        required_sandbox="workspace-write",
-        supported_sandboxes=("workspace-write", "read-only"),
-        workspace_writable=True,
-    )
     return PreflightGate(
-        contract=contract,
+        contract=CONTRACT,
         instance_fingerprint="instance:test",
         version_reader=CliVersionReader(version_file),
         cache_path=tmp_path / "state" / "preflight.json",
@@ -65,11 +88,7 @@ def test_変化なしはキャッシュヒットして試走をスキップ(tmp_
 
     def runner(value):
         calls.append(value)
-        return {
-            "sandbox_policy": "workspace-write",
-            "workspace_writable": True,
-            "rollout_ref": "rollout:test:1",
-        }
+        return _observation(rollout_ref="rollout:test:1")
 
     gate, _ = _gate(tmp_path, runner=runner)
     assert gate.dispatch_preflight().cache_hit is False
@@ -92,11 +111,7 @@ def test_cli更新は最初のdispatchで試走し自動更新して新タプル
 
     def runner(value):
         calls.append(value.cli_version)
-        return {
-            "sandbox_policy": "workspace-write",
-            "workspace_writable": True,
-            "rollout_ref": f"rollout:{value.cli_version}",
-        }
+        return _observation(rollout_ref=f"rollout:{value.cli_version}")
 
     gate, version_file = _gate(
         tmp_path,
@@ -127,7 +142,7 @@ def test_cacheはオブジェクト再生成後も有効(tmp_path: Path):
     def runner(_value):
         nonlocal calls
         calls += 1
-        return {"sandbox_policy": "workspace-write", "workspace_writable": True}
+        return _observation()
 
     first, _ = _gate(tmp_path, runner=runner)
     first.dispatch_preflight()
@@ -144,10 +159,9 @@ def test_preflight失敗はfail_fastで宣言と自動更新を変更しない(t
     events: list[object] = []
     gate, _ = _gate(
         tmp_path,
-        runner=lambda _value: {
-            "sandbox_policy": "read-only",
-            "workspace_writable": False,
-        },
+        runner=lambda _value: _observation(
+            sandbox_policy="read-only", workspace_writable=False
+        ),
         declaration=declaration,
         event_hook=events.append,
     )
@@ -180,10 +194,7 @@ def test候補宣言更新フックは決定論的な監査イベントを生成
     updater = candidate_metadata_updater(declaration, event_hook=events.append)
     gate, _ = _gate(
         tmp_path,
-        runner=lambda _value: {
-            "sandbox_policy": "workspace-write",
-            "workspace_writable": True,
-        },
+        runner=lambda _value: _observation(),
     )
     # The direct updater API is exercised independently of the gate's default
     # updater so callers can choose either injection surface.
@@ -217,7 +228,7 @@ def test_production_pilot_hostはdispatch直前にpreflightをゲートする(
                 "effort": "high",
                 "toolset": ["mcp__history__search"],
                 "sandbox_fingerprint": "sandbox:isolated",
-                "environment_fingerprint": "contract:test",
+                "environment_fingerprint": CONTRACT_FINGERPRINT,
             },
             "executable": "claude",
             "cli_version": "2.1.215",
@@ -248,7 +259,7 @@ def test_production_pilot_hostはdispatch直前にpreflightをゲートする(
                 "effort": "xhigh",
                 "toolset": ["mcp__gateway__git_status"],
                 "sandbox_fingerprint": "sandbox:workspace-write",
-                "environment_fingerprint": "contract:test",
+                "environment_fingerprint": CONTRACT_FINGERPRINT,
             },
             "executable": "codex",
             "cli_version": "0.145.0",
@@ -275,13 +286,8 @@ def test_production_pilot_hostはdispatch直前にpreflightをゲートする(
         "enabled": True,
         "cli_version_file": str(version_file),
         "cache_path": str(tmp_path / "preflight.json"),
-        "instance_fingerprint": "instance:test",
-        "environment_contract": {
-            "environment_fingerprint": "contract:test",
-            "required_sandbox": "workspace-write",
-            "supported_sandboxes": ["workspace-write"],
-            "workspace_writable": True,
-        },
+        "instance_fingerprint": "c" * 64,
+        "environment_contract": CONTRACT.model_dump(mode="json"),
     }
     config_path = tmp_path / "pilot-host.json"
     config_path.write_text(json.dumps(config), encoding="utf-8")
@@ -308,6 +314,7 @@ def test_production_pilot_hostはdispatch直前にpreflightをゲートする(
             "work_item_id": "work:preflight",
             "title": "preflight",
             "objective": "verify gate",
+            "agent_name": "Sora",
         },
         "unmet_acceptance": ["gate rejects downgrade"],
         "event_delta": {

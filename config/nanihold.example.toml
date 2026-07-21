@@ -88,6 +88,10 @@ work_max_total_tokens = 12000
 work_timeout_seconds = 300.0
 max_parallelism = 3
 reorientation_max_tool_rounds = 8
+preflight_enabled = true
+preflight_cli_version_file = "/usr/local/lib/node_modules/@openai/codex/package.json"
+preflight_cache_path = "/var/lib/nanihold-pilot/preflight-cache.json"
+preflight_instance_fingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 [routing]
 active_route_snapshot_id = "route:coding-production"

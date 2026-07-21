@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
+from vsm.environment import EnvironmentContract, environment_fingerprint
 from vsm.environment_instance import (
     EnvironmentInstance,
     EnvironmentInstanceService,
@@ -12,20 +15,29 @@ from vsm.environment_instance import (
 from vsm.dispatcher import DependencyAwareDispatcher
 from vsm.errors import InvariantViolation
 from vsm.kernel.ledger import InMemoryOperationalLedger
+from vsm.preflight import (
+    CliVersionReader,
+    PreflightEvidence,
+    PreflightGate,
+    VerificationTuple,
+)
 from vsm.routing.bayesian import BayesianRouter
 
 
 SPACE_ID = "space:environment"
-ENVIRONMENT_FINGERPRINT = "a" * 64
 NOW = datetime(2026, 7, 21, 12, 0, tzinfo=UTC)
 
-
-class Contract:
-    def __init__(self, environment_fingerprint: str) -> None:
-        self.environment_fingerprint = environment_fingerprint
-
-
-CONTRACT = Contract(ENVIRONMENT_FINGERPRINT)
+CONTRACT = EnvironmentContract(
+    required_shell="posix",
+    required_endpoints=("api.openai.com",),
+    workspace_writable=True,
+    minimum_memory_mb=1024,
+    supported_sandboxes=("workspace-write",),
+    required_sandbox="workspace-write",
+    path_mapping_names=("workspace-root",),
+    minimum_cli_version="0.145.0",
+)
+ENVIRONMENT_FINGERPRINT = environment_fingerprint(CONTRACT)
 
 
 def instance(instance_id: str, workspace: str) -> EnvironmentInstance:
@@ -53,12 +65,47 @@ def service(
     )
 
 
+def evidence(candidate: EnvironmentInstance) -> PreflightEvidence:
+    return PreflightEvidence(
+        verification_tuple=VerificationTuple(
+            cli_version="0.145.0",
+            sandbox_mode="workspace-write",
+            environment_fingerprint=ENVIRONMENT_FINGERPRINT,
+        ),
+        measured_sandbox_policy="workspace-write",
+        measured_capabilities={
+            "workspace_writable": True,
+            "endpoint_reachable": ["api.openai.com"],
+            "memory_bytes": 2 * 1024 * 1024 * 1024,
+            "shell": "posix",
+            "path_mappings": ["workspace-root"],
+        },
+        instance_fingerprint=candidate.instance_fingerprint,
+        checked_at=NOW.isoformat(),
+        rollout_ref="rollout:environment-instance",
+        version_file="/opt/codex/package.json",
+        version_file_mtime_ns=1,
+    )
+
+
 def test_instance_binding_does_not_change_contract_fingerprint() -> None:
     first = instance("environment-instance:first", "/srv/workspace-a")
     second = instance("environment-instance:second", "/srv/workspace-b")
 
     assert first.environment_fingerprint == second.environment_fingerprint
     assert first.instance_fingerprint != second.instance_fingerprint
+
+
+def test_instance_requires_every_contract_logical_path_binding() -> None:
+    with pytest.raises(InvariantViolation, match="exactly match"):
+        EnvironmentInstance.from_contract(
+            CONTRACT,
+            instance_id="environment-instance:missing-path",
+            data_space_id=SPACE_ID,
+            logical_path_bindings={"different-root": "/srv/workspace"},
+            cli_executable_path="/srv/workspace/bin/codex",
+            codex_home="/srv/workspace/.codex",
+        )
 
 
 def test_lifecycle_operations_append_instance_fingerprint_events() -> None:
@@ -73,7 +120,7 @@ def test_lifecycle_operations_append_instance_fingerprint_events() -> None:
     )
     verified = lifecycle.verify(
         candidate.instance_id,
-        contract_conformance_passed=True,
+        evidence=evidence(candidate),
         idempotency_key="environment:lifecycle:verify",
     )
     activated = lifecycle.activate(
@@ -102,7 +149,7 @@ def test_lifecycle_operations_append_instance_fingerprint_events() -> None:
     assert all(stored.event.actor_type == "system" for stored in history)
 
 
-def test_failed_contract_verification_is_recorded_and_fails_fast() -> None:
+def test_mismatched_preflight_evidence_fails_fast_without_promotion() -> None:
     ledger = InMemoryOperationalLedger(SPACE_ID)
     lifecycle = service(ledger)
     candidate = instance("environment-instance:rejected", "/srv/rejected")
@@ -112,16 +159,63 @@ def test_failed_contract_verification_is_recorded_and_fails_fast() -> None:
         idempotency_key="environment:rejected:register",
     )
 
-    with pytest.raises(InvariantViolation, match="contract conformance"):
+    mismatched = replace(
+        evidence(candidate),
+        instance_fingerprint="b" * 64,
+    )
+    with pytest.raises(InvariantViolation, match="instance fingerprint"):
         lifecycle.verify(
             candidate.instance_id,
-            contract_conformance_passed=False,
+            evidence=mismatched,
             idempotency_key="environment:rejected:verify",
         )
 
     history = ledger.stream(candidate.instance_id, after_stream_version=0, limit=20)
-    assert history[-1].event.event_type == "environment_instance_verification_failed"
+    assert history[-1].event.event_type == "environment_instance_registered"
     assert lifecycle.instances[candidate.instance_id].state is EnvironmentInstanceState.CANDIDATE
+
+
+def test_preflight_evidence_hook_verifies_instance_in_operational_ledger(
+    tmp_path: Path,
+) -> None:
+    ledger = InMemoryOperationalLedger(SPACE_ID)
+    lifecycle = service(ledger)
+    candidate = instance("environment-instance:preflight", "/srv/preflight")
+    lifecycle.register(
+        candidate,
+        contract=CONTRACT,
+        idempotency_key="environment:preflight:register",
+    )
+    version_file = tmp_path / "package.json"
+    version_file.write_text('{"version":"0.145.0"}', encoding="utf-8")
+    gate = PreflightGate(
+        contract=CONTRACT,
+        instance_fingerprint=candidate.instance_fingerprint,
+        version_reader=CliVersionReader(version_file),
+        cache_path=tmp_path / "preflight-cache.json",
+        preflight_runner=lambda _verification: {
+            "sandbox_policy": "workspace-write",
+            "workspace_writable": True,
+            "endpoint_reachable": ["api.openai.com"],
+            "memory_bytes": 2 * 1024 * 1024 * 1024,
+            "shell": "posix",
+            "path_mappings": ["workspace-root"],
+        },
+        evidence_hook=lifecycle.preflight_evidence_hook(
+            candidate.instance_id,
+            idempotency_key_prefix="environment:preflight:verify",
+        ),
+        clock=lambda: NOW,
+    )
+
+    result = gate.dispatch_preflight()
+
+    assert result.cache_hit is False
+    assert lifecycle.instances[candidate.instance_id].state is EnvironmentInstanceState.VERIFIED
+    history = ledger.stream(candidate.instance_id, after_stream_version=0, limit=20)
+    verified = history[-1].event
+    assert verified.event_type == "environment_instance_verified"
+    assert verified.payload["preflight_evidence"] == result.evidence.to_dict()
 
 
 def test_failover_selects_verified_peer_without_changing_environment_fingerprint() -> None:
@@ -140,7 +234,7 @@ def test_failover_selects_verified_peer_without_changing_environment_fingerprint
         )
         lifecycle.verify(
             candidate.instance_id,
-            contract_conformance_passed=True,
+            evidence=evidence(candidate),
             idempotency_key=f"environment:{key}:verify",
         )
     lifecycle.activate(
@@ -191,7 +285,7 @@ def test_failover_requests_reprovisioning_when_no_verified_peer_exists() -> None
     )
     lifecycle.verify(
         active.instance_id,
-        contract_conformance_passed=True,
+        evidence=evidence(active),
         idempotency_key="environment:only:verify",
     )
     lifecycle.activate(

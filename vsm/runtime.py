@@ -221,6 +221,10 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
             history_reader.close()
             ledger.close()
             raise RuntimeError("active RouteSnapshot evidence cursor is stale")
+    # TODO(EEP production wiring): construct EnvironmentInstanceService from
+    # the commissioned Ledger and explicit instance configuration, then pass it
+    # as environment_failover.  NaniholdConfig does not yet define the active
+    # EnvironmentInstance identity or its concrete bindings.
     dispatcher = DependencyAwareDispatcher(
         kernel=kernel,
         router=router,

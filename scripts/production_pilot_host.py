@@ -26,6 +26,7 @@ from pydantic import (
     model_validator,
 )
 
+from vsm.environment import EnvironmentContract, environment_fingerprint
 from vsm.interface.models import (
     InterfaceAction,
     ReadHistoryAction,
@@ -35,7 +36,6 @@ from vsm.kernel.models import WorkState
 from vsm.pilot.models import DeviceIdentity, ModelCandidate
 from vsm.preflight import (
     DeclarationUpdateEvent,
-    EnvironmentContract,
     PreflightEvidence,
     PreflightGate,
     PreflightObservation,
@@ -1771,11 +1771,21 @@ class ProductionPilotHost:
         instance_fingerprint = _nonblank(
             config["instance_fingerprint"], "preflight instance fingerprint"
         )
+        # TODO(EEP production wiring): retrieve the selected versioned contract
+        # through EnvironmentContractArtifactStore once artifact key/version and
+        # VersionedArtifactTransport settings exist.  Do not fall back from a
+        # configured control-plane artifact to this embedded document.
         contract_raw = config["environment_contract"]
         if not isinstance(contract_raw, Mapping):
             raise RuntimeError("preflight environment_contract must be an object")
-        contract = EnvironmentContract.from_mapping(contract_raw)
-        if contract.environment_fingerprint != self.codex.candidate.environment_fingerprint:
+        try:
+            contract = EnvironmentContract.model_validate(contract_raw)
+        except ValidationError as exc:
+            raise RuntimeError(
+                "preflight environment_contract is invalid"
+            ) from exc
+        contract_fingerprint = environment_fingerprint(contract)
+        if contract_fingerprint != self.codex.candidate.environment_fingerprint:
             raise RuntimeError(
                 "preflight environment fingerprint differs from the Codex candidate"
             )
@@ -1793,6 +1803,16 @@ class ProductionPilotHost:
             if evidence_hook is not None:
                 evidence_hook(evidence)
 
+        # TODO(EEP production wiring): construct EnvironmentInstanceService from
+        # the commissioned Operational Ledger and inject its
+        # preflight_evidence_hook for the configured instance.  The launcher
+        # cannot do that until production config identifies the DataSpace,
+        # instance ID, and Ledger connection explicitly.
+
+        # TODO(EEP production wiring): inject an instance-aware runner after
+        # EnvironmentInstance bindings define endpoint, memory, shell, and path
+        # probes.  The built-in Codex trial reports rollout sandbox/workspace
+        # only, so PreflightGate deliberately fails closed for missing evidence.
         runner = preflight_runner or self.codex.run_preflight
         return PreflightGate(
             contract=contract,
