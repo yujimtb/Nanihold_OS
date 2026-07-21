@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 
 CHANNELS = ("discord", "slack")
@@ -633,13 +633,25 @@ def _verify_reply(
 
 
 def verify_results(
-    results: Mapping[str, object], evidence: Mapping[str, object]
+    results: Mapping[str, object],
+    evidence: Mapping[str, object],
+    *,
+    scope: Collection[str] | None = None,
 ) -> dict[str, object]:
-    """Verify all 26 applicable results against Ledger/audit-trace evidence.
+    """Verify applicable results against Ledger/audit-trace evidence.
 
     The verifier does not create events and does not contact a channel.  A
     caller may first capture `/api/events`, notification projections, and the
     existing audit-trace responses into the evidence document.
+
+    By default (``scope=None``) all 26 applicable cells must be present in
+    `results`, preserving the original all-or-nothing behaviour.  When
+    `scope` is given, `results` must contain exactly the cells named in
+    `scope` (no more, no less); every cell listed in `scope` must be a known,
+    applicable cell_id from the matrix — N/A cells and unknown cell_ids are
+    rejected.  This enables staged verification, e.g. verifying only the six
+    `automated_dry_run` cells once automation evidence lands, independently
+    of the twenty owner-executed cells.
     """
 
     if results.get("matrix_version") != MATRIX_VERSION:
@@ -648,6 +660,28 @@ def verify_results(
     applicable = {
         cell_id for cell_id, cell in cells.items() if bool(cell["applicable"])
     }
+    na_count = len(cells) - len(applicable)
+
+    if scope is None:
+        required = applicable
+        scope_value: object = "full"
+    else:
+        scope_ids = {str(item) for item in scope}
+        if not scope_ids:
+            raise EvidenceVerificationError("scope must not be empty")
+        unknown = sorted(scope_ids - set(cells))
+        if unknown:
+            raise EvidenceVerificationError(
+                f"scope contains unknown cell_id(s): {unknown}"
+            )
+        non_applicable = sorted(scope_ids - applicable)
+        if non_applicable:
+            raise EvidenceVerificationError(
+                f"scope contains non-applicable (N/A) cell_id(s): {non_applicable}"
+            )
+        required = scope_ids
+        scope_value = sorted(scope_ids)
+
     raw_results = results.get("cells")
     if not isinstance(raw_results, list):
         raise EvidenceVerificationError("results.cells must be an array")
@@ -664,11 +698,11 @@ def verify_results(
         if not isinstance(cell_id, str) or cell_id in result_by_id:
             raise EvidenceVerificationError("results contain a missing or duplicate cell_id")
         result_by_id[cell_id] = item
-    if set(result_by_id) != applicable:
-        missing = sorted(applicable - set(result_by_id))
-        extra = sorted(set(result_by_id) - applicable)
+    if set(result_by_id) != required:
+        missing = sorted(required - set(result_by_id))
+        extra = sorted(set(result_by_id) - required)
         raise EvidenceVerificationError(
-            f"results must contain exactly the 26 applicable cells; missing={missing}, extra={extra}"
+            f"results must contain exactly the {len(required)} scoped cells; missing={missing}, extra={extra}"
         )
     if real_external_sends and not allow_external_send:
         raise EvidenceVerificationError(
@@ -693,11 +727,35 @@ def verify_results(
         "schema": "nanihold/acr08-verification",
         "matrix_version": MATRIX_VERSION,
         "verified": True,
+        "scope": scope_value,
         "verified_count": len(verified),
-        "na_count": len(cells) - len(verified),
+        "na_count": na_count,
         "real_external_sends_performed": real_external_sends,
         "cell_ids": verified,
     }
+
+
+def _cells_for_execution_mode(mode: str) -> tuple[str, ...]:
+    return tuple(
+        str(cell["cell_id"]) for cell in build_matrix() if cell["execution_mode"] == mode
+    )
+
+
+def resolve_scope_argument(raw: str) -> tuple[str, ...]:
+    """Resolve a ``--scope`` CLI value into a tuple of cell_ids.
+
+    Accepts the literals ``"automated"`` (the 6 ``automated_dry_run`` cells)
+    and ``"owner"`` (the 20 ``owner_checklist`` cells), or a comma-separated
+    list of explicit cell_id values.  The returned tuple is handed to
+    `verify_results(..., scope=...)` unchanged; `verify_results` itself
+    performs the applicability/unknown-id validation.
+    """
+
+    if raw == "automated":
+        return _cells_for_execution_mode("automated_dry_run")
+    if raw == "owner":
+        return _cells_for_execution_mode("owner_checklist")
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -725,6 +783,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     verify.add_argument("--results", type=Path, required=True)
     verify.add_argument("--evidence", type=Path, required=True)
     verify.add_argument("--output", type=Path)
+    verify.add_argument(
+        "--scope",
+        type=str,
+        default=None,
+        help=(
+            "Restrict verification to a subset of applicable cells: "
+            "'automated' (the 6 automated_dry_run cells), "
+            "'owner' (the 20 owner_checklist cells), or a comma-separated "
+            "list of cell_id values. Omit for the full 26-cell verification."
+        ),
+    )
 
     args = parser.parse_args(argv)
     if args.command == "matrix":
@@ -734,7 +803,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif args.command == "dry-run":
         value = automation_plan()
     else:
-        value = verify_results(_read_json(args.results), _read_json(args.evidence))
+        scope = resolve_scope_argument(args.scope) if args.scope else None
+        value = verify_results(_read_json(args.results), _read_json(args.evidence), scope=scope)
 
     if args.output is not None:
         if isinstance(value, str):
@@ -762,6 +832,7 @@ __all__ = [
     "matrix_manifest",
     "render_matrix_markdown",
     "render_owner_checklist",
+    "resolve_scope_argument",
     "verify_results",
 ]
 

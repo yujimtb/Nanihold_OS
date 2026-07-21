@@ -8,6 +8,7 @@ from vsm.acr08 import (
     build_matrix,
     matrix_manifest,
     render_owner_checklist,
+    resolve_scope_argument,
     verify_results,
 )
 
@@ -215,3 +216,124 @@ def test_verifier_rejects_internal_source_platform_for_owner_to_agent_cell() -> 
 
     with pytest.raises(EvidenceVerificationError, match="audit trace channel does not match result"):
         verify_results(results, evidence)
+
+
+def _automated_cell_ids() -> set[str]:
+    return {
+        str(cell["cell_id"])
+        for cell in build_matrix()
+        if cell["execution_mode"] == "automated_dry_run"
+    }
+
+
+def _owner_cell_ids() -> set[str]:
+    return {
+        str(cell["cell_id"])
+        for cell in build_matrix()
+        if cell["execution_mode"] == "owner_checklist"
+    }
+
+
+def test_scope_defaults_to_full_and_preserves_legacy_behaviour() -> None:
+    """scope=None must keep the original all-26-cells, all-or-nothing
+    behaviour and the original verified_count/na_count values byte-for-byte,
+    with only a new "scope": "full" key added to the response."""
+
+    results, evidence = _evidence_and_results()
+    verified = verify_results(results, evidence)
+    assert verified["scope"] == "full"
+    assert verified["verified_count"] == 26
+    assert verified["na_count"] == 34
+    assert set(verified["cell_ids"]) == _automated_cell_ids() | _owner_cell_ids()
+
+
+def test_scope_automated_only_verifies_the_six_automated_cells() -> None:
+    """The 6 automated_dry_run cells are already measured; scope=automated
+    must allow verifying just those without supplying the 20 owner cells."""
+
+    results, evidence = _evidence_and_results()
+    automated_ids = _automated_cell_ids()
+    assert len(automated_ids) == 6
+    results["cells"] = [
+        cell for cell in results["cells"] if cell["cell_id"] in automated_ids
+    ]
+
+    verified = verify_results(results, evidence, scope=automated_ids)
+
+    assert verified["verified"] is True
+    assert verified["scope"] == sorted(automated_ids)
+    assert verified["verified_count"] == 6
+    assert verified["na_count"] == 34
+    assert set(verified["cell_ids"]) == automated_ids
+
+
+def test_scope_owner_only_verifies_the_twenty_owner_cells() -> None:
+    """Symmetric case: scope=owner must allow verifying just the 20
+    owner-executed cells (e.g. once the Lake-injection simulation lands),
+    independently of the 6 automated cells."""
+
+    results, evidence = _evidence_and_results()
+    owner_ids = _owner_cell_ids()
+    assert len(owner_ids) == 20
+    results["cells"] = [
+        cell for cell in results["cells"] if cell["cell_id"] in owner_ids
+    ]
+
+    verified = verify_results(results, evidence, scope=owner_ids)
+
+    assert verified["verified"] is True
+    assert verified["scope"] == sorted(owner_ids)
+    assert verified["verified_count"] == 20
+    assert set(verified["cell_ids"]) == owner_ids
+
+
+def test_scope_rejects_results_containing_a_cell_outside_scope() -> None:
+    """If results include a cell that is not in the requested scope, that is
+    an over- (or under-) delivery relative to what was asked to be verified
+    and must be rejected rather than silently accepted or ignored."""
+
+    results, evidence = _evidence_and_results()
+    automated_ids = _automated_cell_ids()
+    owner_extra = next(iter(_owner_cell_ids()))
+    results["cells"] = [
+        cell
+        for cell in results["cells"]
+        if cell["cell_id"] in automated_ids or cell["cell_id"] == owner_extra
+    ]
+
+    with pytest.raises(EvidenceVerificationError, match="scoped cells"):
+        verify_results(results, evidence, scope=automated_ids)
+
+
+def test_scope_rejects_non_applicable_na_cell_id() -> None:
+    """N/A cells have no verification points and can never be proven by
+    evidence; a scope naming one is an error, not a silently-skipped cell."""
+
+    results, evidence = _evidence_and_results()
+    na_cell_id = next(
+        str(cell["cell_id"]) for cell in build_matrix() if not cell["applicable"]
+    )
+
+    with pytest.raises(EvidenceVerificationError, match="non-applicable"):
+        verify_results(results, evidence, scope=_automated_cell_ids() | {na_cell_id})
+
+
+def test_scope_rejects_unknown_cell_id() -> None:
+    results, evidence = _evidence_and_results()
+
+    with pytest.raises(EvidenceVerificationError, match="unknown cell_id"):
+        verify_results(results, evidence, scope={"ACR08-NOT-A-REAL-CELL"})
+
+
+def test_scope_rejects_empty_scope() -> None:
+    results, evidence = _evidence_and_results()
+
+    with pytest.raises(EvidenceVerificationError, match="scope must not be empty"):
+        verify_results(results, evidence, scope=set())
+
+
+def test_resolve_scope_argument_literals_and_csv() -> None:
+    assert set(resolve_scope_argument("automated")) == _automated_cell_ids()
+    assert set(resolve_scope_argument("owner")) == _owner_cell_ids()
+    two_ids = sorted(_automated_cell_ids())[:2]
+    assert resolve_scope_argument(",".join(two_ids)) == tuple(two_ids)
