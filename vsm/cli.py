@@ -89,6 +89,109 @@ def _json(value: object) -> None:
     typer.echo(json.dumps(value, ensure_ascii=False, indent=2, default=str))
 
 
+_TRACE_PAGE_SIZE = 1000
+
+
+def _event_mentions_execution(event: object, execution_id: str) -> bool:
+    if event.stream_id == execution_id or event.correlation_id == execution_id:
+        return True
+    payload = event.payload
+    if payload.get("execution_id") == execution_id:
+        return True
+    execution = payload.get("execution")
+    return (
+        isinstance(execution, dict)
+        and execution.get("execution_id") == execution_id
+    )
+
+
+def _execution_trace(runtime: object, execution_id: str) -> dict[str, object]:
+    execution = runtime.kernel.executions.get(execution_id)
+    if execution is None:
+        raise typer.BadParameter(f"execution_id not found: {execution_id}")
+
+    timeline: list[dict[str, object]] = []
+    cursor = 0
+    while True:
+        page = runtime.kernel.ledger.page(cursor, _TRACE_PAGE_SIZE)
+        if not page:
+            break
+        page_cursor = cursor
+        for stored in page:
+            if stored.cursor <= page_cursor:
+                raise InvariantViolation(
+                    "Event Ledger trace cursor did not advance"
+                )
+            page_cursor = stored.cursor
+            event = stored.event
+            if not _event_mentions_execution(event, execution_id):
+                continue
+            event_json = event.model_dump(mode="json")
+            payload = event_json["payload"]
+            entry: dict[str, object] = {
+                "cursor": stored.cursor,
+                "occurred_at": event_json["occurred_at"],
+                "event_type": event.event_type,
+                "event": event_json,
+            }
+            provider_session_id = payload.get("provider_session_id")
+            if event.event_type == "execution_created":
+                created_execution = payload["execution"]
+                if not isinstance(created_execution, dict):
+                    raise InvariantViolation(
+                        "execution_created payload has an invalid Execution"
+                    )
+                provider_session_id = created_execution["provider_session_id"]
+            if provider_session_id is not None:
+                entry["provider_session_id"] = provider_session_id
+            if event.event_type == "execution_created":
+                entry["kind"] = "dispatch"
+            elif event.event_type == "pilot_execution_receipt_recorded":
+                entry["kind"] = "receipt"
+                entry["receipt"] = {
+                    "receipt_id": payload["receipt_id"],
+                    "status": payload["receipt_status"],
+                    "requested_model": payload["requested_model"],
+                    "actual_model": payload["actual_model"],
+                    "provider_session_id": payload["provider_session_id"],
+                    "usage": payload["usage"],
+                    "result": payload["result"],
+                    "error": payload["error"],
+                }
+            else:
+                entry["kind"] = "ledger_event"
+            timeline.append(entry)
+        cursor = page_cursor
+
+    receipt = next(
+        (
+            item["receipt"]
+            for item in reversed(timeline)
+            if item["kind"] == "receipt"
+        ),
+        None,
+    )
+    provider_session_id_refs = [
+        {
+            "cursor": item["cursor"],
+            "occurred_at": item["occurred_at"],
+            "event_type": item["event_type"],
+            "provider_session_id": item["provider_session_id"],
+        }
+        for item in timeline
+        if "provider_session_id" in item
+        and item["provider_session_id"] is not None
+    ]
+    return {
+        "execution_id": execution_id,
+        "execution": execution.model_dump(mode="json"),
+        "timeline": timeline,
+        "receipt": receipt,
+        "provider_session_id": execution.provider_session_id,
+        "provider_session_id_refs": provider_session_id_refs,
+    }
+
+
 @app.command()
 def serve(
     config: Path = typer.Option(..., exists=True, dir_okay=False, readable=True),
@@ -625,6 +728,19 @@ def events_tail(
                 "next_cursor": events[-1].cursor if events else after_cursor,
             }
         )
+    finally:
+        runtime.close()
+
+
+@app.command("trace")
+def execution_trace(
+    execution_id: str = typer.Argument(..., min=1),
+    config: Path = typer.Option(..., exists=True, dir_okay=False, readable=True),
+) -> None:
+    """Show one Execution's dispatch, receipt, and provider session timeline."""
+    runtime = bootstrap(config)
+    try:
+        _json(_execution_trace(runtime, execution_id))
     finally:
         runtime.close()
 

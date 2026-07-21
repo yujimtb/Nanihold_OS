@@ -63,6 +63,16 @@ vsm inspect events \
 
 resource は `data-spaces`、`nodes`、`work-items`、`executions`、`events`、`conversations`、`pilot-hosts`、`model-registry`、`route-snapshots`、`token-lab` です。
 
+単一Executionの障害調査では、Ledgerを手動joinせずにdispatch、receipt記録、receiptの
+`usage`・`actual_model`・`error`、`provider_session_id`参照をcursor順で確認します。
+Executionが存在しない場合はreceipt照会を続けずfail-fastします。
+出力の`timeline`はLedgerイベントを含み、receiptイベントにはreceipt本体、全体には最新の
+Execution状態と`provider_session_id_refs`を含めます。
+
+```powershell
+vsm trace execution:example --config vsm.toml
+```
+
 production objective は `quality_max` です。production exploration は禁止です。証拠更新後は古い snapshot が stale になり、再起動時に失敗します。
 
 ## 4. 初回履歴取込とowner activation
