@@ -13,6 +13,8 @@ codeは短寿命で再利用不可、Ledgerにはhashだけを保存します。
 | GET | `/api/data-spaces` | 現在の DataSpace |
 | GET/POST | `/api/nodes` | Node Tree、CapabilityGrant、ReferenceGrant |
 | GET/POST | `/api/work-items` | WorkItem と Work Graph |
+| GET/POST | `/api/notifications` | ACR-02/ACR-07 の宛先付き通知 Ledger Event |
+| POST | `/api/notifications/{id}/promotions` | 昇格条件を満たす通知から明示 WorkItem を起票 |
 | POST | `/api/work-items/{id}/delegations` | delegated Nodeを確定 |
 | POST | `/api/work-items/{id}/dispatches` | ACTIVE時に単一WorkItemを明示的にPilotへdispatch |
 | POST | `/api/work-items/{id}/interventions` | 対象WorkItem、Execution、Effectだけを停止 |

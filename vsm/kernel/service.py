@@ -11,6 +11,7 @@ from vsm.activation.models import ActivationState, CurrentWorkGraphSnapshot
 from vsm.agent_naming import AgentNameAssignment
 from vsm.auth import OwnerBootstrapService
 from vsm.ids import deterministic_event_id
+from vsm.notifications import AgentNotification
 from vsm.kernel.ledger import OperationalLedger
 from vsm.kernel.models import (
     AuditPolicy,
@@ -81,6 +82,7 @@ class Kernel:
         self.work_edges: list[WorkEdge] = []
         self.executions: dict[str, Execution] = {}
         self.agent_name_assignments: dict[str, AgentNameAssignment] = {}
+        self.agent_notifications: dict[str, AgentNotification] = {}
         self.capability_grants: dict[str, CapabilityGrant] = {}
         self.effect_leases: dict[str, EffectLease] = {}
         self.effect_approvals: dict[str, EffectApproval] = {}
@@ -506,6 +508,90 @@ class Kernel:
             correlation_id=execution.work_item_id,
         )
         self.executions[execution.execution_id] = execution
+        return event
+
+    def record_agent_notification(
+        self,
+        notification: AgentNotification,
+        *,
+        actor_id: str,
+        idempotency_key: str,
+    ) -> EventEnvelope:
+        """Append one addressed notification to the shared Ledger base."""
+
+        if notification.data_space_id != self.data_space.data_space_id:
+            raise InvariantViolation("AgentNotification DataSpace mismatch")
+        if notification.notification_id in self.agent_notifications:
+            raise InvariantViolation(
+                f"AgentNotification already exists: {notification.notification_id}"
+            )
+        event = self._record(
+            stream_id=notification.notification_id,
+            event_type="agent_notification_delivered",
+            payload={"notification": self._json(notification)},
+            actor_type="system",
+            actor_id=actor_id,
+            idempotency_key=idempotency_key,
+            correlation_id=(
+                notification.related_work_item_id or notification.notification_id
+            ),
+            causation_id=notification.related_execution_id,
+        )
+        self.agent_notifications[notification.notification_id] = notification
+        return event
+
+    def promote_agent_notification(
+        self,
+        notification_id: str,
+        work_item: WorkItem,
+        *,
+        actor_id: str,
+        idempotency_key: str,
+    ) -> EventEnvelope:
+        """Create the explicit WorkItem second stage for a notification."""
+
+        notification = self.agent_notifications.get(notification_id)
+        if notification is None:
+            raise InvariantViolation("AgentNotification not found")
+        if not notification.requires_work_item:
+            raise InvariantViolation(
+                "AgentNotification does not satisfy the WorkItem promotion condition"
+            )
+        if notification.promoted_work_item_id is not None:
+            raise InvariantViolation("AgentNotification is already promoted")
+        if work_item.data_space_id != self.data_space.data_space_id:
+            raise InvariantViolation("promoted WorkItem DataSpace mismatch")
+        if work_item.work_item_id == notification.notification_id:
+            raise InvariantViolation(
+                "promoted WorkItem must have a distinct identity from its notification"
+            )
+        if work_item.work_item_id in self.work_items:
+            raise InvariantViolation("promoted WorkItem already exists")
+
+        # The WorkItem command remains the canonical creation path.  The
+        # promotion event then closes the auditable notification -> WorkItem
+        # link on the notification stream.
+        self.create_work_item(
+            work_item,
+            actor_id=actor_id,
+            idempotency_key=f"{idempotency_key}:work-item",
+        )
+        event = self._record(
+            stream_id=notification.notification_id,
+            event_type="agent_notification_promoted",
+            payload={
+                "notification_id": notification_id,
+                "work_item_id": work_item.work_item_id,
+            },
+            actor_type="system",
+            actor_id=actor_id,
+            idempotency_key=idempotency_key,
+            correlation_id=work_item.work_item_id,
+            causation_id=notification.notification_id,
+        )
+        self.agent_notifications[notification_id] = notification.model_copy(
+            update={"promoted_work_item_id": work_item.work_item_id}
+        )
         return event
 
     def record_agent_name_assignment(

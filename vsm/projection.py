@@ -29,6 +29,7 @@ from vsm.interface.models import (
     UpdateCommitmentAction,
 )
 from vsm.interface.service import InterfaceService
+from vsm.notifications import AgentNotification
 from vsm.kernel.models import (
     BudgetReservation,
     CapabilityGrant,
@@ -212,6 +213,41 @@ class OperationalProjection:
     def _on_execution_created(self, event) -> None:
         execution = Execution.model_validate(event.payload["execution"])
         self.kernel.executions[execution.execution_id] = execution
+        self._kernel_version(event)
+
+    def _on_agent_notification_delivered(self, event) -> None:
+        notification = AgentNotification.model_validate(event.payload["notification"])
+        existing = self.kernel.agent_notifications.get(notification.notification_id)
+        if existing is not None and existing != notification:
+            raise InvariantViolation(
+                "agent notification identity collision during projection"
+            )
+        self.kernel.agent_notifications[notification.notification_id] = notification
+        self._kernel_version(event)
+
+    def _on_agent_notification_promoted(self, event) -> None:
+        notification = self.kernel.agent_notifications.get(event.stream_id)
+        if notification is None:
+            raise InvariantViolation(
+                "agent notification promotion references an unknown notification"
+            )
+        work_item_id = event.payload.get("work_item_id")
+        if not isinstance(work_item_id, str) or work_item_id not in self.kernel.work_items:
+            raise InvariantViolation(
+                "agent notification promotion references an unknown WorkItem"
+            )
+        if not notification.requires_work_item:
+            raise InvariantViolation(
+                "agent notification without promotion condition was promoted"
+            )
+        if (
+            notification.promoted_work_item_id is not None
+            and notification.promoted_work_item_id != work_item_id
+        ):
+            raise InvariantViolation("agent notification promotion identity collision")
+        self.kernel.agent_notifications[event.stream_id] = notification.model_copy(
+            update={"promoted_work_item_id": work_item_id}
+        )
         self._kernel_version(event)
 
     def _on_agent_name_assigned(self, event) -> None:

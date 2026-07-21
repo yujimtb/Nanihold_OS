@@ -51,6 +51,7 @@ from vsm.kernel.models import (
     WorkItem,
 )
 from vsm.kernel.service import Kernel
+from vsm.notifications import AgentNotification
 from vsm.pilot.host import PilotHostCoordinator
 from vsm.pilot.models import (
     DeviceIdentity,
@@ -90,6 +91,14 @@ class CreateWorkItemRequest(CommandMetadata):
 
 class CreateExecutionRequest(CommandMetadata):
     execution: Execution
+
+
+class DeliverNotificationRequest(CommandMetadata):
+    notification: AgentNotification
+
+
+class PromoteNotificationRequest(CommandMetadata):
+    work_item: WorkItem
 
 
 class WorkInterventionRequest(CommandMetadata):
@@ -396,6 +405,36 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
             idempotency_key=request.idempotency_key,
         )
         return request.work_item
+
+    @app.get("/api/notifications", dependencies=[Depends(authorize)])
+    def notifications():
+        return {"items": list(state.kernel.agent_notifications.values())}
+
+    @app.post("/api/notifications", dependencies=[Depends(authorize)], status_code=201)
+    def deliver_notification(request: DeliverNotificationRequest):
+        state.kernel.record_agent_notification(
+            request.notification,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        return request.notification
+
+    @app.post(
+        "/api/notifications/{notification_id}/promotions",
+        dependencies=[Depends(authorize)],
+        status_code=201,
+    )
+    def promote_notification(
+        notification_id: str,
+        request: PromoteNotificationRequest,
+    ):
+        state.kernel.promote_agent_notification(
+            notification_id,
+            request.work_item,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        return state.kernel.work_items[request.work_item.work_item_id]
 
     @app.post(
         "/api/work-items/{work_item_id}/delegations",

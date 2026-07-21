@@ -79,6 +79,11 @@
   `reply-approval@1`と既存`lethe-channel-bridge`による承認後配信、draftをanchorする
   `send-record@1`までの監査線を実行契約として固定し、自動返信生成・未承認送信を禁止する。
   `tests/test_reply_authoring.py`でgateway投入とdraft anchorによる帰属連結を検証する。
+- ACR-02/ACR-07の共有通知配送基盤。宛先解決済みのIntercom着信を
+  `agent_notification_delivered`として`space:personal-primary`のOperational Ledgerへ記録し、
+  `requires_work_item=true`の明示条件だけを`agent_notification_promoted`と既存
+  `work_item_created`へ連結する。`AgentNotificationDelivery`はエージェント間通信にも
+  同じLedger Event契約を使用し、外部返信経路を追加しない。
 
 ## 検証
 
@@ -103,7 +108,7 @@
   gateway投入、draft anchor経由の帰属連結、approval/sendを実行しないdraft envelopeを検証
 - 既存`lethe-channel-bridge`全体回帰: 100 passed。承認済みカードのみの配信、
   `reply-approval@1`検証、draft anchor付き`send-record@1`書き戻しを含む
-- 現行Nanihold全体回帰: 143 passed、3 skipped。ACR-01/ACR-03の変更を含め、既存テストを
+- 現行Nanihold全体回帰: 149 passed。ACR-01/ACR-03/ACR-02の変更を含め、既存テストを
   壊していないことを確認
 - Windows PilotHost launcher: 3 passed。親`PATH`保持、認証付きready、
   2秒後のprocess生存、長いstderr非転送を検証
