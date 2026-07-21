@@ -550,7 +550,14 @@ def _verify_notification(
     expected_channel = result.get("channel")
     if expected_channel != cell.get("channel"):
         raise EvidenceVerificationError("result channel does not match matrix cell")
-    if incoming.get("source_platform") not in {None, expected_channel}:
+    allowed_source_platforms = {None, expected_channel}
+    if cell.get("direction") == "agent_to_agent":
+        # agent_to_agent cells are delivered over the internal Operational
+        # Ledger path (AgentNotificationDelivery.send_agent_message always
+        # records source_platform="internal"), never over a real Discord/Slack
+        # channel, so "internal" is the expected value for these cells.
+        allowed_source_platforms.add("internal")
+    if incoming.get("source_platform") not in allowed_source_platforms:
         raise EvidenceVerificationError("audit trace channel does not match result")
     source_message_id = result.get("source_message_id")
     if isinstance(source_message_id, str) and incoming.get("source_message_id") != source_message_id:

@@ -170,3 +170,48 @@ def test_verifier_rejects_external_send_without_explicit_opt_in() -> None:
     results["real_external_sends_performed"] = True
     with pytest.raises(EvidenceVerificationError, match="external sends"):
         verify_results(results, evidence)
+
+
+def _first_notification_cell_id(direction: str) -> str:
+    for cell in build_matrix():
+        if (
+            cell["applicable"]
+            and cell["direction"] == direction
+            and cell["resolution"] != "observation_only"
+        ):
+            return str(cell["cell_id"])
+    raise AssertionError(f"no applicable notification cell for direction={direction}")
+
+
+def test_verifier_accepts_internal_source_platform_for_agent_to_agent_cell() -> None:
+    """AgentNotificationDelivery.send_agent_message always records
+    source_platform="internal" for agent_to_agent notifications (see
+    vsm/notifications.py), and AuditTraceService.trace_notification always
+    returns that key (see vsm/audit_trace.py).  Real automated-cell evidence
+    therefore carries an explicit source_platform="internal", and the
+    verifier must accept it for the internal-path (agent_to_agent) cells.
+    """
+
+    results, evidence = _evidence_and_results()
+    cell_id = _first_notification_cell_id("agent_to_agent")
+    evidence["audit_traces"][cell_id]["incoming"]["source_platform"] = "internal"
+
+    verified = verify_results(results, evidence)
+
+    assert verified["verified"] is True
+    assert cell_id in verified["cell_ids"]
+
+
+def test_verifier_rejects_internal_source_platform_for_owner_to_agent_cell() -> None:
+    """owner_to_agent cells are real channel-inbound notifications, so an
+    incoming source_platform of "internal" would mean the evidence does not
+    actually prove delivery over the claimed Discord/Slack channel; the
+    verifier must keep rejecting that for non-agent_to_agent cells.
+    """
+
+    results, evidence = _evidence_and_results()
+    cell_id = _first_notification_cell_id("owner_to_agent")
+    evidence["audit_traces"][cell_id]["incoming"]["source_platform"] = "internal"
+
+    with pytest.raises(EvidenceVerificationError, match="audit trace channel does not match result"):
+        verify_results(results, evidence)
