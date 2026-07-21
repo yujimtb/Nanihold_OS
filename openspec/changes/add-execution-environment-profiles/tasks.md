@@ -27,22 +27,23 @@
 
 ## Track D. Preflight = 契約適合テスト(中核)
 
-- [ ] D1 codex を 1 回試走させ rollout の `sandbox_policy` と契約の他能力要件を実測する
+- [x] D1 codex を 1 回試走させ rollout の `sandbox_policy` と契約の他能力要件を実測する
   - Spec: EEP-06 / 受け入れ: 契約適合の実測
 - [ ] D2 契約に不適合(サイレント降格等)で当該実体の実行を拒否・fail-fast し、合格実体を instance fingerprint 付きで Operational Ledger に記録する
+  - Track B: fail-fast、証拠生成、記録フックまで実装。Ledger 接続は Track C の残作業。
   - Spec: EEP-06 / 受け入れ: 不適合時の拒否 + 合格実体の記録
 
 ## Track D-bis. dispatch 時バージョン検証 + preflight キャッシュ
 
-- [ ] Db1 dispatch 直前に CLI 実バージョンを決定論的に読む(バージョンファイル + mtime 比較、プロセス起動なし)
+- [x] Db1 dispatch 直前に CLI 実バージョンを決定論的に読む(バージョンファイル + mtime 比較、プロセス起動なし)
   - Spec: EEP-09 / 受け入れ: プロセス起動を伴わない読み取り
-- [ ] Db2 検証タプル(CLI バージョン × sandbox モード × `environment_fingerprint`)一致で preflight をスキップする
+- [x] Db2 検証タプル(CLI バージョン × sandbox モード × `environment_fingerprint`)一致で preflight をスキップする
   - Spec: EEP-09 / 受け入れ: キャッシュヒットで試走スキップ
-- [ ] Db3 タプル不一致で preflight 試走 + 宣言メタデータ自動更新(FAV-06)を行ってから実行する
+- [x] Db3 タプル不一致で preflight 試走 + 宣言メタデータ自動更新(FAV-06)を行ってから実行する
   - Spec: EEP-09 / 受け入れ: キャッシュミスで試走 + 自動更新
-- [ ] Db4 検証結果キャッシュを Ledger または PilotHost ローカルに永続化し再起動を跨いで有効にする
+- [x] Db4 検証結果キャッシュを Ledger または PilotHost ローカルに永続化し再起動を跨いで有効にする
   - Spec: EEP-09 / 受け入れ: 再起動後もキャッシュ有効
-- [ ] Db5 キャッシュミス時の preflight 失敗は宣言書き換えで回避せず fail-fast する
+- [x] Db5 キャッシュミス時の preflight 失敗は宣言書き換えで回避せず fail-fast する
   - Spec: EEP-09 / 受け入れ: 降格・非互換を宣言書き換えで通さない
 
 ## Track E. 契約変更 = candidate 切替 / 実体フェイルオーバーは candidate 不変

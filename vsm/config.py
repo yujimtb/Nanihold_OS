@@ -146,6 +146,10 @@ class ProductionPilotHostRuntimeConfig(StrictConfig):
     work_timeout_seconds: float = Field(gt=0)
     max_parallelism: int = Field(gt=0, le=32)
     reorientation_max_tool_rounds: int = Field(gt=0, le=100)
+    preflight_enabled: bool = False
+    preflight_cli_version_file: Path | None = None
+    preflight_cache_path: Path | None = None
+    preflight_instance_fingerprint: str | None = None
 
     @model_validator(mode="after")
     def work_total_covers_parts(self) -> "ProductionPilotHostRuntimeConfig":
@@ -155,6 +159,29 @@ class ProductionPilotHostRuntimeConfig(StrictConfig):
             raise ValueError(
                 "production_pilot_host.work_max_total_tokens must cover parts"
             )
+        return self
+
+    @model_validator(mode="after")
+    def preflight_paths_are_explicit(self) -> "ProductionPilotHostRuntimeConfig":
+        configured = (
+            self.preflight_cli_version_file,
+            self.preflight_cache_path,
+            self.preflight_instance_fingerprint,
+        )
+        if self.preflight_enabled and any(item is None for item in configured):
+            raise ValueError(
+                "enabled production preflight requires version file, cache path, "
+                "and instance fingerprint"
+            )
+        if not self.preflight_enabled and any(item is not None for item in configured):
+            raise ValueError(
+                "production preflight paths require preflight_enabled=true"
+            )
+        if (
+            self.preflight_instance_fingerprint is not None
+            and not self.preflight_instance_fingerprint.strip()
+        ):
+            raise ValueError("preflight_instance_fingerprint must not be blank")
         return self
 
 
