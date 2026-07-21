@@ -52,10 +52,12 @@
 - [ ] E2 承認制(register → S3* → owner → publish、旧 RETIRE)の枠内で再発行する
   - Spec: FAV-05 / 受け入れ: 承認フロー遵守と単一 routable snapshot
 
-## Track F. EEP 統合(spec 本文は変更しない)
+## Track F. EEP 統合
 
-- [ ] F1 実装統合時に EEP-01 の「要求 CLI バージョン」を「最低要求版(任意)」へ調整する
-  - Note: 本 change では `add-execution-environment-profiles` の spec 本文を変更しない。統合時タスクとして残す
+- [ ] F1 実装統合時に FAV-06 の自動更新対象(最低要求版メモ)を EEP-01 の「最低要求 CLI バージョン(任意)」へ結線する
+  - Note: `add-execution-environment-profiles` は環境契約 / 環境実体の 2 層へ再設計済みで、EEP-01 は既に「最低要求 CLI バージョン(任意)」を含む
+- [ ] F2 FAV-06 の検知経路・自動更新トリガを EEP-09(dispatch 時バージョン検証 + preflight キャッシュ)と結線する
+  - Spec: FAV-06 / EEP-09 / 受け入れ: dispatch 時キャッシュミスで自動更新が駆動される
 
 ## Track G. 検証
 

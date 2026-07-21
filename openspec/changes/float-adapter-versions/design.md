@@ -47,4 +47,4 @@ PilotHost は起動時・実行時に CLI の実バージョンを取得し、re
 
 - **監査の連続性**: identity が一度変わるため、旧 candidate と新 candidate の routing 履歴が分断される。分断は一度きりであり、`actual_adapter_version` の記録で版遷移は receipt 側に残るため、回帰調査は receipt から辿れる。旧 candidate の posterior をどこまで引き継ぐか(引き継がない/初期化する)はオーナーレビュー論点とする。
 - **最低要求版の粒度**: 最低要求版の表現が粗いと必要な機能差を捉えられない。粒度はオーナーレビュー論点とする。
-- **EEP との統合順序**: EEP-01 の「要求 CLI バージョン」を最低要求版へ弱める調整は実装統合時に行う。本 change では EEP の spec 本文を変更せず、`tasks.md` に統合時タスクとして残す。
+- **EEP との統合順序**: `add-execution-environment-profiles` は環境契約 / 環境実体の 2 層へ再設計済みで、EEP-01 の CLI バージョンは「最低要求 CLI バージョン(任意)」として環境契約に含まれる。FAV-06 の検知経路と自動更新トリガは EEP-09(dispatch 時バージョン検証 + preflight キャッシュ)と共有する。identity 除外(本 change)と EEP 再設計は整合しており、実装統合時に FAV-06 の自動更新対象(最低要求版メモ)と EEP-09 のキャッシュ機構を結線する。
