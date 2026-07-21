@@ -627,6 +627,9 @@ def test_max_request_document_bytes_must_be_a_positive_integer(
 def test_codex_exec_has_exact_model_effort_cwd_sandbox_and_schema(
     tmp_path: Path, monkeypatch, provider_env
 ):
+    # Pin a non-Windows platform so the declared --sandbox flag path is exercised
+    # deterministically regardless of the host OS running the suite.
+    monkeypatch.setattr("scripts.production_pilot_host.sys.platform", "linux")
     calls: list[list[str]] = []
 
     def fake_run(argv, **kwargs):
@@ -798,6 +801,40 @@ def test_codex_rejects_actual_model_mismatch_from_rollout(
 
     assert receipt["status"] == "failed"
     assert receipt["error"]["code"] == "RequestedActualModelMismatch"
+
+
+def test_codex_win32_bypasses_sandbox_instead_of_workspace_write(
+    tmp_path: Path, monkeypatch, provider_env
+):
+    monkeypatch.setattr("scripts.production_pilot_host.sys.platform", "win32")
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        version = _version_result(argv)
+        if version is not None:
+            return version
+        calls.append(argv)
+        _codex_last_message(Path(argv[argv.index("--output-last-message") + 1]))
+        _write_codex_rollout(
+            _codex_home(tmp_path),
+            "codex-thread-1",
+            model="gpt-5.6-sol",
+            effort="xhigh",
+        )
+        return subprocess.CompletedProcess(argv, 0, _codex_stdout(), "")
+
+    host = _make_host(tmp_path, monkeypatch, fake_run)
+    receipt = host.execute("/v1/work-executions", _work_request(tmp_path))
+
+    assert receipt["status"] == "succeeded"
+    argv = calls[0]
+    # On Windows codex 0.144.5 degrades --sandbox workspace-write to read-only;
+    # the adapter uses the bypass flag instead while the declared boundary stays.
+    assert "--dangerously-bypass-approvals-and-sandbox" in argv
+    assert "--sandbox" not in argv
+    assert "workspace-write" not in argv
+    assert "--strict-config" in argv
+    assert "--ignore-user-config" in argv
 
 
 def test_codex_rejects_acceptance_criterion_not_copied_verbatim(
