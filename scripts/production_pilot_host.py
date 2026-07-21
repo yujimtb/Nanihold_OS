@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, Callable, Literal, Mapping, TypeAlias
 from urllib.parse import urlparse
 
 from pydantic import (
@@ -33,6 +33,17 @@ from vsm.interface.models import (
 )
 from vsm.kernel.models import WorkState
 from vsm.pilot.models import DeviceIdentity, ModelCandidate
+from vsm.preflight import (
+    DeclarationUpdateEvent,
+    EnvironmentContract,
+    PreflightEvidence,
+    PreflightGate,
+    PreflightObservation,
+    PreflightRunner,
+    PreflightError,
+    VerificationTuple,
+    CliVersionReader,
+)
 
 
 CLAUDE_EFFORT = "high"
@@ -335,14 +346,42 @@ def _required_env(name: str) -> str:
     return value
 
 
-def _exact_fields(value: object, fields: set[str], label: str) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != fields:
+def _exact_fields(
+    value: object,
+    fields: set[str],
+    label: str,
+    *,
+    optional_fields: set[str] | None = None,
+) -> dict[str, Any]:
+    allowed = fields | (optional_fields or set())
+    if (
+        not isinstance(value, dict)
+        or not fields.issubset(value)
+        or not set(value).issubset(allowed)
+    ):
         raise RuntimeError(f"{label} fields differ from the exact contract")
     return value
 
 
 def _candidate_key(candidate: ModelCandidate) -> str:
     return candidate.key
+
+
+def _nested_string(value: object, key: str) -> str | None:
+    if isinstance(value, Mapping):
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+        for child in value.values():
+            found = _nested_string(child, key)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _nested_string(child, key)
+            if found is not None:
+                return found
+    return None
 
 
 class ReceiptStore:
@@ -631,8 +670,6 @@ class ClaudeAdapter:
             )
         self.executable = _nonblank(data["executable"], "Claude executable")
         self.cli_version = _nonblank(data["cli_version"], "Claude CLI version")
-        if self.candidate.adapter_version != self.cli_version:
-            raise RuntimeError("Claude candidate adapter version mismatch")
         self.working_directory = Path(
             _nonblank(data["working_directory"], "Claude working directory")
         ).resolve()
@@ -693,21 +730,6 @@ class ClaudeAdapter:
         self.timeout_seconds = _positive_number(
             data["timeout_seconds"], "Claude timeout"
         )
-        self._validate_version()
-
-    def _validate_version(self) -> None:
-        completed = subprocess.run(
-            [self.executable, "--version"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            shell=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        if completed.returncode != 0 or self.cli_version not in completed.stdout:
-            raise RuntimeError("Claude CLI version mismatch")
-
     def invoke(
         self,
         endpoint: str,
@@ -1149,8 +1171,6 @@ class CodexAdapter:
             raise RuntimeError("coding S1 candidate must use codex-cli/openai")
         self.executable = _nonblank(data["executable"], "Codex executable")
         self.cli_version = _nonblank(data["cli_version"], "Codex CLI version")
-        if self.candidate.adapter_version != self.cli_version:
-            raise RuntimeError("Codex candidate adapter version mismatch")
         directories = data["working_directory_allowlist"]
         if not isinstance(directories, list) or not directories:
             raise RuntimeError("Codex working directory allowlist must be non-empty")
@@ -1190,20 +1210,83 @@ class CodexAdapter:
         self.codex_home = Path(
             os.environ.get("CODEX_HOME") or (Path.home() / ".codex")
         ).resolve()
-        self._validate_version()
+    def run_preflight(self, verification_tuple: VerificationTuple) -> PreflightObservation:
+        """Run exactly one Codex trial and read its authoritative rollout policy."""
 
-    def _validate_version(self) -> None:
+        resolved_cwd = sorted(self.working_directories)[0]
+        prompt = (
+            "Nanihold execution-environment preflight. Do not modify the workspace. "
+            "Return a short acknowledgement only."
+        )
+        argv = [
+            self.executable,
+            "exec",
+            "--json",
+            "--cd",
+            resolved_cwd,
+            "--sandbox",
+            verification_tuple.sandbox_mode,
+            "--strict-config",
+            "--ignore-user-config",
+            *self.mcp.codex_config_arguments(),
+            prompt,
+        ]
         completed = subprocess.run(
-            [self.executable, "--version"],
+            argv,
             check=False,
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=self.timeout_seconds,
             shell=False,
+            cwd=resolved_cwd,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        if completed.returncode != 0 or self.cli_version not in completed.stdout:
-            raise RuntimeError("Codex CLI version mismatch")
+        if completed.returncode != 0:
+            raise PreflightError("Codex preflight trial exited unsuccessfully")
+        thread_ids: list[str] = []
+        for line in completed.stdout.splitlines():
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise PreflightError("Codex preflight returned invalid JSONL") from exc
+            if not isinstance(event, dict):
+                raise PreflightError("Codex preflight returned a non-object event")
+            if event.get("type") == "thread.started" and isinstance(
+                event.get("thread_id"), str
+            ):
+                thread_ids.append(event["thread_id"])
+        if len(thread_ids) != 1:
+            raise PreflightError("Codex preflight did not report one thread")
+        sessions_root = self.codex_home / "sessions"
+        try:
+            matches = sorted(sessions_root.rglob(f"rollout-*-{thread_ids[0]}.jsonl"))
+        except OSError as exc:
+            raise PreflightError("Codex preflight rollout directory could not be scanned") from exc
+        if len(matches) != 1:
+            raise PreflightError("Codex preflight rollout was not uniquely found")
+        sandbox_policy: str | None = None
+        try:
+            for line in matches[0].read_text("utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise PreflightError("Codex preflight rollout contained invalid JSONL") from exc
+                candidate = _nested_string(record, "sandbox_policy")
+                if candidate is not None:
+                    sandbox_policy = candidate
+        except OSError as exc:
+            raise PreflightError("Codex preflight rollout could not be read") from exc
+        if sandbox_policy is None:
+            raise PreflightError("Codex preflight rollout did not report sandbox_policy")
+        return PreflightObservation(
+            sandbox_policy=sandbox_policy,
+            capabilities={"workspace_writable": sandbox_policy == "workspace-write"},
+            rollout_ref=str(matches[0]),
+        )
 
     def invoke(
         self, request: WorkExecutionRequest
@@ -1562,8 +1645,47 @@ def _positive_integer(value: object, label: str) -> int:
     return value
 
 
+def _config_path(config_path: Path, value: str) -> Path:
+    candidate = Path(value)
+    return candidate if candidate.is_absolute() else (config_path.parent / candidate).resolve()
+
+
+def _atomic_write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary_path = Path(stream.name)
+            json.dump(value, stream, ensure_ascii=False, sort_keys=True, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            try:
+                temporary_path.unlink()
+            except OSError:
+                pass
+
+
 class ProductionPilotHost:
-    def __init__(self, config_path: Path, log_path: Path) -> None:
+    def __init__(
+        self,
+        config_path: Path,
+        log_path: Path,
+        *,
+        preflight_runner: PreflightRunner | None = None,
+        declaration_event_hook: Callable[[DeclarationUpdateEvent], object] | None = None,
+        evidence_hook: Callable[[PreflightEvidence], object] | None = None,
+    ) -> None:
         raw = json.loads(config_path.read_text("utf-8"))
         data = _exact_fields(
             raw,
@@ -1579,6 +1701,7 @@ class ProductionPilotHost:
                 "codex",
             },
             "production PilotHost config",
+            optional_fields={"preflight"},
         )
         self.identity = DeviceIdentity(
             pilot_host_id=data["pilot_host_id"],
@@ -1598,6 +1721,90 @@ class ProductionPilotHost:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.claude = ClaudeAdapter(data["claude"])
         self.codex = CodexAdapter(data["codex"])
+        self.preflight_evidence: PreflightEvidence | None = None
+        self.preflight_update_events: list[DeclarationUpdateEvent] = []
+        preflight_config = data.get("preflight")
+        self.preflight: PreflightGate | None = None
+        if preflight_config is not None:
+            self.preflight = self._build_preflight(
+                config_path=config_path,
+                document=data,
+                raw_config=preflight_config,
+                preflight_runner=preflight_runner,
+                declaration_event_hook=declaration_event_hook,
+                evidence_hook=evidence_hook,
+            )
+
+    def _build_preflight(
+        self,
+        *,
+        config_path: Path,
+        document: dict[str, Any],
+        raw_config: object,
+        preflight_runner: PreflightRunner | None,
+        declaration_event_hook: Callable[[DeclarationUpdateEvent], object] | None,
+        evidence_hook: Callable[[PreflightEvidence], object] | None,
+    ) -> PreflightGate | None:
+        config = _exact_fields(
+            raw_config,
+            {"enabled"},
+            "preflight config",
+            optional_fields={
+                "cli_version_file",
+                "cache_path",
+                "environment_contract",
+                "instance_fingerprint",
+            },
+        )
+        if not isinstance(config["enabled"], bool):
+            raise RuntimeError("preflight enabled must be boolean")
+        if not config["enabled"]:
+            return None
+        cli_version_file = _config_path(
+            config_path,
+            _nonblank(config["cli_version_file"], "preflight CLI version file"),
+        )
+        cache_path = _config_path(
+            config_path,
+            _nonblank(config["cache_path"], "preflight cache path"),
+        )
+        instance_fingerprint = _nonblank(
+            config["instance_fingerprint"], "preflight instance fingerprint"
+        )
+        contract_raw = config["environment_contract"]
+        if not isinstance(contract_raw, Mapping):
+            raise RuntimeError("preflight environment_contract must be an object")
+        contract = EnvironmentContract.from_mapping(contract_raw)
+        if contract.environment_fingerprint != self.codex.candidate.environment_fingerprint:
+            raise RuntimeError(
+                "preflight environment fingerprint differs from the Codex candidate"
+            )
+        declaration = document["codex"]["candidate"]
+        if not isinstance(declaration, dict):
+            raise RuntimeError("Codex candidate declaration must be an object")
+
+        def record_event(event: DeclarationUpdateEvent) -> None:
+            self.preflight_update_events.append(event)
+            if declaration_event_hook is not None:
+                declaration_event_hook(event)
+
+        def record_evidence(evidence: PreflightEvidence) -> None:
+            self.preflight_evidence = evidence
+            if evidence_hook is not None:
+                evidence_hook(evidence)
+
+        runner = preflight_runner or self.codex.run_preflight
+        return PreflightGate(
+            contract=contract,
+            instance_fingerprint=instance_fingerprint,
+            version_reader=CliVersionReader(cli_version_file),
+            cache_path=cache_path,
+            preflight_runner=runner,
+            candidate_declaration=declaration,
+            declaration_event_hook=record_event,
+            declaration_persist_hook=lambda: _atomic_write_json(config_path, document),
+            evidence_hook=record_evidence,
+        )
 
     def authorized(self, headers: Any) -> bool:
         expected = {
@@ -1678,6 +1885,13 @@ class ProductionPilotHost:
             raise ContractError("request device identity differs from PilotHost")
         if isinstance(request, WorkExecutionRequest):
             self.codex.validate_request(request)
+            if self.preflight is not None:
+                try:
+                    self.preflight.dispatch_preflight()
+                except PreflightError as exc:
+                    raise ContractError(
+                        f"preflight rejected the execution: {exc}"
+                    ) from exc
         else:
             self.claude.validate_request(request)
 
