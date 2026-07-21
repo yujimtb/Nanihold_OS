@@ -212,12 +212,14 @@ production traffic の50%/70% token削減率は、7日間かつ比較可能WorkI
 - Nanihold `main` integration merge: `0b97968`
 - LETHE feature commit: `b66ceae`
 - LETHE `master` integration merge: `046464d`
+- 現行のNanihold `main`には、Nanihold側のintegration merge `0b97968`に加えて、
+  `00687a3`、`7ec3f80`、`ecfdbbb`、`f18984c`の後続変更も含まれる
 - 2026-07-20、先行architecture commitについて両integration branchの公開remote pushを確認
 - 2026-07-20、local verification拡張を実装・live smoke・再起動復元まで確認
 - 2026-07-20、完全稼働・再オリエンテーション差分:
   - Nanihold `00687a3`を`agent/interface-activation`へ公開push
   - LETHE `b4d574f`を`agent/nanihold-history-ingestion`へ公開push
   - Intercom `c468aad`をlocal commit。repositoryにremoteがないため未push
-- 今回のfeature branchは`main/master`へ未merge。公開pushとintegration mergeを
-  混同しない
+- Nanihold側の上記feature変更は現行`main`へマージ済み。公開push済みであることと
+  integration merge済みであることは区別する
 - production deploy: 対象外、未実施
