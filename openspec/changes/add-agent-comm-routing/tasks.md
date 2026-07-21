@@ -1,34 +1,37 @@
 # Tasks: add-agent-comm-routing
 
-> 本 change は設計起草のみ。実装しない。以下はオーナーレビューと承認後の実装 change 起票に向けた準備項目。
+> 本 change は設計起草のみ。実装しない。以下はオーナー確定事項(2026-07-21 夕 / sup:c8e91a37, sup:b3f7d215)を反映した設計項目と、実装 change 起票に向けた準備項目。
 
-## Track A. 設計提示(オーナーレビュー)
+## Track A. 設計提示(確定事項の反映)
 
 - [x] A1 通知(inbound routing)と返信(outbound authoring)の二本柱を design.md に図示する
   - Spec: ACR-02, ACR-03
-- [x] A2 宛先規約 3 案(先頭「名前:」/ メンション / エイリアス)を比較し推奨を提示する
-  - Spec: ACR-02 / 論点 1
-- [x] A3 配送形態 3 案(Ledger イベント / Execution 注入 / WorkItem 起票)を比較し推奨を提示する
-  - Spec: ACR-02 / 論点 2
-- [x] A4 命名割り当ての運用(いいねフラグ・カテゴリ/規模/意味座標の扱い)を提示する
-  - Spec: ACR-01 / 論点 3
+- [x] A2 宛先記法(文頭 `@名前` 主 + リプライ/スレッド継承 補、プレフィックスは設定値 `AGENT_ADDRESS_PREFIX`)を確定仕様として記述する
+  - Spec: ACR-02
+- [x] A3 通知配送基盤(Nanihold Operational Ledger = personal-primary LETHE `:8080` `space:personal-primary` イベント + 必要時 WorkItem 昇格の二段構え)を確定仕様として記述する
+  - Spec: ACR-02
+- [x] A4 命名の自動割当(dispatch 時ローテーション・規模↔階級・言語↔系統・いいね規則・枯渇時サフィックス・エフォート非連動)を確定仕様として記述する
+  - Spec: ACR-01
+- [x] A5 Nagi S5 常設席(予約名・ローテーション対象外・終了条件なし・WorkItem 受け入れ条件体系の外・パイロット交代でも不変)を記述する
+  - Spec: ACR-06
 
-## Track B. オーナー承認事項の確定(承認待ち)
+## Track B. 実装前提の固め(オーナー確定済み)
 
-- [ ] B1 宛先規約の確定
-  - Spec: ACR-02 / 受け入れ: オーナー承認
-- [ ] B2 配送形態の確定
-  - Spec: ACR-02 / 受け入れ: オーナー承認
-- [ ] B3 命名割り当て手続きの確定と初期割り当て
-  - Spec: ACR-01 / 受け入れ: オーナー承認
+- [x] B1 宛先記法の確定(文頭 `@名前` 主 + 継承 補、プレフィックス設定値) — sup:c8e91a37 / sup:b3f7d215
+  - Spec: ACR-02
+- [x] B2 通知配送基盤の確定(Operational Ledger 基盤 + WorkItem 昇格) — sup:c8e91a37 / sup:b3f7d215
+  - Spec: ACR-02
+- [x] B3 命名の自動割当運用の確定(ローテーション・規模/言語/いいね規則) — sup:c8e91a37 / sup:b3f7d215
+  - Spec: ACR-01
+- [x] B4 Nagi 予約席の確定 — sup:c8e91a37 / sup:b3f7d215
+  - Spec: ACR-06
 
 ## Track C. 監査設計
 
-- [x] C1 通知配送・返信帰属の receipt / Ledger トレース設計を記述する
+- [x] C1 通知配送・返信帰属・割当帰属の receipt / Operational Ledger トレース設計を記述する
   - Spec: ACR-04
 
 ## Track D. 検収
 
 - [ ] D1 `openspec validate add-agent-comm-routing --strict` を通す
-- [ ] D2 オーナーレビューで 3 論点(宛先規約・配送形態・命名割り当て)の承認を得る
-- [ ] D3 承認内容を反映した実装 change を別途起票する(本 change は実装しない)
+- [ ] D2 確定事項を反映した実装 change を別途起票する(本 change は実装しない)
