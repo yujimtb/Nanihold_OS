@@ -458,6 +458,7 @@ class AuditTraceService:
                 "id": draft_id,
                 "kind": REPLY_DRAFT_KIND,
                 "incoming_observation_id": incoming_observation_id,
+                "channel": channel,
                 "agent_name": agent_name,
                 "work_item_id": work_item_id,
                 "execution_id": execution_id,

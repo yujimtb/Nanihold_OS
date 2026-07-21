@@ -55,6 +55,10 @@ codeは短寿命で再利用不可、Ledgerにはhashだけを保存します。
 
 POST command は resource payload に加えて `actor_id` と `idempotency_key` を要求します。会話作成と owner message は owner identity が resource から確定するため専用 request 型です。
 
+ACR-08の実経路試験成果物はAPIの送信経路を増設しない。60セルの正本は
+`docs/acr08-e2e-matrix.md`、人間操作は`docs/acr08-owner-checklist.md`、自動化計画と
+Ledger/監査トレースのread-only照合は`python scripts/acr08_connectivity.py`で実行する。
+
 `GET /api/activation/status`はmodelを呼ばず、Assessmentと累積usageに加えて
 `reorientation_attempt_in_progress`と`pending_reorientation_revision_reason`を返します。
 attempt中の別idempotency keyによる二重startも拒否します。runtime restartでbackground

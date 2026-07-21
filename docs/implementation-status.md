@@ -97,6 +97,12 @@
   cursor順に再構成・検証する。返信は明示されたLETHE supplemental recordsから
   `reply-draft@1`→`reply-approval@1`→`send-record@1`のanchor、Observation、個名付き
   lineageを照合し、未接続・不一致はfail-fastする。
+- ACR-08実経路試験の納品物。`docs/acr08-e2e-matrix.md` に60セル（適用26 / N/A34）を
+  N/A理由付きで列挙し、`docs/acr08-owner-checklist.md` にオーナー実施20セルの送信文言・
+  操作・期待結果を固定した。`scripts/acr08_connectivity.py` のdry-runは自動化6セルの
+  共有Ledger経路計画を出力するだけで、Discord/Slack送信を行わない。`vsm.acr08.verify_results`
+  はLedger Eventと既存ACR-04監査トレースをread-onlyで突合し、全26適用セル・観測のみの
+  誤配送ゼロ・外部送信禁止を検証する。
 
 ## 検証
 
@@ -121,10 +127,12 @@
   gateway投入、draft anchor経由の帰属連結、approval/sendを実行しないdraft envelopeを検証
 - 既存`lethe-channel-bridge`全体回帰: 100 passed。承認済みカードのみの配信、
   `reply-approval@1`検証、draft anchor付き`send-record@1`書き戻しを含む
-- 現行Nanihold全体回帰: 149 passed。ACR-01/ACR-03/ACR-02/ACR-07の変更を含め、既存テストを
+- 現行Nanihold全体回帰: 160 passed、3 skipped。ACR-01/ACR-03/ACR-02/ACR-07/ACR-08の変更を含め、既存テストを
   壊していないことを確認
 - ACR-04追加単体テスト: 5 passed。着信配送と昇格、個名↔WorkItem↔receipt、
   draft→承認→配信記録のanchor、および未接続send-recordの拒否を検証
+- ACR-08追加単体テスト: `tests/test_acr08.py` で60セル/26適用/34 N/A、automation 6、
+  owner checklist 20、Ledger/監査トレース突合、外部送信のfail-fastを検証する。
 - Windows PilotHost launcher: 3 passed。親`PATH`保持、認証付きready、
   2秒後のprocess生存、長いstderr非転送を検証
 
@@ -260,3 +268,4 @@ production traffic の50%/70% token削減率は、7日間かつ比較可能WorkI
 - Nanihold側の上記feature変更は現行`main`へマージ済み。公開push済みであることと
   integration merge済みであることは区別する
 - production deploy: 対象外、未実施
+- ACR-08の実Discord/実Slackでの実測はこのWorkItemでは未実施（オーナー承認後の別作業）。
