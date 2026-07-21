@@ -332,6 +332,7 @@ def _work_request(tmp_path: Path) -> dict[str, object]:
             "work_item_id": "work:1",
             "title": "PilotHost test",
             "objective": "Implement the bounded change and run its tests.",
+            "agent_name": "Aki",
         },
         "unmet_acceptance": ["targeted tests pass"],
         "event_delta": _event_delta(),
@@ -688,8 +689,10 @@ def test_codex_exec_has_exact_model_effort_cwd_sandbox_and_schema(
         )
         return subprocess.CompletedProcess(argv, 0, stdout, "")
 
+    request = _work_request(tmp_path)
+    request["work_item"]["agent_name"] = "Aki"
     host = _make_host(tmp_path, monkeypatch, fake_run)
-    receipt = host.execute("/v1/work-executions", _work_request(tmp_path))
+    receipt = host.execute("/v1/work-executions", request)
 
     assert receipt["status"] == "succeeded"
     assert receipt["actual_model"] == "gpt-5.6-sol"
@@ -721,6 +724,10 @@ def test_codex_exec_has_exact_model_effort_cwd_sandbox_and_schema(
     # coverage gate is satisfiable without loosening verification.
     assert "verbatim" in prompt["contract"]
     assert "unmet_acceptance is the authoritative source text" in prompt["contract"]
+    assert prompt["work_item"]["agent_name"] == "Aki"
+    assert "reply-draft@1" in prompt["contract"]
+    assert "reply-approval@1" in prompt["contract"]
+    assert "send-record@1" in prompt["contract"]
 
 
 def _codex_stdout(thread_id: str = "codex-thread-1") -> str:

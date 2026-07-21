@@ -36,6 +36,20 @@ Node Tree は永続します。各 Node は外部から S1 として見え、内
 
 WorkItem は約束と仕事を保持し、Execution は一時的な Pilot の試行です。同じ Node と WorkItem に複数 Execution を持てますが、一つの Execution は一つの Pilot だけです。
 
+dispatch時のExecutionには、設定された`Agent_name.csv`からモデル階級とプロバイダ系統に
+対応する個名をタスク単位で割り当てます。いいね=0の行と予約席`Nagi`は自動候補から除外し、
+同一プールの枯渇時だけ数字サフィックスを付与します。割当は`agent_name_assigned` Eventとして
+Ledgerへ記録し、Executionと後続のPilot receipt EventからWorkItem・Node・Pilotとの帰属を復元できます。
+`Nagi`は`node:owner-interface`に属するS5常設席であり、このローテーションには参加しません。
+
+返信 authoring はこの個名を WorkItem handoff まで保持し、エージェントが明示的に
+`reply-draft@1` を incoming Observation に anchor して LETHE card-queue へ投入する。
+draft の envelope は `created_by` と `lineage` に個名、WorkItem ID、Execution ID を
+記録する。エージェントは承認や送信を実行せず、オーナー承認の
+`reply-approval@1` のみが既存 `lethe-channel-bridge` を起動し、bridge が draft を
+anchor した `send-record@1` を作る。これにより返信の authoring から配信結果までを
+個名付きで監査できる。
+
 Work Graph edge:
 
 - `DELEGATED_TO`: 親から子への委任

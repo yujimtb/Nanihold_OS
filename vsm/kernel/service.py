@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from vsm.errors import InvariantViolation, ReconciliationRequired
 from vsm.activation.service import ActivationService
 from vsm.activation.models import ActivationState, CurrentWorkGraphSnapshot
+from vsm.agent_naming import AgentNameAssignment
 from vsm.auth import OwnerBootstrapService
 from vsm.ids import deterministic_event_id
 from vsm.kernel.ledger import OperationalLedger
@@ -79,6 +80,7 @@ class Kernel:
         self.work_items: dict[str, WorkItem] = {}
         self.work_edges: list[WorkEdge] = []
         self.executions: dict[str, Execution] = {}
+        self.agent_name_assignments: dict[str, AgentNameAssignment] = {}
         self.capability_grants: dict[str, CapabilityGrant] = {}
         self.effect_leases: dict[str, EffectLease] = {}
         self.effect_approvals: dict[str, EffectApproval] = {}
@@ -506,6 +508,59 @@ class Kernel:
         self.executions[execution.execution_id] = execution
         return event
 
+    def record_agent_name_assignment(
+        self,
+        assignment: AgentNameAssignment,
+        *,
+        actor_id: str,
+        idempotency_key: str,
+    ) -> EventEnvelope:
+        if assignment.data_space_id != self.data_space.data_space_id:
+            raise InvariantViolation("AgentNameAssignment DataSpace mismatch")
+        if assignment.assignment_id in self.agent_name_assignments:
+            raise InvariantViolation(
+                f"AgentNameAssignment already exists: {assignment.assignment_id}"
+            )
+        if any(
+            existing.agent_name == assignment.agent_name
+            for existing in self.agent_name_assignments.values()
+        ):
+            raise InvariantViolation(
+                f"AgentNameAssignment name is already assigned: {assignment.agent_name}"
+            )
+        execution = self.executions.get(assignment.execution_id)
+        if execution is None:
+            raise InvariantViolation("AgentNameAssignment Execution not found")
+        if execution.work_item_id != assignment.work_item_id:
+            raise InvariantViolation(
+                "AgentNameAssignment WorkItem does not match Execution"
+            )
+        if execution.node_id != assignment.node_id:
+            raise InvariantViolation(
+                "AgentNameAssignment Node does not match Execution"
+            )
+        if execution.pilot_id != assignment.pilot_id:
+            raise InvariantViolation(
+                "AgentNameAssignment Pilot does not match Execution"
+            )
+        if execution.agent_name is not None:
+            raise InvariantViolation("Execution already has an agent name")
+        event = self._record(
+            stream_id=assignment.assignment_id,
+            event_type="agent_name_assigned",
+            payload={"assignment": self._json(assignment)},
+            actor_type="system",
+            actor_id=actor_id,
+            idempotency_key=idempotency_key,
+            correlation_id=assignment.work_item_id,
+            causation_id=assignment.execution_id,
+        )
+        self.agent_name_assignments[assignment.assignment_id] = assignment
+        self.executions[assignment.execution_id] = execution.model_copy(
+            update={"agent_name": assignment.agent_name}
+        )
+        return event
+
     def set_execution_state(
         self,
         execution_id: str,
@@ -621,6 +676,7 @@ class Kernel:
                 "error": error,
                 "state": next_state,
                 "pause_reason": pause_reason,
+                "agent_name": execution.agent_name,
             },
             actor_type="pilot",
             actor_id=actor_id,

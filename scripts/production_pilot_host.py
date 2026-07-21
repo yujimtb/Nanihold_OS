@@ -181,6 +181,7 @@ class WorkItemHandoff(StrictModel):
     work_item_id: Annotated[str, Field(min_length=1)]
     title: Annotated[str, Field(min_length=1, max_length=2_000)]
     objective: Annotated[str, Field(min_length=1, max_length=100_000)]
+    agent_name: Annotated[str, Field(min_length=1)]
 
 
 class TokenBudget(StrictModel):
@@ -1227,9 +1228,26 @@ class CodexAdapter:
                     "Latin/numeric characters, punctuation, and character width. A "
                     "criterion that differs from its source string by even one "
                     "character will be rejected."
+                    " work_item.agent_name is the authoritative "
+                    "individual writer identity. For a reply-authoring WorkItem, "
+                    "the agent must explicitly author the body and use the existing "
+                    "write_supplemental gateway to submit one reply-draft@1 record, "
+                    "anchored through derived_from.observations to the exact incoming "
+                    "observation, with channel, recipient, body, and drafted_at in "
+                    "the payload. Preserve the individual name in created_by and "
+                    "lineage, including the WorkItem and execution identifiers. Do "
+                    "not create an automatic reply generator, do not submit "
+                    "reply-approval@1, do not call send(), and do not treat a draft "
+                    "as delivered. Only owner approval via reply-approval@1 may cause "
+                    "the existing lethe-channel-bridge to deliver it; that bridge "
+                    "creates send-record@1 anchored to the draft. A request without "
+                    "the attributed agent name is invalid; fail fast instead of "
+                    "inventing one."
                 ),
                 "execution_id": request.execution_id,
-                "work_item": request.work_item.model_dump(mode="json"),
+                "work_item": request.work_item.model_dump(
+                    mode="json", exclude_none=True
+                ),
                 "unmet_acceptance": list(request.unmet_acceptance),
                 "event_delta": request.event_delta.model_dump(mode="json"),
                 "artifact_refs": [

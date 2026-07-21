@@ -136,6 +136,7 @@ class InterfacePilotConfig(StrictConfig):
 class ProductionPilotHostRuntimeConfig(StrictConfig):
     coding_pilot_id: str = Field(min_length=1)
     coding_candidate_model_snapshot: str = Field(min_length=1)
+    agent_name_csv_path: Path
     interface_max_budget_usd: float = Field(gt=0)
     transport_timeout_seconds: float = Field(gt=0)
     work_cwd: str = Field(min_length=1)

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from vsm.activation.models import ReorientationInterruptionReason
+from vsm.agent_naming import AgentNameRegistry
 from vsm.config import LoadedConfig, load_config
 from vsm.dispatcher import DependencyAwareDispatcher
 from vsm.activation.reorientation import ReorientationService
@@ -190,6 +191,12 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
         token_lab_events=token_lab_events,
     )
     projection_cursor = projection.rebuild()
+    agent_naming_registry = None
+    if production_config is not None:
+        agent_naming_registry = AgentNameRegistry.from_csv(
+            production_config.agent_name_csv_path
+        )
+        agent_naming_registry.restore(kernel.agent_name_assignments.values())
     _interrupt_reorientation_lost_on_runtime_restart(kernel)
     if require_active_route:
         active_snapshot_id = config.routing.active_route_snapshot_id
@@ -221,6 +228,7 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
         startup_projection_cursor=projection_cursor,
         model_registry=registry if production_config is not None else None,
         work_executor=pilot if production_config is not None else None,
+        agent_naming_registry=agent_naming_registry,
         max_parallelism=(
             production_config.max_parallelism if production_config is not None else None
         ),

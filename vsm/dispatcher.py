@@ -9,6 +9,7 @@ from typing import Protocol
 
 from pydantic import Field
 
+from vsm.agent_naming import AgentNameRegistry
 from vsm.errors import InvariantViolation
 from vsm.ids import new_id
 from vsm.kernel.models import (
@@ -49,6 +50,7 @@ class DispatchAssignment(StrictModel):
     pilot_id: Identifier
     pilot_host_id: Identifier
     model_candidate_key: NonBlank
+    agent_name: NonBlank | None = None
 
 
 class DispatchBatch(StrictModel):
@@ -69,6 +71,7 @@ class WorkExecutor(Protocol):
         event_delta: EventDeltaSummary,
         artifact_refs: tuple[ArtifactReference, ...],
         idempotency_key: str,
+        agent_name: str,
     ) -> WorkExecutionOutcome: ...
 
 
@@ -84,6 +87,7 @@ class DependencyAwareDispatcher:
         startup_projection_cursor: int,
         model_registry: dict[str, ModelCandidate] | None = None,
         work_executor: WorkExecutor | None = None,
+        agent_naming_registry: AgentNameRegistry | None = None,
         max_parallelism: int | None = None,
     ) -> None:
         self.kernel = kernel
@@ -99,6 +103,7 @@ class DependencyAwareDispatcher:
         self._event_delta_cursor = startup_projection_cursor
         self.model_registry = model_registry
         self.work_executor = work_executor
+        self.agent_naming_registry = agent_naming_registry
         if work_executor is None:
             if max_parallelism is not None:
                 raise InvariantViolation(
@@ -201,8 +206,20 @@ class DependencyAwareDispatcher:
         executions: list[tuple[Execution, WorkItem, ModelCandidate]] = []
         assignments: list[DispatchAssignment] = []
         for work, binding, candidate in planned:
+            execution_id = new_id("execution")
+            assignment = None
+            if self.agent_naming_registry is not None:
+                assignment = self.agent_naming_registry.allocate(
+                    assignment_id=new_id("assignment"),
+                    data_space_id=work.data_space_id,
+                    work_item_id=work.work_item_id,
+                    execution_id=execution_id,
+                    node_id=work.delegated_to_node_id,
+                    pilot_id=binding.pilot_id,
+                    candidate=candidate,
+                )
             execution = Execution(
-                execution_id=new_id("execution"),
+                execution_id=execution_id,
                 data_space_id=work.data_space_id,
                 node_id=work.delegated_to_node_id,
                 work_item_id=work.work_item_id,
@@ -218,6 +235,17 @@ class DependencyAwareDispatcher:
                 actor_id=actor_id,
                 idempotency_key=f"{idempotency_key}:{work.work_item_id}",
             )
+            if assignment is not None:
+                self.kernel.record_agent_name_assignment(
+                    assignment,
+                    actor_id="system:dispatcher",
+                    idempotency_key=(
+                        f"{idempotency_key}:{execution.execution_id}:agent-name"
+                    ),
+                )
+                execution = execution.model_copy(
+                    update={"agent_name": assignment.agent_name}
+                )
             executions.append((execution, work, candidate))
             assignments.append(
                 DispatchAssignment(
@@ -226,6 +254,9 @@ class DependencyAwareDispatcher:
                     pilot_id=execution.pilot_id,
                     pilot_host_id=execution.pilot_host_id,
                     model_candidate_key=execution.model_candidate_key,
+                    agent_name=(
+                        assignment.agent_name if assignment is not None else None
+                    ),
                 )
             )
 
@@ -235,15 +266,16 @@ class DependencyAwareDispatcher:
                 raise InvariantViolation("production dispatch pool is unavailable")
             for execution, work, candidate in executions:
                 future = self._pool.submit(
-                            self.work_executor.execute_work,
-                            execution_id=execution.execution_id,
-                            work_item=work,
-                            candidate=candidate,
-                            event_delta=delta,
-                            artifact_refs=(),
-                            idempotency_key=(
-                                f"{idempotency_key}:{execution.execution_id}:pilot"
-                            ),
+                    self.work_executor.execute_work,
+                    execution_id=execution.execution_id,
+                    work_item=work,
+                    candidate=candidate,
+                    event_delta=delta,
+                    artifact_refs=(),
+                    idempotency_key=(
+                        f"{idempotency_key}:{execution.execution_id}:pilot"
+                    ),
+                    agent_name=execution.agent_name,
                 )
                 with self._lock:
                     self._futures.add(future)

@@ -91,6 +91,7 @@ docker compose --profile runtime up --build api web
 - [旧成果物の一回限り移行](docs/migration.md)
 - [Bayesian routing と benchmark](docs/routing.md)
 - [実装・検証状況](docs/implementation-status.md)
+- [返信 authoring](docs/reply-authoring.md)
 - [今後の順序](ROADMAP.md)
 
 古い設計 PDF は設計入力として参照しますが、runtime reader と配布物には含めません。

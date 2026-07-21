@@ -5,6 +5,7 @@ import json
 from datetime import datetime
 
 from vsm.errors import InvariantViolation
+from vsm.agent_naming import assignment_from_payload
 from vsm.activation.models import (
     ActivationState,
     CurrentWorkGraphSnapshot,
@@ -213,6 +214,40 @@ class OperationalProjection:
         self.kernel.executions[execution.execution_id] = execution
         self._kernel_version(event)
 
+    def _on_agent_name_assigned(self, event) -> None:
+        assignment = assignment_from_payload(event.payload)
+        existing_assignment = self.kernel.agent_name_assignments.get(
+            assignment.assignment_id
+        )
+        if existing_assignment is not None and existing_assignment != assignment:
+            raise InvariantViolation(
+                "agent-name assignment identity collision during projection"
+            )
+        if any(
+            existing.agent_name == assignment.agent_name
+            and existing.assignment_id != assignment.assignment_id
+            for existing in self.kernel.agent_name_assignments.values()
+        ):
+            raise InvariantViolation(
+                "agent-name assignment name collision during projection"
+            )
+        execution = self.kernel.executions.get(assignment.execution_id)
+        if execution is None:
+            raise InvariantViolation(
+                "agent-name assignment references an unknown Execution"
+            )
+        if execution.agent_name is not None:
+            raise InvariantViolation("Execution already has an agent name")
+        if execution.work_item_id != assignment.work_item_id:
+            raise InvariantViolation(
+                "agent-name assignment WorkItem does not match Execution"
+            )
+        self.kernel.agent_name_assignments[assignment.assignment_id] = assignment
+        self.kernel.executions[assignment.execution_id] = execution.model_copy(
+            update={"agent_name": assignment.agent_name}
+        )
+        self._kernel_version(event)
+
     def _on_execution_state_changed(self, event) -> None:
         execution = self.kernel.executions[event.stream_id]
         self.kernel.executions[event.stream_id] = execution.model_copy(
@@ -235,6 +270,10 @@ class OperationalProjection:
 
     def _on_pilot_execution_receipt_recorded(self, event) -> None:
         execution = self.kernel.executions[event.stream_id]
+        if event.payload.get("agent_name") != execution.agent_name:
+            raise InvariantViolation(
+                "PilotHost receipt agent name does not match Execution"
+            )
         self.kernel.executions[event.stream_id] = execution.model_copy(
             update={
                 "state": ExecutionState(event.payload["state"]),

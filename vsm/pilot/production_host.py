@@ -258,23 +258,26 @@ class ProductionPilotHostClient:
         event_delta: EventDeltaSummary,
         artifact_refs: tuple[ArtifactReference, ...],
         idempotency_key: str,
+        agent_name: str,
     ) -> WorkExecutionOutcome:
         if candidate.key != self.coding_candidate.key:
             raise InvariantViolation(
                 "selected coding candidate differs from production PilotHost"
             )
         receipt_id = new_id("receipt")
+        handoff = {
+            "work_item_id": work_item.work_item_id,
+            "title": work_item.title,
+            "objective": work_item.description,
+        }
+        handoff["agent_name"] = agent_name
         payload = {
             "receipt_id": receipt_id,
             "idempotency_key": idempotency_key,
             "device_identity": self.identity.model_dump(mode="json"),
             "candidate": self._candidate(candidate),
             "execution_id": execution_id,
-            "work_item": {
-                "work_item_id": work_item.work_item_id,
-                "title": work_item.title,
-                "objective": work_item.description,
-            },
+            "work_item": handoff,
             "unmet_acceptance": list(work_item.acceptance_criteria),
             "event_delta": event_delta.model_dump(mode="json"),
             "artifact_refs": [

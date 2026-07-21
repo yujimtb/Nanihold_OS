@@ -70,6 +70,15 @@
 - 長いInterface/Reorientation payloadをcontent-addressed request documentへ保存し、
   CLIのstdinはdigestを指す256 bytes以下の短い指示だけに限定する。stdout/stderrも
   provider I/O documentへcaptureし、terminalへの長文連続出力を運用経路にしない
+- ACR-01のAgent_name.csvレジストリとdispatch時個名自動割当。モデル階級・プロバイダ系統・
+  いいね=0除外・タスク単位ローテーション・枯渇時数字サフィックスを適用し、Nagiを予約席として除外する。
+  割当はExecution、`agent_name_assigned` Ledger Event、Pilot receipt Eventへ連結する
+- ACR-03の返信authoring経路。assigned個名をWorkItem handoffまで伝搬し、エージェントが
+  incoming Observationにanchorした個名帰属付き`reply-draft@1`をLETHE card-queueへ投入する。
+  型付き`submit_reply_draft`入口は既存`write_supplemental` gatewayだけを呼び出し、
+  `reply-approval@1`と既存`lethe-channel-bridge`による承認後配信、draftをanchorする
+  `send-record@1`までの監査線を実行契約として固定し、自動返信生成・未承認送信を禁止する。
+  `tests/test_reply_authoring.py`でgateway投入とdraft anchorによる帰属連結を検証する。
 
 ## 検証
 
@@ -88,6 +97,14 @@
 - Nanihold最終差分全体: 121 passed、3 skipped。RouteSnapshot retirement、
   prior-only route bootstrap、AI Judge単独昇格拒否、bounded dispatch delta、
   ACTIVE後の明示dispatchを含む
+- ACR-01追加単体テスト: 4 passed。CSV選定、いいね=0/Nagi除外、ローテーション、
+  数字サフィックス、Ledger復元を検証
+- ACR-03追加単体テスト: 5 passed。Observation anchor、個名帰属、明示body、
+  gateway投入、draft anchor経由の帰属連結、approval/sendを実行しないdraft envelopeを検証
+- 既存`lethe-channel-bridge`全体回帰: 100 passed。承認済みカードのみの配信、
+  `reply-approval@1`検証、draft anchor付き`send-record@1`書き戻しを含む
+- 現行Nanihold全体回帰: 143 passed、3 skipped。ACR-01/ACR-03の変更を含め、既存テストを
+  壊していないことを確認
 - Windows PilotHost launcher: 3 passed。親`PATH`保持、認証付きready、
   2秒後のprocess生存、長いstderr非転送を検証
 

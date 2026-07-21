@@ -141,6 +141,7 @@ class Execution(StrictModel):
     provider_session_id: NonBlank | None
     pilot_host_id: Identifier
     pause_reason: NonBlank | None
+    agent_name: NonBlank | None = None
 
 
 class GrantState(StrEnum):
