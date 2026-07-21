@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import logging
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -15,6 +16,8 @@ from vsm.kernel.models import Identifier, NonBlank, StrictModel
 if TYPE_CHECKING:
     from vsm.pilot.models import ModelCandidate
 
+
+logger = logging.getLogger(__name__)
 
 NameColumn = Literal["日", "英", "羅"]
 DEFAULT_AGENT_NAME_CSV = Path(
@@ -210,6 +213,48 @@ class AgentNameRegistry:
         with self._lock:
             return tuple(self._registrations.values())
 
+    def _resolve_eligible_row(
+        self,
+        *,
+        scale: Literal[1, 2, 3],
+        column: NameColumn,
+        base_name: str,
+        not_present_message: str,
+        forbidden_message: str,
+    ) -> AgentNameRow:
+        """Find the CSV row a persisted base_name refers to.
+
+        Matching is scoped to rows that were eligible at allocation time
+        (``is_eligible`` and not ``is_reserved``) — the same predicate
+        ``allocate``/``allocate_out_of_pipeline`` use to build their pool.
+        Without this, a name that is unique among *eligible* rows but
+        duplicated by a likes=0 row elsewhere in the CSV (e.g. "Cup"
+        appearing on both a likes=1 and a likes=0 row) would fail restore
+        with a false "not present" invariant violation, since the raw
+        name match would find more than one row.
+        """
+        matching_rows = [
+            row
+            for row in self._rows
+            if row.scale == scale and row.name_for(column) == base_name
+        ]
+        if not matching_rows:
+            raise InvariantViolation(not_present_message)
+        eligible_rows = [
+            row for row in matching_rows if row.is_eligible and not row.is_reserved
+        ]
+        if not eligible_rows:
+            raise InvariantViolation(forbidden_message)
+        if len(eligible_rows) > 1:
+            logger.warning(
+                "multiple eligible Agent_name.csv rows match base name %r "
+                "(scale=%s, column=%s); using the first matching CSV row",
+                base_name,
+                scale,
+                column,
+            )
+        return eligible_rows[0]
+
     def restore(self, assignments: Iterable[AgentNameAssignment]) -> None:
         """Restore names already recorded in Ledger before accepting dispatches."""
         restored = tuple(assignments)
@@ -227,23 +272,19 @@ class AgentNameRegistry:
                         "agent name is assigned more than once: "
                         f"{assignment.agent_name}"
                     )
-                matching_rows = [
-                    row
-                    for row in self._rows
-                    if row.scale == assignment.scale
-                    and row.name_for(assignment.name_column) == assignment.base_name
-                ]
-                if len(matching_rows) != 1:
-                    raise InvariantViolation(
-                        f"assignment base name is not present in Agent_name.csv: "
+                self._resolve_eligible_row(
+                    scale=assignment.scale,
+                    column=assignment.name_column,
+                    base_name=assignment.base_name,
+                    not_present_message=(
+                        "assignment base name is not present in Agent_name.csv: "
                         f"{assignment.base_name}"
-                    )
-                row = matching_rows[0]
-                if not row.is_eligible or row.is_reserved:
-                    raise InvariantViolation(
+                    ),
+                    forbidden_message=(
                         "assignment uses a forbidden Agent_name.csv row: "
                         f"{assignment.base_name}"
-                    )
+                    ),
+                )
                 self._assignments[assignment.assignment_id] = assignment
                 self._used_names.add(assignment.agent_name)
 
@@ -267,24 +308,19 @@ class AgentNameRegistry:
                         "agent name is assigned more than once: "
                         f"{registration.agent_name}"
                     )
-                matching_rows = [
-                    row
-                    for row in self._rows
-                    if row.scale == registration.scale
-                    and row.name_for(registration.name_column)
-                    == registration.base_name
-                ]
-                if len(matching_rows) != 1:
-                    raise InvariantViolation(
+                self._resolve_eligible_row(
+                    scale=registration.scale,
+                    column=registration.name_column,
+                    base_name=registration.base_name,
+                    not_present_message=(
                         "registration base name is not present in Agent_name.csv: "
                         f"{registration.base_name}"
-                    )
-                row = matching_rows[0]
-                if not row.is_eligible or row.is_reserved:
-                    raise InvariantViolation(
+                    ),
+                    forbidden_message=(
                         "registration uses a forbidden Agent_name.csv row: "
                         f"{registration.base_name}"
-                    )
+                    ),
+                )
                 self._registrations[registration.registration_id] = registration
                 self._used_names.add(registration.agent_name)
 
