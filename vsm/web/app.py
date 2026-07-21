@@ -34,6 +34,7 @@ from vsm.activation.reorientation import (
     ReorientationService,
 )
 from vsm.dispatcher import DependencyAwareDispatcher, PilotBinding
+from vsm.agent_naming import AgentNameRegistry
 from vsm.interface.models import (
     Conversation,
     OwnerMessageAction,
@@ -44,6 +45,8 @@ from vsm.interface.service import InterfaceService
 from vsm.ids import new_id
 from vsm.kernel.models import (
     Execution,
+    Identifier,
+    NonBlank,
     RouteSnapshot,
     RouteSnapshotRetirementReason,
     RouteSnapshotState,
@@ -51,7 +54,7 @@ from vsm.kernel.models import (
     WorkItem,
 )
 from vsm.kernel.service import Kernel
-from vsm.notifications import AgentNotification
+from vsm.notifications import AgentNotification, AgentNotificationDelivery
 from vsm.pilot.host import PilotHostCoordinator
 from vsm.pilot.models import (
     DeviceIdentity,
@@ -95,6 +98,25 @@ class CreateExecutionRequest(CommandMetadata):
 
 class DeliverNotificationRequest(CommandMetadata):
     notification: AgentNotification
+
+
+class SendAgentMessageRequest(CommandMetadata):
+    data_space_id: Identifier
+    source_instance_id: NonBlank
+    sender_agent_name: NonBlank
+    recipient_agent_name: NonBlank
+    source_message_id: NonBlank
+    body: str = Field(min_length=1, max_length=262144)
+    related_work_item_id: Identifier
+    related_execution_id: Identifier
+    requires_work_item: bool = False
+
+
+class RegisterAgentIdentityRequest(CommandMetadata):
+    registration_id: Identifier
+    node_id: Identifier
+    pilot_id: Identifier
+    candidate: ModelCandidate
 
 
 class PromoteNotificationRequest(CommandMetadata):
@@ -231,6 +253,7 @@ class AppState:
     owner_session_lifetime_seconds: int
     history_reader: HistoryReader
     history_max_result_bytes: int
+    agent_name_registry: AgentNameRegistry | None = None
     reorientation_service: ReorientationService | None = None
     reorientation_max_tool_rounds: int | None = None
     coding_pilot_id: str | None = None
@@ -410,6 +433,24 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
     def notifications():
         return {"items": list(state.kernel.agent_notifications.values())}
 
+    @app.get("/api/agent-messages", dependencies=[Depends(authorize)])
+    def agent_messages(
+        recipient_agent_name: str | None = Query(default=None, min_length=1)
+    ):
+        """Owner-visible view of the agent-to-agent subset of the shared inbox."""
+
+        return {
+            "items": [
+                notification
+                for notification in state.kernel.agent_notifications.values()
+                if notification.source_kind.value == "agent_to_agent"
+                and (
+                    recipient_agent_name is None
+                    or notification.recipient_agent_name == recipient_agent_name
+                )
+            ]
+        }
+
     @app.post("/api/notifications", dependencies=[Depends(authorize)], status_code=201)
     def deliver_notification(request: DeliverNotificationRequest):
         state.kernel.record_agent_notification(
@@ -418,6 +459,58 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
             idempotency_key=request.idempotency_key,
         )
         return request.notification
+
+    @app.post("/api/agent-messages", dependencies=[Depends(authorize)], status_code=201)
+    def send_agent_message(request: SendAgentMessageRequest):
+        receipt = AgentNotificationDelivery(state.kernel).send_agent_message(
+            data_space_id=request.data_space_id,
+            source_instance_id=request.source_instance_id,
+            sender_actor_id=request.actor_id,
+            sender_agent_name=request.sender_agent_name,
+            recipient_agent_name=request.recipient_agent_name,
+            source_message_id=request.source_message_id,
+            body=request.body,
+            related_work_item_id=request.related_work_item_id,
+            related_execution_id=request.related_execution_id,
+            requires_work_item=request.requires_work_item,
+            idempotency_key=request.idempotency_key,
+        )
+        return receipt
+
+    @app.get("/api/agent-identities", dependencies=[Depends(authorize)])
+    def agent_identities():
+        return {
+            "assignments": list(state.kernel.agent_name_assignments.values()),
+            "registrations": list(state.kernel.agent_name_registrations.values()),
+        }
+
+    @app.post(
+        "/api/agent-identities",
+        dependencies=[Depends(authorize)],
+        status_code=201,
+    )
+    def register_agent_identity(request: RegisterAgentIdentityRequest):
+        registry = state.agent_name_registry
+        if registry is None:
+            raise InvariantViolation(
+                "out-of-pipeline agent registration requires the configured name registry"
+            )
+        if request.node_id not in state.kernel.nodes:
+            raise InvariantViolation("agent identity registration Node does not exist")
+        registration = registry.allocate_out_of_pipeline(
+            registration_id=request.registration_id,
+            data_space_id=state.kernel.data_space.data_space_id,
+            node_id=request.node_id,
+            pilot_id=request.pilot_id,
+            candidate=request.candidate,
+        )
+        state.kernel.register_agent_identity(
+            registration,
+            naming_registry=registry,
+            actor_id=request.actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+        return registration
 
     @app.post(
         "/api/notifications/{notification_id}/promotions",

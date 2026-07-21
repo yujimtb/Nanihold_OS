@@ -84,6 +84,13 @@
   `requires_work_item=true`の明示条件だけを`agent_notification_promoted`と既存
   `work_item_created`へ連結する。`AgentNotificationDelivery`はエージェント間通信にも
   同じLedger Event契約を使用し、外部返信経路を追加しない。
+- ACR-07の個名宛て通信 API。送り手・受け手を AgentNameRegistry 発行名に限定し、
+  WorkItem / Execution 参照を必須として `correlation_id` / `causation_id` とともに
+  `agent_notification_delivered`へ記録する。`GET /api/notifications` と
+  `GET /api/agent-messages` はオーナー向けに全件を開示する。
+- WorkItem パイプライン外エージェントの `POST /api/agent-identities` 登録経路。
+  dispatch と同じレジストリ名前空間・CSVローテーションを共有し、
+  `agent_identity_registered` Event と `node_id` / `pilot_id` の写像を永続化する。
 
 ## 検証
 
@@ -108,7 +115,7 @@
   gateway投入、draft anchor経由の帰属連結、approval/sendを実行しないdraft envelopeを検証
 - 既存`lethe-channel-bridge`全体回帰: 100 passed。承認済みカードのみの配信、
   `reply-approval@1`検証、draft anchor付き`send-record@1`書き戻しを含む
-- 現行Nanihold全体回帰: 149 passed。ACR-01/ACR-03/ACR-02の変更を含め、既存テストを
+- 現行Nanihold全体回帰: 149 passed。ACR-01/ACR-03/ACR-02/ACR-07の変更を含め、既存テストを
   壊していないことを確認
 - Windows PilotHost launcher: 3 passed。親`PATH`保持、認証付きready、
   2秒後のprocess生存、長いstderr非転送を検証

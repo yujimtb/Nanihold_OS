@@ -184,6 +184,11 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
         token_lab_events=token_lab_events,
         clock=utc_now,
     )
+    agent_naming_registry = None
+    if production_config is not None:
+        agent_naming_registry = AgentNameRegistry.from_csv(
+            production_config.agent_name_csv_path
+        )
     projection = OperationalProjection(
         kernel=kernel,
         interface=interface,
@@ -191,12 +196,11 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
         token_lab_events=token_lab_events,
     )
     projection_cursor = projection.rebuild()
-    agent_naming_registry = None
     if production_config is not None:
-        agent_naming_registry = AgentNameRegistry.from_csv(
-            production_config.agent_name_csv_path
-        )
         agent_naming_registry.restore(kernel.agent_name_assignments.values())
+        agent_naming_registry.restore_registrations(
+            kernel.agent_name_registrations.values()
+        )
     _interrupt_reorientation_lost_on_runtime_restart(kernel)
     if require_active_route:
         active_snapshot_id = config.routing.active_route_snapshot_id
@@ -271,6 +275,7 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
         owner_session_lifetime_seconds=config.server.owner_session_lifetime_seconds,
         history_reader=history_reader,
         history_max_result_bytes=config.kernel.lethe.history_max_result_bytes,
+        agent_name_registry=agent_naming_registry,
         owner_auth_disabled=config.server.owner_auth_disabled,
     )
     return Runtime(

@@ -14,6 +14,8 @@ codeは短寿命で再利用不可、Ledgerにはhashだけを保存します。
 | GET/POST | `/api/nodes` | Node Tree、CapabilityGrant、ReferenceGrant |
 | GET/POST | `/api/work-items` | WorkItem と Work Graph |
 | GET/POST | `/api/notifications` | ACR-02/ACR-07 の宛先付き通知 Ledger Event |
+| GET/POST | `/api/agent-messages` | ACR-07 の内部個名宛て通信（同じ通知 Ledger Event） |
+| GET/POST | `/api/agent-identities` | WorkItem 外エージェントのレジストリ発行個名 |
 | POST | `/api/notifications/{id}/promotions` | 昇格条件を満たす通知から明示 WorkItem を起票 |
 | POST | `/api/work-items/{id}/delegations` | delegated Nodeを確定 |
 | POST | `/api/work-items/{id}/dispatches` | ACTIVE時に単一WorkItemを明示的にPilotへdispatch |

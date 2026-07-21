@@ -79,6 +79,36 @@ class AgentNameAssignment(StrictModel):
         return self
 
 
+class AgentIdentityRegistration(StrictModel):
+    """A registry-issued identity for an agent that has no WorkItem yet."""
+
+    registration_id: Identifier
+    data_space_id: Identifier
+    node_id: Identifier
+    pilot_id: Identifier
+    agent_name: NonBlank
+    base_name: NonBlank
+    suffix: int = Field(ge=1)
+    name_column: NameColumn
+    scale: Literal[1, 2, 3]
+    provider: NonBlank
+    model_candidate_key: NonBlank
+    source: Literal["out_of_pipeline"]
+
+    @model_validator(mode="after")
+    def suffix_matches_name(self) -> "AgentIdentityRegistration":
+        expected = (
+            self.base_name
+            if self.suffix == 1
+            else f"{self.base_name}{self.suffix}"
+        )
+        if self.agent_name != expected:
+            raise ValueError(
+                "AgentIdentityRegistration agent_name does not match suffix"
+            )
+        return self
+
+
 def _provider_family(candidate: ModelCandidate) -> Literal["claude", "gpt", "other"]:
     provider = candidate.provider.strip().lower()
     snapshot = (candidate.model_snapshot or "").strip().lower()
@@ -124,6 +154,7 @@ class AgentNameRegistry:
         self._next_index: dict[tuple[int, NameColumn], int] = defaultdict(int)
         self._used_names: set[str] = set()
         self._assignments: dict[str, AgentNameAssignment] = {}
+        self._registrations: dict[str, AgentIdentityRegistration] = {}
         self._lock = RLock()
 
     @classmethod
@@ -174,6 +205,11 @@ class AgentNameRegistry:
         with self._lock:
             return tuple(self._assignments.values())
 
+    @property
+    def registrations(self) -> tuple[AgentIdentityRegistration, ...]:
+        with self._lock:
+            return tuple(self._registrations.values())
+
     def restore(self, assignments: Iterable[AgentNameAssignment]) -> None:
         """Restore names already recorded in Ledger before accepting dispatches."""
         restored = tuple(assignments)
@@ -211,6 +247,47 @@ class AgentNameRegistry:
                 self._assignments[assignment.assignment_id] = assignment
                 self._used_names.add(assignment.agent_name)
 
+    def restore_registrations(
+        self, registrations: Iterable[AgentIdentityRegistration]
+    ) -> None:
+        """Restore identities recorded for agents outside WorkItem dispatch."""
+
+        restored = tuple(registrations)
+        with self._lock:
+            for registration in restored:
+                if registration.registration_id in self._registrations:
+                    if self._registrations[registration.registration_id] != registration:
+                        raise InvariantViolation(
+                            "agent identity registration collision: "
+                            f"{registration.registration_id}"
+                        )
+                    continue
+                if registration.agent_name in self._used_names:
+                    raise InvariantViolation(
+                        "agent name is assigned more than once: "
+                        f"{registration.agent_name}"
+                    )
+                matching_rows = [
+                    row
+                    for row in self._rows
+                    if row.scale == registration.scale
+                    and row.name_for(registration.name_column)
+                    == registration.base_name
+                ]
+                if len(matching_rows) != 1:
+                    raise InvariantViolation(
+                        "registration base name is not present in Agent_name.csv: "
+                        f"{registration.base_name}"
+                    )
+                row = matching_rows[0]
+                if not row.is_eligible or row.is_reserved:
+                    raise InvariantViolation(
+                        "registration uses a forbidden Agent_name.csv row: "
+                        f"{registration.base_name}"
+                    )
+                self._registrations[registration.registration_id] = registration
+                self._used_names.add(registration.agent_name)
+
     def allocate(
         self,
         *,
@@ -240,25 +317,11 @@ class AgentNameRegistry:
                     "agent-name assignment already exists: "
                     f"{assignment_id}"
                 )
-            start = self._next_index[(scale, column)] % len(pool)
-            selected: AgentNameRow | None = None
-            selected_index = start
-            for offset in range(len(pool)):
-                index = (start + offset) % len(pool)
-                row = pool[index]
-                if row.name_for(column) not in self._used_names:
-                    selected = row
-                    selected_index = index
-                    break
-            if selected is None:
-                selected_index = start
-                selected = pool[selected_index]
-            base_name = selected.name_for(column)
-            suffix = 1
-            agent_name = base_name
-            while agent_name in self._used_names:
-                suffix += 1
-                agent_name = f"{base_name}{suffix}"
+            base_name, suffix, agent_name = self._next_name(
+                scale=scale,
+                column=column,
+                pool=pool,
+            )
             assignment = AgentNameAssignment(
                 assignment_id=assignment_id,
                 data_space_id=data_space_id,
@@ -276,8 +339,93 @@ class AgentNameRegistry:
             )
             self._assignments[assignment_id] = assignment
             self._used_names.add(agent_name)
-            self._next_index[(scale, column)] = selected_index + 1
             return assignment
+
+    def allocate_out_of_pipeline(
+        self,
+        *,
+        registration_id: str,
+        data_space_id: str,
+        node_id: str,
+        pilot_id: str,
+        candidate: ModelCandidate,
+    ) -> AgentIdentityRegistration:
+        """Issue a collision-free name before an agent enters WorkItem flow."""
+
+        scale = _scale_for(candidate)
+        column = _name_column(candidate)
+        pool = tuple(
+            row
+            for row in self._rows
+            if row.scale == scale and row.is_eligible and not row.is_reserved
+        )
+        if not pool:
+            raise InvariantViolation(
+                "Agent_name.csv has no eligible names for scale "
+                f"{scale} and column {column}"
+            )
+        with self._lock:
+            if registration_id in self._registrations:
+                raise InvariantViolation(
+                    "agent identity registration already exists: "
+                    f"{registration_id}"
+                )
+            if registration_id in self._assignments:
+                raise InvariantViolation(
+                    "registration id collides with an agent-name assignment: "
+                    f"{registration_id}"
+                )
+            base_name, suffix, agent_name = self._next_name(
+                scale=scale,
+                column=column,
+                pool=pool,
+            )
+            registration = AgentIdentityRegistration(
+                registration_id=registration_id,
+                data_space_id=data_space_id,
+                node_id=node_id,
+                pilot_id=pilot_id,
+                agent_name=agent_name,
+                base_name=base_name,
+                suffix=suffix,
+                name_column=column,
+                scale=scale,
+                provider=candidate.provider,
+                model_candidate_key=candidate.key,
+                source="out_of_pipeline",
+            )
+            self._registrations[registration_id] = registration
+            self._used_names.add(agent_name)
+            return registration
+
+    def _next_name(
+        self,
+        *,
+        scale: Literal[1, 2, 3],
+        column: NameColumn,
+        pool: tuple[AgentNameRow, ...],
+    ) -> tuple[str, int, str]:
+        start = self._next_index[(scale, column)] % len(pool)
+        selected: AgentNameRow | None = None
+        selected_index = start
+        for offset in range(len(pool)):
+            index = (start + offset) % len(pool)
+            row = pool[index]
+            if row.name_for(column) not in self._used_names:
+                selected = row
+                selected_index = index
+                break
+        if selected is None:
+            selected_index = start
+            selected = pool[selected_index]
+        base_name = selected.name_for(column)
+        suffix = 1
+        agent_name = base_name
+        while agent_name in self._used_names:
+            suffix += 1
+            agent_name = f"{base_name}{suffix}"
+        self._next_index[(scale, column)] = selected_index + 1
+        return base_name, suffix, agent_name
 
     def assignment_for_name(self, agent_name: str) -> AgentNameAssignment:
         with self._lock:
@@ -289,6 +437,28 @@ class AgentNameRegistry:
         if len(matches) != 1:
             raise InvariantViolation(f"agent name is not assigned: {agent_name}")
         return matches[0]
+
+    def assignment_for_id(self, assignment_id: str) -> AgentNameAssignment:
+        with self._lock:
+            assignment = self._assignments.get(assignment_id)
+        if assignment is None:
+            raise InvariantViolation(
+                f"agent-name assignment is not present: {assignment_id}"
+            )
+        return assignment
+
+    def registration_for_id(self, registration_id: str) -> AgentIdentityRegistration:
+        with self._lock:
+            registration = self._registrations.get(registration_id)
+        if registration is None:
+            raise InvariantViolation(
+                f"agent identity registration is not present: {registration_id}"
+            )
+        return registration
+
+    def is_name_registered(self, agent_name: str) -> bool:
+        with self._lock:
+            return agent_name in self._used_names
 
 
 def assignment_from_payload(payload: Mapping[str, object]) -> AgentNameAssignment:

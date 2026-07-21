@@ -101,6 +101,27 @@ def test_assignment_is_restored_without_reusing_a_name(tmp_path):
     assert second.agent_name == "Aki2"
 
 
+def test_out_of_pipeline_registration_uses_the_same_registry_namespace(tmp_path):
+    names = registry(tmp_path)
+    model = candidate("anthropic", "claude-opus-4-1")
+
+    first = names.allocate_out_of_pipeline(
+        registration_id="registration:commander-child",
+        data_space_id="space:personal",
+        node_id="node:worker",
+        pilot_id="pilot:child-one",
+        candidate=model,
+    )
+    second = allocate(names, "pipeline-work", model)
+
+    assert first.agent_name == "Aki"
+    assert second.agent_name == "Aki2"
+    assert first.node_id == "node:worker"
+    assert first.pilot_id == "pilot:child-one"
+    assert names.registration_for_id(first.registration_id) == first
+    assert names.is_name_registered(first.agent_name)
+
+
 def test_dispatch_assigns_and_records_name_in_execution_and_receipt(
     system, tmp_path
 ):

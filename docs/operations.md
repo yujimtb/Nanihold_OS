@@ -61,7 +61,10 @@ vsm inspect events \
   --limit 250
 ```
 
-resource は `data-spaces`、`nodes`、`work-items`、`executions`、`events`、`conversations`、`pilot-hosts`、`model-registry`、`route-snapshots`、`token-lab` です。
+resource は `data-spaces`、`nodes`、`work-items`、`executions`、`events`、`notifications`、
+`agent-messages`、`agent-identities`、`conversations`、`pilot-hosts`、`model-registry`、
+`route-snapshots`、`token-lab` です。`agent-messages` は `notifications` と同じ
+Operational Ledger projection であり、外部チャネル送信のキューではありません。
 
 単一Executionの障害調査では、Ledgerを手動joinせずにdispatch、receipt記録、receiptの
 `usage`・`actual_model`・`error`、`provider_session_id`参照をcursor順で確認します。
