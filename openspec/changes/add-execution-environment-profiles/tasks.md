@@ -2,16 +2,16 @@
 
 ## Track A. 環境契約 / 環境実体の 2 層定義
 
-- [ ] A1 環境契約(EnvironmentContract)スキーマを定義する(能力要件 / `supported_sandboxes` / 最低要求 CLI バージョン(任意) / パス論理名。具体名列挙なし)
+- [x] A1 環境契約(EnvironmentContract)スキーマを定義する(能力要件 / `supported_sandboxes` / 最低要求 CLI バージョン(任意) / パス論理名。具体名列挙なし)
   - Spec: EEP-01 / 受け入れ: 能力要件で表され機械固有情報・実行場所名を含まないことの確認
 - [ ] A2 環境実体(EnvironmentInstance)スキーマを定義する(論理名→機械固有パス / CLI 実体パス / `CODEX_HOME`)
   - Spec: EEP-03 / 受け入れ: 実体識別情報が identity ハッシュに含まれないことの確認
-- [ ] A3 `environment_fingerprint` を環境契約の正規化ハッシュとして定義する
+- [x] A3 `environment_fingerprint` を環境契約の正規化ハッシュとして定義する
   - Spec: EEP-02 / 受け入れ: 実体変更で fingerprint 不変
 
 ## Track B. 環境契約アーティファクトの保管
 
-- [ ] B1 環境契約を LETHE の版付きアーティファクトとして保存する経路を定義する
+- [x] B1 環境契約を LETHE の版付きアーティファクトとして保存する経路を定義する
   - Spec: EEP-04 / 受け入れ: 版付き保存の確認
 - [ ] B2 PilotHost 起動時にコントロールプレーンから環境契約を取得する
   - Spec: EEP-04 / 受け入れ: 起動時取得の確認
@@ -56,7 +56,7 @@
 
 ## Track F. オーナー承認境界と S3 自律ライフサイクル
 
-- [ ] F1 オーナー(S5)の承認対象を環境契約 + 調達ポリシー境界に限定する
+- [x] F1 オーナー(S5)の承認対象を環境契約 + 調達ポリシー境界に限定する
   - Spec: EEP-10 / 受け入れ: 個別実体操作がオーナー承認対象外
 - [ ] F2 S3 が契約適合実体を発見・構築・検証・廃棄し合格実体を Operational Ledger へ記録する
   - Spec: EEP-11 / 受け入れ: 合格実体の instance fingerprint 付き記録
