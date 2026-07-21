@@ -91,6 +91,12 @@
 - WorkItem パイプライン外エージェントの `POST /api/agent-identities` 登録経路。
   dispatch と同じレジストリ名前空間・CSVローテーションを共有し、
   `agent_identity_registered` Event と `node_id` / `pilot_id` の写像を永続化する。
+- ACR-04監査トレース。`AuditTraceService` と `vsm audit-trace`、
+  `/api/audit-traces/notifications/{id}`、`/api/audit-traces/executions/{id}`で、
+  着信→宛先個名→Ledger Event／WorkItem、個名→WorkItem→Execution→Pilot receiptを
+  cursor順に再構成・検証する。返信は明示されたLETHE supplemental recordsから
+  `reply-draft@1`→`reply-approval@1`→`send-record@1`のanchor、Observation、個名付き
+  lineageを照合し、未接続・不一致はfail-fastする。
 
 ## 検証
 
@@ -117,6 +123,8 @@
   `reply-approval@1`検証、draft anchor付き`send-record@1`書き戻しを含む
 - 現行Nanihold全体回帰: 149 passed。ACR-01/ACR-03/ACR-02/ACR-07の変更を含め、既存テストを
   壊していないことを確認
+- ACR-04追加単体テスト: 5 passed。着信配送と昇格、個名↔WorkItem↔receipt、
+  draft→承認→配信記録のanchor、および未接続send-recordの拒否を検証
 - Windows PilotHost launcher: 3 passed。親`PATH`保持、認証付きready、
   2秒後のprocess生存、長いstderr非転送を検証
 

@@ -76,6 +76,16 @@ Execution状態と`provider_session_id_refs`を含めます。
 vsm trace execution:example --config vsm.toml
 ```
 
+ACR-04 の配送・帰属トレースは次で確認します。通知とExecutionの読取はOperational
+Ledgerだけで完結し、返信だけはLETHEから取得したsupplemental envelopeのJSON配列を
+明示的に渡します。トレース中にEventや補助記録を作成・推測することはありません。
+
+```powershell
+vsm audit-trace notification:example --config vsm.toml
+vsm audit-trace execution:example --config vsm.toml
+vsm audit-trace sup:draft-example --config vsm.toml --supplementals supplementals.json
+```
+
 production objective は `quality_max` です。production exploration は禁止です。証拠更新後は古い snapshot が stale になり、再起動時に失敗します。
 
 ## 4. 初回履歴取込とowner activation

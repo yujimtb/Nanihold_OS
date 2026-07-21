@@ -47,3 +47,21 @@ WorkItem、Execution、個名の監査線をたどれます。
   順序を守るための実行契約。
 
 bridge の import、card-queue、approval、send-record の契約は変更しません。
+
+## ACR-04 監査トレース
+
+`vsm audit-trace execution:<id>` は Operational Ledger を cursor 順に読み、
+`agent_name_assigned`、WorkItem、`pilot_execution_receipt_recorded` を照合する。
+個名、WorkItem ID、Execution ID、receipt ID のいずれかが不一致なら fail-fast する。
+
+`vsm audit-trace notification:<id>` と
+`GET /api/audit-traces/notifications/{id}` は、元 Observation subject、着信 ID、
+宛先個名、`agent_notification_delivered` の Event ID／cursor、および明示昇格時の
+WorkItem IDを返す。監査読取中に新しい Event を追加しない。
+
+返信の補助記録は LETHE の supplemental envelopes を
+`vsm audit-trace sup:<draft-id> --supplementals <records.json>` に明示して渡す。
+`reply-draft@1` の `created_by`／`lineage`、incoming Observation anchor、
+`reply-approval@1`、`send-record@1` の draft anchor と approval ID を全て照合し、
+個名 → WorkItem → Execution → 配信記録を検証する。補助記録を省略した場合や
+anchor がない場合は推測せず拒否する。

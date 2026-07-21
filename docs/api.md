@@ -16,6 +16,8 @@ codeは短寿命で再利用不可、Ledgerにはhashだけを保存します。
 | GET/POST | `/api/notifications` | ACR-02/ACR-07 の宛先付き通知 Ledger Event |
 | GET/POST | `/api/agent-messages` | ACR-07 の内部個名宛て通信（同じ通知 Ledger Event） |
 | GET/POST | `/api/agent-identities` | WorkItem 外エージェントのレジストリ発行個名 |
+| GET | `/api/audit-traces/notifications/{id}` | 着信 Observation → 宛先個名 → Ledger配送／WorkItem昇格の検証済みトレース |
+| GET | `/api/audit-traces/executions/{id}` | 個名割当 → WorkItem → Pilot receipt の検証済みトレース |
 | POST | `/api/notifications/{id}/promotions` | 昇格条件を満たす通知から明示 WorkItem を起票 |
 | POST | `/api/work-items/{id}/delegations` | delegated Nodeを確定 |
 | POST | `/api/work-items/{id}/dispatches` | ACTIVE時に単一WorkItemを明示的にPilotへdispatch |

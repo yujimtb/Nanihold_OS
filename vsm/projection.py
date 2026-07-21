@@ -337,6 +337,21 @@ class OperationalProjection:
 
     def _on_pilot_execution_receipt_recorded(self, event) -> None:
         execution = self.kernel.executions[event.stream_id]
+        if event.payload.get("execution_id", event.stream_id) != event.stream_id:
+            raise InvariantViolation(
+                "PilotHost receipt Execution does not match its stream"
+            )
+        if event.payload.get("work_item_id", execution.work_item_id) != execution.work_item_id:
+            raise InvariantViolation(
+                "PilotHost receipt WorkItem does not match Execution"
+            )
+        assignment_id = event.payload.get("assignment_id")
+        if assignment_id is not None:
+            assignment = self.kernel.agent_name_assignments.get(assignment_id)
+            if assignment is None or assignment.execution_id != event.stream_id:
+                raise InvariantViolation(
+                    "PilotHost receipt assignment does not match Execution"
+                )
         if event.payload.get("agent_name") != execution.agent_name:
             raise InvariantViolation(
                 "PilotHost receipt agent name does not match Execution"

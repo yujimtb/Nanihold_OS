@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from vsm.audit_trace import AuditTraceService
 from vsm.errors import InvariantViolation, NaniholdError
 from vsm.activation.models import (
     CurrentWorkGraphSnapshot,
@@ -432,6 +433,20 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
     @app.get("/api/notifications", dependencies=[Depends(authorize)])
     def notifications():
         return {"items": list(state.kernel.agent_notifications.values())}
+
+    @app.get(
+        "/api/audit-traces/notifications/{notification_id}",
+        dependencies=[Depends(authorize)],
+    )
+    def notification_audit_trace(notification_id: str):
+        return AuditTraceService(state.kernel).trace_notification(notification_id)
+
+    @app.get(
+        "/api/audit-traces/executions/{execution_id}",
+        dependencies=[Depends(authorize)],
+    )
+    def execution_audit_trace(execution_id: str):
+        return AuditTraceService(state.kernel).trace_execution(execution_id)
 
     @app.get("/api/agent-messages", dependencies=[Depends(authorize)])
     def agent_messages(

@@ -47,6 +47,16 @@ WorkItem dispatch 外で起動したエージェントは、同じ `AgentNameReg
 `agent_identity_registered` Event として `node_id` / `pilot_id` に紐づき、dispatch の
 割当と同じ名前空間で予約されます。通信側はこの Ledger 上の登録だけを個名として受け付けます。
 
+ACR-04 の監査読取は `AuditTraceService` に集約します。通知は元 Observation subject、
+着信 message ID、宛先個名、`agent_notification_delivered` Event の receipt／cursor、
+明示された WorkItem 昇格を一つのトレースへ連結します。Execution は
+`agent_name_assigned` → WorkItem → `pilot_execution_receipt_recorded` を payload と
+Projection の双方で照合し、個名の不一致を受け付けません。返信は
+`reply-draft@1` の Observation anchor と個名付き lineage、owner の
+`reply-approval@1`、bridge の draft-anchor 済み `send-record@1` を、LETHE supplemental
+record の ID だけを根拠に読み取ります。監査読取中の Event 追加や暗黙の補助記録探索は
+行いません。
+
 エージェント間通信は `AgentNotificationDelivery` の `agent_notification_delivered` Event
 を共有し、関連 WorkItem / Execution を Event の correlation / causation と payload に記録します。
 オーナー向け projection は全件を開示し、source platform は `internal` に固定されるため、

@@ -846,6 +846,16 @@ class Kernel:
             event_type="pilot_execution_receipt_recorded",
             payload={
                 "receipt_id": receipt_id,
+                "execution_id": execution_id,
+                "work_item_id": execution.work_item_id,
+                "assignment_id": next(
+                    (
+                        assignment.assignment_id
+                        for assignment in self.agent_name_assignments.values()
+                        if assignment.execution_id == execution_id
+                    ),
+                    None,
+                ),
                 "receipt_status": receipt_status,
                 "requested_model": requested_model,
                 "actual_model": actual_model,
