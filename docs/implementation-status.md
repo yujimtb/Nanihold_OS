@@ -1,6 +1,6 @@
 # Implementation status
 
-基準日: 2026-07-20
+基準日: 2026-07-21
 
 ## 実装済み
 
@@ -84,6 +84,11 @@
   `requires_work_item=true`の明示条件だけを`agent_notification_promoted`と既存
   `work_item_created`へ連結する。`AgentNotificationDelivery`はエージェント間通信にも
   同じLedger Event契約を使用し、外部返信経路を追加しない。
+- EnvironmentInstance の論理パス・CLI・`CODEX_HOME` 束縛、契約 fingerprint と分離した
+  instance fingerprint、candidate/verified/active/retired ライフサイクルを実装し、
+  Operational Ledger への登録・検証・稼働化・退役記録を追加した
+- 同一契約の verified 実体への自律 failover と、適合実体が無い場合の再プロビジョニング
+  要求イベント／注入フック、および dispatcher の failover 接続点を実装した
 
 ## 検証
 
