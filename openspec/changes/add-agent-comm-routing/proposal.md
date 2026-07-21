@@ -23,15 +23,17 @@
 ## What Changes
 
 - **ADDED:** ACR-01 エージェント個名レジストリとローテーション自動割当 — WorkItem dispatch 時に実行エージェントへ個名を**自動割り当て**する台帳(タスクごとに新規付与・プールをローテーション)。名前 ↔ `node_id` / `pilot_id` の写像を持ち、割り当てた名を Ledger / receipt / チャネル通知に刻んで「どのエージェントが何をやっているか」を可視化する。名前は `Agent_name.csv` から、規模 ↔ モデル階級・言語 ↔ 系統・いいねフラグの規則で選定する。
-- **ADDED:** ACR-02 通知(inbound routing)— チャネル着信のうちエージェント名を宛先とするものを配送する機構。宛先記法は文頭 `@名前` を主、リプライ/スレッドの宛先継承を補とし、プレフィックス文字は設定値(例: `AGENT_ADDRESS_PREFIX`、既定 `"@"`)から解決(ハードコード禁止)。配送は Nanihold Operational Ledger(実体 = personal-primary LETHE `:8080`、`space:personal-primary`)イベントを基盤とし、必要時 WorkItem 起票へ昇格する二段構え。どの規約にも合致しない着信は配送せず観測のみ。
+- **ADDED:** ACR-02 通知(inbound routing)— チャネル着信のうちエージェント名を宛先とするものを配送する機構。宛先解決は ①文頭 `@名前`(最優先)②Intercom(bot)配信メッセージへの返信=帰属エージェント宛メンション同等(スレッド継承より優先。帰属特定不能時は `Nagi`(S5)宛に集約)③スレッド継承(補)の優先順位。プレフィックス文字は設定値(例: `AGENT_ADDRESS_PREFIX`、既定 `"@"`)から解決(ハードコード禁止)。配送は Nanihold Operational Ledger(実体 = personal-primary LETHE `:8080`、`space:personal-primary`)イベントを基盤とし、必要時 WorkItem 起票へ昇格する二段構え。どの規約にも合致しない着信(bot 返信を除く)は配送せず観測のみ。
 - **ADDED:** ACR-03 返信(outbound authoring)— エージェント自身が返信文を書き、**書き手のエージェント名を帰属付きで** `reply-draft@1` として card-queue へ投入する。オーナー承認(`reply-approval@1`)を経てブリッジが配信する(既存経路を流用)。返信文の自動生成ジェネレータは作らない。
 - **ADDED:** ACR-04 監査 — 通知の配送・返信の帰属・dispatch で割り当てた個名を Nanihold Operational Ledger / receipt で追跡可能にする。
 - **ADDED:** ACR-06 Nagi S5 常設席 — Interface node(`node:owner-interface`)の割当名 `Nagi`(凪)は手動割当済みの予約名でローテーション対象外。S5 最上位として終了条件を持たない常設の席とし、WorkItem 受け入れ条件体系の外に置く。名前は席に属し、パイロット交代でも不変。
+- **ADDED:** ACR-07 エージェント間通信システム — エージェント同士が個名宛て(`@名前` 相当)でメッセージを送り合える機構。配送基盤は ACR-02 と同一の二段構え(Operational Ledger イベント + 必要時 WorkItem 昇格)に統一し別系統を作らない。全メッセージは Ledger で監査可能(送り手個名・受け手個名・関連 WorkItem/execution 参照付き)。オーナーは全エージェント間通信を閲覧可能(可視性既定=オーナー開示)。
 - **MODIFIED:** なし(既存 `lethe-channel-bridge` の card-queue / import 経路は流用し、その契約は変更しない)。
 
 ## Non-Goals
 
 - 返信文の自動生成(承認レスの自動送信を含む)。エージェントが書き、オーナーが承認する。
+- エージェント間メッセージの承認レス外部送信。外部チャネルへの発信は従来どおり `reply-approval@1` 経由(ACR-03)に限る。
 - `lethe-channel-bridge` の import / card-queue / send 契約の変更。本 change はその consumer / producer に徹する。
 - LETHE 側 projection・承認 UI の実装。
 - エフォートレベルと命名の連動(命名と無関係・別管理)。
@@ -49,6 +51,11 @@
 3. **命名の自動割当(ACR-01)**: WorkItem dispatch 時に実行エージェントへ自動割当。タスクごとに新規付与しプールをローテーション。規模 ↔ モデル階級(3=旗艦 / 2=中堅 / 1=軽量)、言語 ↔ 系統(Claude=日本語名 / GPT=英名 / その他=ラテン名)、いいね=0 は使用禁止、枯渇時は数字サフィックス。エフォートレベルは命名と無関係。
 4. **Nagi S5 常設席(ACR-06)**: `Nagi`(凪)は手動割当済みの予約名でローテーション対象外。終了条件を持たない S5 常設席、WorkItem 受け入れ条件体系の外。名前は席に属し不変。
 5. **返信 outbound(ACR-03)**: エージェント名帰属付き `reply-draft@1` → `reply-approval@1`(オーナー承認)→ ブリッジ配信。自動生成ジェネレータ禁止。
+
+### 追加確定事項(2026-07-21 / オーナー追加要件)
+
+6. **返信=メンション同等(ACR-02 改訂)**: Intercom(bot)が配信したメッセージへの返信(Discord リプライ / Slack スレッド返信)は、そのメッセージの帰属エージェント宛メンションと同等に解決する。スレッド継承より優先。帰属特定不能な bot メッセージへの返信は `Nagi`(S5 常設席)宛に集約(観測落ちにしない)。
+7. **エージェント間通信(ACR-07 新規)**: エージェント同士が個名宛てでメッセージ送受信。配送基盤は ACR-02 と同一の二段構えに統一し別系統を作らない。全メッセージは Ledger で監査可能(送り手・受け手個名・WorkItem/execution 参照付き)、可視性既定=オーナー開示。外部発信は `reply-approval@1` 経由に限る(Non-Goal)。
 
 ## Rollout
 
