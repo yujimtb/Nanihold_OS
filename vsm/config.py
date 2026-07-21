@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from vsm.errors import ConfigurationError, InvariantViolation
+from vsm.environment import EnvironmentContract, environment_fingerprint
 from vsm.kernel.models import (
     AuditPolicy,
     ControlPolicy,
@@ -200,6 +201,7 @@ class NaniholdConfig(StrictConfig):
     kernel: KernelConfig
     pilot: PilotConfig
     interface_pilot: InterfacePilotConfig
+    environment_contract: EnvironmentContract | None = None
     production_pilot_host: ProductionPilotHostRuntimeConfig | None = None
     routing: RoutingConfig
     server: ServerConfig
@@ -213,6 +215,27 @@ class NaniholdConfig(StrictConfig):
             raise ValueError("ControlPolicy DataSpace does not match Kernel DataSpace")
         if not self.routing.candidates:
             raise ValueError("routing candidates must not be empty")
+        if self.environment_contract is not None:
+            expected_environment_fingerprint = environment_fingerprint(
+                self.environment_contract
+            )
+            declared_fingerprints = {
+                "interface_pilot": self.interface_pilot.environment_fingerprint,
+                **{
+                    f"routing.candidates[{index}]": registration.candidate.environment_fingerprint
+                    for index, registration in enumerate(self.routing.candidates)
+                },
+            }
+            mismatches = [
+                location
+                for location, declared in declared_fingerprints.items()
+                if declared != expected_environment_fingerprint
+            ]
+            if mismatches:
+                raise ConfigurationError(
+                    "environment_fingerprint does not match environment_contract: "
+                    + ", ".join(mismatches)
+                )
         keys = [item.candidate.key for item in self.routing.candidates]
         if len(keys) != len(set(keys)):
             raise ValueError("routing ModelCandidate keys must be unique")
