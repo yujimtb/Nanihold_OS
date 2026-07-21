@@ -10,6 +10,7 @@ from typing import Protocol
 from pydantic import Field
 
 from vsm.errors import InvariantViolation
+from vsm.environment_instance import EnvironmentInstance
 from vsm.ids import new_id
 from vsm.kernel.models import (
     Execution,
@@ -72,6 +73,14 @@ class WorkExecutor(Protocol):
     ) -> WorkExecutionOutcome: ...
 
 
+class EnvironmentFailover(Protocol):
+    """Injected environment failover boundary used by the dispatcher."""
+
+    def failover(
+        self, failed_instance_id: str, *, idempotency_key: str
+    ) -> EnvironmentInstance | None: ...
+
+
 class DependencyAwareDispatcher:
     """Dispatches independent ready work concurrently through the typed host."""
 
@@ -84,6 +93,7 @@ class DependencyAwareDispatcher:
         startup_projection_cursor: int,
         model_registry: dict[str, ModelCandidate] | None = None,
         work_executor: WorkExecutor | None = None,
+        environment_failover: EnvironmentFailover | None = None,
         max_parallelism: int | None = None,
     ) -> None:
         self.kernel = kernel
@@ -99,6 +109,7 @@ class DependencyAwareDispatcher:
         self._event_delta_cursor = startup_projection_cursor
         self.model_registry = model_registry
         self.work_executor = work_executor
+        self.environment_failover = environment_failover
         if work_executor is None:
             if max_parallelism is not None:
                 raise InvariantViolation(
@@ -381,6 +392,13 @@ class DependencyAwareDispatcher:
                         "receipt-unreachable"
                     ),
                 )
+                if self.environment_failover is not None:
+                    self.failover_environment(
+                        failed_instance_id=execution.pilot_host_id,
+                        idempotency_key=(
+                            f"{idempotency_key}:{execution.execution_id}:environment-failover"
+                        ),
+                    )
         except Exception:
             with self._lock:
                 self.kernel.set_execution_state(
@@ -400,6 +418,25 @@ class DependencyAwareDispatcher:
         if "outcome" in locals():
             with self._lock:
                 self._record_receipt(execution, outcome.receipt, idempotency_key)
+
+    def failover_environment(
+        self, *, failed_instance_id: str, idempotency_key: str
+    ) -> EnvironmentInstance | None:
+        """Invoke the injected EnvironmentInstance failover boundary.
+
+        PilotHost IDs are used as the instance IDs at this connection point;
+        an integration that keeps separate identities can inject a translating
+        adapter.  No owner approval is part of this path.
+        """
+
+        if self.environment_failover is None:
+            raise InvariantViolation(
+                "environment failover is not configured for this dispatcher"
+            )
+        return self.environment_failover.failover(
+            failed_instance_id,
+            idempotency_key=idempotency_key,
+        )
 
     def wait_for_idle(self) -> None:
         while True:
