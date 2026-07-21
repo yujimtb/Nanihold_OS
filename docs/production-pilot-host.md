@@ -239,8 +239,13 @@ PilotHostはcodex自身が書くsession rollout(`CODEX_HOME/sessions/.../rollout
 ```
 
 `thread_id`は`codex exec --json`のstdout stream(`thread.started` event)から取得します。
+work execution receiptの`provider_session_id`には、このeventから取得したthread IDを
+そのまま保存します。thread IDを取得した後のactual model、usage、structured resultの
+検証失敗でも、取得済みのIDは失敗receiptへ残します。
 `turn_context`をuniqueに特定できない、読めない、model/effortが無い、いずれの場合も
 `ActualModelUnverifiable`でfail closedします。
+thread eventが無い、またはthread IDが空の場合も`ProviderProtocolError`で失敗し、
+`provider_session_id: null`のまま成功扱いにはしません。
 
 実測背景(codex-cli 0.144.5): `codex exec --json`のstdout event stream
 (`thread.started` / `turn.started` / `item.completed` / `turn.completed`)は

@@ -693,6 +693,7 @@ def test_codex_exec_has_exact_model_effort_cwd_sandbox_and_schema(
 
     assert receipt["status"] == "succeeded"
     assert receipt["actual_model"] == "gpt-5.6-sol"
+    assert receipt["provider_session_id"] == "codex-thread-1"
     argv = calls[0]
     assert argv[:3] == ["codex", "exec", "--json"]
     assert argv[argv.index("--model") + 1] == "gpt-5.6-sol"
@@ -778,6 +779,40 @@ def test_codex_actual_model_unverifiable_when_rollout_missing(
 
     assert receipt["status"] == "failed"
     assert receipt["error"]["code"] == "ActualModelUnverifiable"
+    assert receipt["provider_session_id"] == "codex-thread-1"
+
+
+def test_codex_thread_id_is_required_for_a_successful_work_receipt(
+    tmp_path: Path, monkeypatch, provider_env
+):
+    def fake_run(argv, **kwargs):
+        version = _version_result(argv)
+        if version is not None:
+            return version
+        _codex_last_message(Path(argv[argv.index("--output-last-message") + 1]))
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            json.dumps(
+                {
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 400,
+                        "cached_input_tokens": 200,
+                        "output_tokens": 100,
+                        "reasoning_output_tokens": 40,
+                    },
+                }
+            ),
+            "",
+        )
+
+    host = _make_host(tmp_path, monkeypatch, fake_run)
+    receipt = host.execute("/v1/work-executions", _work_request(tmp_path))
+
+    assert receipt["status"] == "failed"
+    assert receipt["error"]["code"] == "ProviderProtocolError"
+    assert receipt["provider_session_id"] is None
 
 
 def test_codex_rejects_actual_model_mismatch_from_rollout(

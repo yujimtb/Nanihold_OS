@@ -294,12 +294,14 @@ class ProviderInvocationError(RuntimeError):
         *,
         usage: dict[str, object] | None = None,
         actual_model: str | None = None,
+        provider_session_id: str | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.safe_message = message
         self.usage = usage
         self.actual_model = actual_model
+        self.provider_session_id = provider_session_id
 
 
 def _utc_now() -> str:
@@ -1327,13 +1329,18 @@ class CodexAdapter:
         completed_events = [
             event for event in events if event.get("type") == "turn.completed"
         ]
+        provider_session_id: str | None = None
+        if len(thread_events) == 1:
+            candidate_session_id = thread_events[0].get("thread_id")
+            if isinstance(candidate_session_id, str) and candidate_session_id:
+                provider_session_id = candidate_session_id
         if len(thread_events) != 1 or len(completed_events) != 1:
             raise ProviderInvocationError(
                 "ProviderProtocolError",
                 "Codex exec did not report one thread and one completed turn",
+                provider_session_id=provider_session_id,
             )
-        provider_session_id = thread_events[0].get("thread_id")
-        if not isinstance(provider_session_id, str) or not provider_session_id:
+        if provider_session_id is None:
             raise ProviderInvocationError(
                 "ProviderProtocolError",
                 "Codex exec did not report a thread ID",
@@ -1343,7 +1350,9 @@ class CodexAdapter:
         actual_model, actual_effort = self._verify_actual_model_effort(
             provider_session_id
         )
-        parsed_usage = self._validate_usage(usage)
+        parsed_usage = self._validate_usage(
+            usage, provider_session_id=provider_session_id
+        )
         if (
             actual_model != self.candidate.model_snapshot
             or actual_effort != self.candidate.effort
@@ -1353,6 +1362,7 @@ class CodexAdapter:
                 "Codex actual model or reasoning effort differs from the request",
                 usage=parsed_usage,
                 actual_model=actual_model,
+                provider_session_id=provider_session_id,
             )
         if completed.returncode != 0:
             raise ProviderInvocationError(
@@ -1360,6 +1370,7 @@ class CodexAdapter:
                 "Codex exec exited without a successful structured response",
                 usage=parsed_usage,
                 actual_model=actual_model,
+                provider_session_id=provider_session_id,
             )
         if (
             parsed_usage["input_tokens"] > request.token_budget.max_input_tokens
@@ -1371,6 +1382,7 @@ class CodexAdapter:
                 "Codex reported token usage above the authorized budget",
                 usage=parsed_usage,
                 actual_model=actual_model,
+                provider_session_id=provider_session_id,
             )
         try:
             structured = StructuredWorkOutput.model_validate_json(result_text)
@@ -1380,6 +1392,7 @@ class CodexAdapter:
                 "Codex final output violated the work output schema",
                 usage=parsed_usage,
                 actual_model=actual_model,
+                provider_session_id=provider_session_id,
             ) from exc
         expected = list(request.unmet_acceptance)
         actual = [item.criterion for item in structured.acceptance_results]
@@ -1389,6 +1402,7 @@ class CodexAdapter:
                 "Codex result did not cover unmet acceptance in request order",
                 usage=parsed_usage,
                 actual_model=actual_model,
+                provider_session_id=provider_session_id,
             )
         if structured.completed and any(
             not result.satisfied for result in structured.acceptance_results
@@ -1398,6 +1412,7 @@ class CodexAdapter:
                 "Codex claimed completion with unsatisfied acceptance",
                 usage=parsed_usage,
                 actual_model=actual_model,
+                provider_session_id=provider_session_id,
             )
         return (
             structured.model_dump(mode="json"),
@@ -1419,11 +1434,13 @@ class CodexAdapter:
             raise ProviderInvocationError(
                 "ActualModelUnverifiable",
                 "Codex session rollout directory could not be scanned",
+                provider_session_id=thread_id,
             ) from exc
         if len(matches) != 1:
             raise ProviderInvocationError(
                 "ActualModelUnverifiable",
                 "Codex session rollout for the thread was not uniquely found",
+                provider_session_id=thread_id,
             )
         model: str | None = None
         effort: str | None = None
@@ -1437,6 +1454,7 @@ class CodexAdapter:
                     raise ProviderInvocationError(
                         "ActualModelUnverifiable",
                         "Codex session rollout contained invalid JSONL",
+                        provider_session_id=thread_id,
                     ) from exc
                 if (
                     not isinstance(record, dict)
@@ -1456,19 +1474,24 @@ class CodexAdapter:
             raise ProviderInvocationError(
                 "ActualModelUnverifiable",
                 "Codex session rollout could not be read for model verification",
+                provider_session_id=thread_id,
             ) from exc
         if model is None or effort is None:
             raise ProviderInvocationError(
                 "ActualModelUnverifiable",
                 "Codex session rollout did not report actual model and effort",
+                provider_session_id=thread_id,
             )
         return model, effort
 
-    def _validate_usage(self, raw: object) -> dict[str, object]:
+    def _validate_usage(
+        self, raw: object, *, provider_session_id: str | None = None
+    ) -> dict[str, object]:
         if not isinstance(raw, dict):
             raise ProviderInvocationError(
                 "ProviderUsageMissing",
                 "Codex exec did not report token usage",
+                provider_session_id=provider_session_id,
             )
         required = {
             "input_tokens",
@@ -1480,6 +1503,7 @@ class CodexAdapter:
             raise ProviderInvocationError(
                 "ProviderUsageMissing",
                 "Codex exec token usage fields differ from the exact contract",
+                provider_session_id=provider_session_id,
             )
         values: dict[str, int] = {}
         for name in required:
@@ -1488,6 +1512,7 @@ class CodexAdapter:
                 raise ProviderInvocationError(
                     "ProviderUsageMissing",
                     f"Codex exec did not report valid {name}",
+                    provider_session_id=provider_session_id,
                 )
             values[name] = value
         return {
@@ -1674,7 +1699,7 @@ class ProductionPilotHost:
                 request.receipt_id,
                 status="failed",
                 actual_model=exc.actual_model,
-                provider_session_id=None,
+                provider_session_id=exc.provider_session_id,
                 usage=exc.usage,
                 result=None,
                 error={"code": exc.code, "message": exc.safe_message},
