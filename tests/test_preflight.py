@@ -13,6 +13,7 @@ from vsm.preflight import (
     CliVersionReader,
     PreflightContractError,
     PreflightGate,
+    PreflightObservation,
     VersionReadError,
     candidate_metadata_updater,
 )
@@ -267,6 +268,60 @@ def test_preflight失敗はfail_fastで宣言と自動更新を変更しない(t
     assert declaration == {"adapter_version": "0.145.0"}
     assert events == []
     assert not (tmp_path / "state" / "preflight.json").exists()
+
+
+def test_preflightはbridged観測でsandbox検証を明示的にスキップして通過する(
+    tmp_path: Path,
+):
+    """The win32 Codex bypass bridge cannot make codex report sandbox_policy in
+    its rollout, so an adapter that reports bridged=True gets a recorded,
+    explicit degraded pass on the sandbox check instead of a rejection."""
+
+    def runner(_value):
+        return PreflightObservation(
+            sandbox_policy="unverified_by_bridge",
+            capabilities={
+                "workspace_writable": True,
+                "endpoint_reachable": ["api.openai.com"],
+                "memory_bytes": 2 * 1024 * 1024,
+                "shell": "posix",
+                "path_mappings": ["workspace-root"],
+            },
+            rollout_ref="rollout:bridge:1",
+            bridged=True,
+        )
+
+    gate, _ = _gate(tmp_path, runner=runner)
+    result = gate.dispatch_preflight("codex-cli")
+
+    assert result.cache_hit is False
+    assert result.evidence.bridged is True
+    assert result.evidence.measured_sandbox_policy == "unverified_by_bridge"
+    persisted = json.loads((tmp_path / "state" / "preflight.json").read_text())
+    assert persisted["entries"][-1]["evidence"]["bridged"] is True
+
+
+def test_preflightはbridged観測でも他の検証は必須のまま(tmp_path: Path):
+    """bridged only excuses the sandbox_policy check; shell/memory/endpoint/CLI
+    version/instance fingerprint verification stays mandatory."""
+
+    def runner(_value):
+        return PreflightObservation(
+            sandbox_policy="unverified_by_bridge",
+            capabilities={
+                "workspace_writable": True,
+                "endpoint_reachable": ["api.openai.com"],
+                "memory_bytes": 2 * 1024 * 1024,
+                "shell": "powershell",  # CONTRACT only supports posix
+                "path_mappings": ["workspace-root"],
+            },
+            rollout_ref="rollout:bridge:2",
+            bridged=True,
+        )
+
+    gate, _ = _gate(tmp_path, runner=runner)
+    with pytest.raises(PreflightContractError, match="required shell capability"):
+        gate.dispatch_preflight("codex-cli")
 
 
 def testバージョン読み取りはプロセスを起動しない(tmp_path: Path, monkeypatch):

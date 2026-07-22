@@ -1394,11 +1394,34 @@ class CodexAdapter:
         except OSError as exc:
             raise PreflightError("Codex preflight rollout could not be read") from exc
         if sandbox_policy is None:
-            raise PreflightError("Codex preflight rollout did not report sandbox_policy")
+            # codex exec --dangerously-bypass-approvals-and-sandbox never writes a
+            # sandbox_policy record to its rollout, so independent verification is
+            # structurally impossible while the bridge is active. This is only
+            # accepted as a degraded, explicitly-recorded pass when the owner has
+            # approved the bypass bridge for this adapter (win32_codex_sandbox_
+            # bypass_enabled, see production/eep-phase1-bridge-receipt.md); absent
+            # that flag this remains a hard preflight rejection, unchanged.
+            bypass_active = (
+                sys.platform == "win32" and self.win32_codex_sandbox_bypass_enabled
+            )
+            if not bypass_active:
+                raise PreflightError(
+                    "Codex preflight rollout did not report sandbox_policy"
+                )
+            return PreflightObservation(
+                sandbox_policy="unverified_by_bridge",
+                # The bypass flag disables sandboxing entirely, so the workspace is
+                # actually writable; this is a real fact, not an inference from the
+                # unavailable sandbox_policy.
+                capabilities={"workspace_writable": True},
+                rollout_ref=str(matches[0]),
+                bridged=True,
+            )
         return PreflightObservation(
             sandbox_policy=sandbox_policy,
             capabilities={"workspace_writable": sandbox_policy == "workspace-write"},
             rollout_ref=str(matches[0]),
+            bridged=False,
         )
 
     def invoke(
@@ -2000,6 +2023,7 @@ def _instance_preflight_runner(
             sandbox_policy=observation.sandbox_policy,
             capabilities=capabilities,
             rollout_ref=observation.rollout_ref,
+            bridged=observation.bridged,
         )
 
     return run

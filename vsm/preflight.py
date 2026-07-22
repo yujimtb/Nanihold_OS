@@ -111,11 +111,19 @@ class VerificationTuple:
 
 @dataclass(frozen=True)
 class PreflightObservation:
-    """Measured values returned by one injected adapter preflight trial."""
+    """Measured values returned by one injected adapter preflight trial.
+
+    ``bridged`` marks an observation whose ``sandbox_policy`` could not be
+    independently verified because an owner-approved bypass bridge was active
+    (e.g. the win32 Codex sandbox bypass ahead of the WSL cutover). It is an
+    explicit, recorded degradation — never a silent default — and only the
+    adapter that knows about its own bridge may set it.
+    """
 
     sandbox_policy: str
     capabilities: Mapping[str, object]
     rollout_ref: str | None = None
+    bridged: bool = False
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> "PreflightObservation":
@@ -131,6 +139,9 @@ class PreflightObservation:
         rollout_ref = value.get("rollout_ref")
         if rollout_ref is not None:
             rollout_ref = _nonblank(rollout_ref, "rollout_ref")
+        bridged = value.get("bridged", False)
+        if not isinstance(bridged, bool):
+            raise PreflightContractError("preflight bridged flag must be boolean")
         # Flat capability fields are accepted by the injected runner contract as
         # well as the nested form, while the normalized evidence always nests them.
         flat_capabilities = {
@@ -150,6 +161,7 @@ class PreflightObservation:
             sandbox_policy=sandbox_policy,
             capabilities=merged,
             rollout_ref=rollout_ref,
+            bridged=bridged,
         )
 
 
@@ -163,6 +175,7 @@ class PreflightEvidence:
     rollout_ref: str | None
     version_file: str
     version_file_mtime_ns: int
+    bridged: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -174,6 +187,7 @@ class PreflightEvidence:
             "rollout_ref": self.rollout_ref,
             "version_file": self.version_file,
             "version_file_mtime_ns": self.version_file_mtime_ns,
+            "bridged": self.bridged,
         }
 
     @classmethod
@@ -196,6 +210,11 @@ class PreflightEvidence:
         mtime = value.get("version_file_mtime_ns")
         if not isinstance(mtime, int) or isinstance(mtime, bool) or mtime < 0:
             raise PreflightCacheError("cached version_file_mtime_ns is invalid")
+        # Older cache entries predate the bridged flag; a missing key means the
+        # entry was recorded before bypass-bridge support existed, i.e. verified.
+        bridged = value.get("bridged", False)
+        if not isinstance(bridged, bool):
+            raise PreflightCacheError("cached bridged flag must be boolean")
         return cls(
             verification_tuple=verification_tuple,
             measured_sandbox_policy=_nonblank(
@@ -213,6 +232,7 @@ class PreflightEvidence:
             ),
             version_file=_nonblank(value.get("version_file"), "cached version_file"),
             version_file_mtime_ns=mtime,
+            bridged=bridged,
         )
 
 
@@ -402,6 +422,7 @@ class PreflightGate:
             rollout_ref=observation.rollout_ref,
             version_file=cli_version.version_file,
             version_file_mtime_ns=cli_version.version_file_mtime_ns,
+            bridged=observation.bridged,
         )
         declaration_updater = self.declaration_updaters.get(adapter)
         if declaration_updater is not None:
@@ -428,14 +449,19 @@ class PreflightGate:
         supported_sandboxes = {
             sandbox.value for sandbox in self.contract.supported_sandboxes
         }
-        if observation.sandbox_policy not in supported_sandboxes:
-            raise PreflightContractError(
-                "measured sandbox_policy is not supported by the environment contract"
-            )
-        if observation.sandbox_policy != verification_tuple.sandbox_mode:
-            raise PreflightContractError(
-                "measured sandbox_policy differs from the required sandbox mode"
-            )
+        if not observation.bridged:
+            if observation.sandbox_policy not in supported_sandboxes:
+                raise PreflightContractError(
+                    "measured sandbox_policy is not supported by the environment contract"
+                )
+            if observation.sandbox_policy != verification_tuple.sandbox_mode:
+                raise PreflightContractError(
+                    "measured sandbox_policy differs from the required sandbox mode"
+                )
+        # observation.bridged is an explicit, adapter-reported degradation (the
+        # owner-approved bypass bridge prevents independent sandbox_policy
+        # verification). It passes the sandbox check as "unverified_by_bridge"
+        # while every other capability below is still measured and required.
         capabilities = observation.capabilities
         if self.contract.workspace_writable and capabilities.get("workspace_writable") is not True:
             raise PreflightContractError("workspace write capability was not measured")

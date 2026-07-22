@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 
 import pytest
@@ -1099,6 +1100,114 @@ def test_dispatcher_bootstraps_from_prior_only_route_and_parallelizes_work(syste
         execution.state is ExecutionState.SUCCEEDED
         for execution in kernel.executions.values()
     )
+
+
+def test_dispatcher_logs_and_records_a_receipt_for_an_unanticipated_worker_failure(
+    system, caplog
+):
+    """A WorkExecutor failure that is not one of the typed PilotHost exceptions
+    (PilotHostUnreachable/TransportUnknown/ModelMismatch/ReceiptError) must never
+    disappear silently: it is the only diagnostic trail once the provider process
+    and its stdout/stderr are gone, so it must be logged with its traceback and,
+    where possible, recorded as a receipt just like the PilotHostUnreachable path.
+    """
+    kernel, ledger, _, _ = system
+    worker = make_node(
+        "node:worker-unexpected", name="Worker", kind=NodeKind.UNIT
+    )
+    kernel.register_node(worker, actor_id=OWNER_ID, idempotency_key="node:worker-unexpected")
+    kernel.create_work_item(
+        WorkItem(
+            work_item_id="work:unexpected",
+            data_space_id=SPACE_ID,
+            title="unexpected",
+            description="Do unexpected",
+            owner_node_id=INTERFACE_NODE_ID,
+            delegated_to_node_id=worker.node_id,
+            integration_owner_node_id=INTERFACE_NODE_ID,
+            parent_work_item_id=None,
+            acceptance_criteria=("verified",),
+            route_key="coding_s1",
+            state=WorkState.READY,
+            blocking_s3_star_finding_ids=(),
+            completion_evidence=None,
+        ),
+        actor_id=OWNER_ID,
+        idempotency_key="work:unexpected",
+    )
+    router, model = router_with_prior_only_candidate()
+    snapshot = RouteSnapshot(
+        snapshot_id="route:dispatcher-unexpected",
+        data_space_id=SPACE_ID,
+        route_key="coding_s1",
+        evidence_cursor=0,
+        candidate_keys=(model.key,),
+        production_objective="quality_max",
+        state=RouteSnapshotState.PUBLISHED,
+        s3_star_approval_event_id="event:s3",
+        owner_approval_event_id="event:owner",
+    )
+    kernel.route_snapshots[snapshot.snapshot_id] = snapshot
+
+    class ExplodingExecutor:
+        def validate_work_candidate(self, selected):
+            assert selected == model
+
+        def execute_work(self, **kwargs):
+            raise RuntimeError("boom: provider adapter raised something unmodeled")
+
+    dispatcher = DependencyAwareDispatcher(
+        kernel=kernel,
+        router=router,
+        evidence_cursor=lambda: 0,
+        startup_projection_cursor=0,
+        model_registry={model.key: model},
+        work_executor=ExplodingExecutor(),
+        max_parallelism=1,
+    )
+    with caplog.at_level(logging.ERROR, logger="vsm.dispatcher"):
+        batch = dispatcher.dispatch_ready(
+            (
+                PilotBinding(
+                    node_id=worker.node_id,
+                    pilot_id="pilot:worker",
+                    pilot_host_id="pilot-host:worker",
+                ),
+            ),
+            actor_id=OWNER_ID,
+            idempotency_key="dispatch:unexpected",
+        )
+        dispatcher.wait_for_idle()
+    dispatcher.close()
+
+    assert batch.parallelism == 1
+    execution_id = batch.assignments[0].execution_id
+
+    # (a) the exception must be logged with its traceback, not dropped silently.
+    error_records = [
+        record for record in caplog.records if record.levelno >= logging.ERROR
+    ]
+    assert error_records, "the unexpected worker failure was not logged at all"
+    assert any(
+        execution_id in record.getMessage() for record in error_records
+    )
+    assert any(record.exc_info is not None for record in error_records)
+    assert "boom: provider adapter raised something unmodeled" in caplog.text
+
+    # (b) it must be recorded as a receipt (same shape as PilotHostUnreachable),
+    # so the failure reason survives in the Ledger, not just in process logs.
+    execution = kernel.executions[execution_id]
+    assert execution.state is ExecutionState.FAILED
+    receipt_events = [
+        stored.event
+        for stored in ledger.page(0, 10_000)
+        if stored.event.event_type == "pilot_execution_receipt_recorded"
+        and stored.event.payload["execution_id"] == execution_id
+    ]
+    assert len(receipt_events) == 1
+    error = receipt_events[0].payload["error"]
+    assert error["code"] == "UnexpectedDispatchFailure"
+    assert "boom: provider adapter raised something unmodeled" in error["message"]
 
 
 def test_history_manifest_is_bounded_for_large_record_totals(system):

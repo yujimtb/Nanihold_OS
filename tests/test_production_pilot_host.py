@@ -10,6 +10,7 @@ import pytest
 from pydantic import BaseModel
 
 from scripts.production_pilot_host import (
+    CodexAdapter,
     ConflictError,
     ContractError,
     InterfaceTurnRequest,
@@ -17,6 +18,7 @@ from scripts.production_pilot_host import (
     ReceiptStore,
     ReorientationTurnRequest,
 )
+from vsm.preflight import PreflightError, VerificationTuple
 
 
 CERTIFICATE = "a" * 64
@@ -895,6 +897,93 @@ def test_codex_win32_bypass_is_disabled_by_default(
 
     with pytest.raises(ContractError, match="Windows workspace-write execution requires a successful"):
         host.execute("/v1/work-executions", _work_request(tmp_path))
+
+
+def _preflight_verification_tuple() -> VerificationTuple:
+    return VerificationTuple(
+        adapter="codex-cli",
+        cli_version="0.145.0",
+        sandbox_mode="workspace-write",
+        environment_fingerprint="windows:pilot-host",
+    )
+
+
+def test_codex_preflight_bridges_missing_sandbox_policy_when_bypass_is_enabled(
+    tmp_path: Path, monkeypatch, provider_env
+):
+    """Reproduces the production-blocking bug: codex exec
+    --dangerously-bypass-approvals-and-sandbox never writes a sandbox_policy
+    record to its rollout, so the preflight sandbox check is structurally
+    unsatisfiable while the owner-approved bypass bridge is active. The fix is
+    a recorded, explicit degraded pass (bridged=True, sandbox_policy=
+    "unverified_by_bridge") rather than a rejection or a silent fallback.
+    """
+    monkeypatch.setattr("scripts.production_pilot_host.sys.platform", "win32")
+
+    def fake_run(argv, **kwargs):
+        version = _version_result(argv)
+        if version is not None:
+            return version
+        _write_codex_rollout(
+            _codex_home(tmp_path),
+            "codex-preflight-thread-1",
+            model="gpt-5.6-sol",
+            effort="xhigh",
+        )
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            json.dumps(
+                {"type": "thread.started", "thread_id": "codex-preflight-thread-1"}
+            )
+            + "\n",
+            "",
+        )
+
+    monkeypatch.setattr("scripts.production_pilot_host.subprocess.run", fake_run)
+    codex_config = _config(tmp_path)["codex"]
+    codex_config["win32_codex_sandbox_bypass_enabled"] = True
+    adapter = CodexAdapter(codex_config)
+
+    observation = adapter.run_preflight(_preflight_verification_tuple())
+
+    assert observation.bridged is True
+    assert observation.sandbox_policy == "unverified_by_bridge"
+    assert observation.capabilities == {"workspace_writable": True}
+    assert observation.rollout_ref is not None
+
+
+def test_codex_preflight_still_rejects_missing_sandbox_policy_without_bypass(
+    tmp_path: Path, monkeypatch, provider_env
+):
+    """bypass disabled (the default) is unchanged: a rollout without
+    sandbox_policy is a hard preflight rejection, not a silent fallback."""
+
+    def fake_run(argv, **kwargs):
+        version = _version_result(argv)
+        if version is not None:
+            return version
+        _write_codex_rollout(
+            _codex_home(tmp_path),
+            "codex-preflight-thread-2",
+            model="gpt-5.6-sol",
+            effort="xhigh",
+        )
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            json.dumps(
+                {"type": "thread.started", "thread_id": "codex-preflight-thread-2"}
+            )
+            + "\n",
+            "",
+        )
+
+    monkeypatch.setattr("scripts.production_pilot_host.subprocess.run", fake_run)
+    adapter = CodexAdapter(_config(tmp_path)["codex"])
+
+    with pytest.raises(PreflightError, match="did not report sandbox_policy"):
+        adapter.run_preflight(_preflight_verification_tuple())
 
 
 def test_codex_rejects_acceptance_criterion_not_copied_verbatim(

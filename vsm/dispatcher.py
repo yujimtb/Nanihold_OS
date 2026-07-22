@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -37,6 +38,9 @@ from vsm.pilot.production_host import (
     WorkExecutionOutcome,
 )
 from vsm.routing.bayesian import BayesianRouter
+
+
+logger = logging.getLogger(__name__)
 
 
 class PilotBinding(StrictModel):
@@ -432,19 +436,59 @@ class DependencyAwareDispatcher:
                             f"{idempotency_key}:{execution.execution_id}:environment-failover"
                         ),
                     )
-        except Exception:
+        except Exception as exc:
+            # Any exception reaching here is, by definition, one the transport
+            # and receipt boundaries above did not anticipate. It must never be
+            # dropped silently: the traceback is the only diagnostic trail once
+            # the provider process and its stdout/stderr are gone. Record it as
+            # a receipt (same shape as the PilotHostUnreachable path) so it also
+            # lands in the Ledger; fall back to a state-only failure transition
+            # if the receipt itself cannot be recorded so the Execution never
+            # hangs REQUESTED forever.
+            logger.exception(
+                "unexpected failure finishing dispatch for execution %s",
+                execution.execution_id,
+            )
             with self._lock:
-                self.kernel.set_execution_state(
-                    execution.execution_id,
-                    ExecutionState.FAILED,
-                    actor_type="system",
-                    actor_id=execution.pilot_id,
-                    idempotency_key=(
-                        f"{idempotency_key}:{execution.execution_id}:"
-                        "unexpected-dispatch-failure"
-                    ),
-                    pause_reason=None,
-                )
+                try:
+                    candidate = self.model_registry[execution.model_candidate_key]
+                    self.kernel.record_pilot_execution_receipt(
+                        execution.execution_id,
+                        receipt_id=new_id("receipt"),
+                        receipt_status="failed",
+                        requested_model=candidate.model_snapshot,
+                        actual_model=None,
+                        provider_session_id=None,
+                        usage=None,
+                        result=None,
+                        error={
+                            "code": "UnexpectedDispatchFailure",
+                            "message": str(exc),
+                        },
+                        actor_id=execution.pilot_id,
+                        idempotency_key=(
+                            f"{idempotency_key}:{execution.execution_id}:"
+                            "unexpected-dispatch-failure"
+                        ),
+                    )
+                except Exception:
+                    logger.exception(
+                        "could not record an UnexpectedDispatchFailure receipt "
+                        "for execution %s; falling back to a state-only failure "
+                        "transition",
+                        execution.execution_id,
+                    )
+                    self.kernel.set_execution_state(
+                        execution.execution_id,
+                        ExecutionState.FAILED,
+                        actor_type="system",
+                        actor_id=execution.pilot_id,
+                        idempotency_key=(
+                            f"{idempotency_key}:{execution.execution_id}:"
+                            "unexpected-dispatch-failure"
+                        ),
+                        pause_reason=None,
+                    )
         finally:
             with self._lock:
                 self._futures.discard(future)
