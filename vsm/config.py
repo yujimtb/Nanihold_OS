@@ -134,6 +134,11 @@ class InterfacePilotConfig(StrictConfig):
         return self
 
 
+class AuditTraceConfig(StrictConfig):
+    max_concurrency: int = Field(gt=0, le=32)
+    slo_seconds: float = Field(gt=0)
+
+
 class ProductionPilotHostRuntimeConfig(StrictConfig):
     coding_pilot_id: str = Field(min_length=1)
     coding_candidate_model_snapshot: str = Field(min_length=1)
@@ -239,6 +244,7 @@ class ServerConfig(StrictConfig):
     allowed_origins: tuple[str, ...]
     authorized_device_ids: tuple[str, ...]
     owner_session_lifetime_seconds: int = Field(gt=0)
+    audit_trace: AuditTraceConfig
     # Owner opt-out for localhost-only deployments. Default False keeps
     # authentication enabled; when True the Bearer + X-Nanihold-Device-Id and
     # owner bootstrap session checks are bypassed. This is an explicit, reversible

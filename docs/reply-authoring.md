@@ -50,7 +50,7 @@ bridge の import、card-queue、approval、send-record の契約は変更しま
 
 ## ACR-04 監査トレース
 
-`vsm audit-trace execution:<id>` は Operational Ledger を cursor 順に読み、
+`vsm audit-trace execution:<id>` は対象の assignment ID / Execution ID ストリームを読み、
 `agent_name_assigned`、WorkItem、`pilot_execution_receipt_recorded` を照合する。
 個名、WorkItem ID、Execution ID、receipt ID のいずれかが不一致なら fail-fast する。
 

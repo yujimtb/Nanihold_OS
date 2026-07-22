@@ -57,6 +57,12 @@ Projection の双方で照合し、個名の不一致を受け付けません。
 record の ID だけを根拠に読み取ります。監査読取中の Event 追加や暗黙の補助記録探索は
 行いません。
 
+通知トレースは通知IDストリーム、Executionトレースはassignment IDとExecution IDの
+ストリームを直接読み取ります。Operational Ledger全体をcursor 0から走査しません。
+APIの高コスト読取には`[server.audit_trace]`の`max_concurrency`と`slo_seconds`を適用し、
+上限到達時は503と`Retry-After`を返します。クライアント切断時は次のストリーム境界で
+協調停止し、Ledgerへ新しい読取を発行しません。
+
 エージェント間通信は `AgentNotificationDelivery` の `agent_notification_delivered` Event
 を共有し、関連 WorkItem / Execution を Event の correlation / causation と payload に記録します。
 オーナー向け projection は全件を開示し、source platform は `internal` に固定されるため、

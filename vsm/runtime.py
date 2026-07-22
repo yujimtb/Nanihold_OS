@@ -356,6 +356,8 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
             production_config.coding_pilot_id if production_config is not None else None
         ),
         owner_session_lifetime_seconds=config.server.owner_session_lifetime_seconds,
+        audit_trace_max_concurrency=config.server.audit_trace.max_concurrency,
+        audit_trace_slo_seconds=config.server.audit_trace.slo_seconds,
         history_reader=history_reader,
         history_max_result_bytes=config.kernel.lethe.history_max_result_bytes,
         agent_name_registry=agent_naming_registry,

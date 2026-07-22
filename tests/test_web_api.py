@@ -115,6 +115,8 @@ def client(
             )
         ),
         owner_session_lifetime_seconds=3600,
+        audit_trace_max_concurrency=2,
+        audit_trace_slo_seconds=5,
         history_reader=object(),
         history_max_result_bytes=4096,
         agent_name_registry=agent_name_registry,

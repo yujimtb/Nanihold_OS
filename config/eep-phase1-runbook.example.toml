@@ -194,3 +194,7 @@ allowed_origins = ["http://localhost:51874"]
 authorized_device_ids = ["device:interface-primary", "device:owner-web", "device:intercom"]
 owner_session_lifetime_seconds = 43200
 owner_auth_disabled = true
+
+[server.audit_trace]
+max_concurrency = 2
+slo_seconds = 5

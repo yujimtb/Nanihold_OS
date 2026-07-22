@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from threading import Event
 from typing import Annotated, Any, Literal
 
+import anyio
 from fastapi import (
     BackgroundTasks,
     Cookie,
@@ -13,6 +16,7 @@ from fastapi import (
     Header,
     HTTPException,
     Query,
+    Request,
     WebSocket,
     WebSocketDisconnect,
     status,
@@ -21,7 +25,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from vsm.audit_trace import AuditTraceService
+from vsm.audit_trace import AuditTraceService, _AuditTraceCancelled
 from vsm.errors import InvariantViolation, NaniholdError
 from vsm.activation.models import (
     CurrentWorkGraphSnapshot,
@@ -252,6 +256,8 @@ class AppState:
     authorized_device_ids: frozenset[str]
     dispatcher: DependencyAwareDispatcher
     owner_session_lifetime_seconds: int
+    audit_trace_max_concurrency: int
+    audit_trace_slo_seconds: float
     history_reader: HistoryReader
     history_max_result_bytes: int
     agent_name_registry: AgentNameRegistry | None = None
@@ -282,6 +288,10 @@ def _reorientation_failure_code(exc: Exception) -> str:
 def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
     if not allowed_origins:
         raise InvariantViolation("Interface allowed_origins must be explicit")
+    if state.audit_trace_max_concurrency <= 0:
+        raise InvariantViolation("audit trace max concurrency must be positive")
+    if state.audit_trace_slo_seconds <= 0:
+        raise InvariantViolation("audit trace SLO must be positive")
     app = FastAPI(title="Nanihold OS", version="0.2.0")
     app.add_middleware(
         CORSMiddleware,
@@ -344,6 +354,69 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
                 detail="registered X-Nanihold-Device-Id required",
             )
         return x_nanihold_device_id
+
+    audit_trace_slots = anyio.Semaphore(state.audit_trace_max_concurrency)
+
+    async def run_audit_trace(
+        request: Request,
+        trace_factory: Callable[[Event], Callable[[], dict[str, object]]],
+    ) -> dict[str, object]:
+        try:
+            audit_trace_slots.acquire_nowait()
+        except anyio.WouldBlock as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="audit trace capacity is busy; retry the request",
+                headers={"Retry-After": "1"},
+            ) from exc
+
+        cancellation_event = Event()
+        trace_call = trace_factory(cancellation_event)
+        disconnected = False
+        completed = anyio.Event()
+        result: dict[str, object] | None = None
+
+        async def worker() -> None:
+            nonlocal result
+            try:
+                result = await anyio.to_thread.run_sync(
+                    trace_call,
+                    abandon_on_cancel=False,
+                )
+            except _AuditTraceCancelled:
+                if not disconnected:
+                    raise
+            finally:
+                completed.set()
+
+        async def watch_disconnect() -> None:
+            nonlocal disconnected
+            try:
+                while not completed.is_set():
+                    if await request.is_disconnected():
+                        disconnected = True
+                        cancellation_event.set()
+                        return
+                    await anyio.sleep(0.05)
+            finally:
+                if not completed.is_set():
+                    cancellation_event.set()
+
+        try:
+            async with anyio.create_task_group() as task_group:
+                task_group.start_soon(worker)
+                task_group.start_soon(watch_disconnect)
+            if disconnected:
+                raise HTTPException(
+                    status_code=499,
+                    detail="client disconnected during audit trace",
+                )
+            if result is None:
+                raise InvariantViolation("audit trace completed without a result")
+            return result
+        finally:
+            cancellation_event.set()
+            audit_trace_slots.release()
 
     @app.post("/api/owner-bootstrap/exchange")
     def exchange_owner_bootstrap(request: OwnerBootstrapExchangeRequest):
@@ -438,15 +511,33 @@ def create_app(state: AppState, *, allowed_origins: tuple[str, ...]) -> FastAPI:
         "/api/audit-traces/notifications/{notification_id}",
         dependencies=[Depends(authorize)],
     )
-    def notification_audit_trace(notification_id: str):
-        return AuditTraceService(state.kernel).trace_notification(notification_id)
+    async def notification_audit_trace(request: Request, notification_id: str):
+        def trace_factory(cancellation_event: Event) -> Callable[[], dict[str, object]]:
+            service = AuditTraceService(
+                state.kernel, cancellation_event=cancellation_event
+            )
+            return lambda: service.trace_notification(notification_id)
+
+        return await run_audit_trace(
+            request,
+            trace_factory,
+        )
 
     @app.get(
         "/api/audit-traces/executions/{execution_id}",
         dependencies=[Depends(authorize)],
     )
-    def execution_audit_trace(execution_id: str):
-        return AuditTraceService(state.kernel).trace_execution(execution_id)
+    async def execution_audit_trace(request: Request, execution_id: str):
+        def trace_factory(cancellation_event: Event) -> Callable[[], dict[str, object]]:
+            service = AuditTraceService(
+                state.kernel, cancellation_event=cancellation_event
+            )
+            return lambda: service.trace_execution(execution_id)
+
+        return await run_audit_trace(
+            request,
+            trace_factory,
+        )
 
     @app.get("/api/agent-messages", dependencies=[Depends(authorize)])
     def agent_messages(

@@ -89,3 +89,7 @@ api_bearer_token_env = "NANIHOLD_API_BEARER_TOKEN"
 allowed_origins = ["http://localhost:@@NANIHOLD_WEB_HOST_PORT@@"]
 authorized_device_ids = ["device:owner-local"]
 owner_session_lifetime_seconds = 43200
+
+[server.audit_trace]
+max_concurrency = 2
+slo_seconds = 5
