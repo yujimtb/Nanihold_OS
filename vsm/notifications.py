@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field, model_validator
 
+from vsm.errors import InvariantViolation
 from vsm.ids import validate_id
 from vsm.kernel.models import (
     Identifier,
@@ -80,6 +81,20 @@ class AgentNotification(StrictModel):
                 )
         elif self.source_platform is not NotificationPlatform.INTERNAL:
             raise ValueError("agent-to-agent notifications require the internal platform")
+        if self.source_kind is NotificationSourceKind.AGENT_TO_AGENT:
+            if self.sender_agent_name is None:
+                raise ValueError("agent-to-agent notifications require a sender name")
+            if self.resolution_kind is not NotificationResolutionKind.AGENT_ADDRESS:
+                raise ValueError(
+                    "agent-to-agent notifications require agent-address resolution"
+                )
+            if (
+                self.related_work_item_id is None
+                or self.related_execution_id is None
+            ):
+                raise ValueError(
+                    "agent-to-agent notifications require WorkItem and Execution references"
+                )
         if self.promoted_work_item_id is not None and not self.requires_work_item:
             raise ValueError(
                 "a notification cannot have a promoted WorkItem without promotion"
@@ -108,6 +123,9 @@ def notification_id_for(
     source_message_id: str,
     recipient_agent_name: str,
     body: str,
+    sender_agent_name: str | None = None,
+    related_work_item_id: str | None = None,
+    related_execution_id: str | None = None,
 ) -> str:
     """Return a stable identifier for one addressed message."""
 
@@ -120,6 +138,9 @@ def notification_id_for(
             "source_message_id": source_message_id,
             "recipient_agent_name": recipient_agent_name,
             "body": body,
+            "sender_agent_name": sender_agent_name,
+            "related_work_item_id": related_work_item_id,
+            "related_execution_id": related_execution_id,
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -173,6 +194,22 @@ class AgentNotificationDelivery:
             work_item_id=notification.promoted_work_item_id,
         )
 
+    def receive_agent_messages(
+        self, recipient_agent_name: str
+    ) -> tuple[AgentNotification, ...]:
+        """Read the shared Ledger projection for one registry-issued recipient."""
+
+        if not self._kernel.agent_name_is_registered(recipient_agent_name):
+            raise InvariantViolation(
+                "agent-to-agent recipient must be issued by the agent-name registry"
+            )
+        return tuple(
+            notification
+            for notification in self._kernel.agent_notifications.values()
+            if notification.source_kind is NotificationSourceKind.AGENT_TO_AGENT
+            and notification.recipient_agent_name == recipient_agent_name
+        )
+
     def send_agent_message(
         self,
         *,
@@ -183,8 +220,8 @@ class AgentNotificationDelivery:
         recipient_agent_name: str,
         source_message_id: str,
         body: str,
-        related_work_item_id: str | None = None,
-        related_execution_id: str | None = None,
+        related_work_item_id: str,
+        related_execution_id: str,
         requires_work_item: bool = False,
         idempotency_key: str,
     ) -> AgentNotificationReceipt:
@@ -196,6 +233,9 @@ class AgentNotificationDelivery:
             source_message_id=source_message_id,
             recipient_agent_name=recipient_agent_name,
             body=body,
+            sender_agent_name=sender_agent_name,
+            related_work_item_id=related_work_item_id,
+            related_execution_id=related_execution_id,
         )
         notification = AgentNotification(
             notification_id=notification_id,

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 import math
 
+import pytest
+
 from conftest import NOW, OWNER_ID, SPACE_ID, make_node
-from vsm.agent_naming import AgentNameRegistry
+from vsm.agent_naming import AgentNameAssignment, AgentNameRegistry
 from vsm.dispatcher import DependencyAwareDispatcher, PilotBinding
+from vsm.errors import InvariantViolation
 from vsm.kernel.models import (
     NodeKind,
     RouteSnapshot,
@@ -99,6 +103,27 @@ def test_assignment_is_restored_without_reusing_a_name(tmp_path):
     second = allocate(restored, "two", model)
 
     assert second.agent_name == "Aki2"
+
+
+def test_out_of_pipeline_registration_uses_the_same_registry_namespace(tmp_path):
+    names = registry(tmp_path)
+    model = candidate("anthropic", "claude-opus-4-1")
+
+    first = names.allocate_out_of_pipeline(
+        registration_id="registration:commander-child",
+        data_space_id="space:personal",
+        node_id="node:worker",
+        pilot_id="pilot:child-one",
+        candidate=model,
+    )
+    second = allocate(names, "pipeline-work", model)
+
+    assert first.agent_name == "Aki"
+    assert second.agent_name == "Aki2"
+    assert first.node_id == "node:worker"
+    assert first.pilot_id == "pilot:child-one"
+    assert names.registration_for_id(first.registration_id) == first
+    assert names.is_name_registered(first.agent_name)
 
 
 def test_dispatch_assigns_and_records_name_in_execution_and_receipt(
@@ -233,3 +258,116 @@ def test_dispatch_assigns_and_records_name_in_execution_and_receipt(
     )
     assert assignment_event.payload["assignment"]["agent_name"] == "Aki"
     assert receipt_event.payload["agent_name"] == "Aki"
+
+
+# Regression coverage for a production boot failure: Agent_name.csv can carry
+# the same name on more than one row (e.g. "Cup" on both a likes=1 "Choko"
+# row and a likes=0 "Sakazuki" row). `allocate` only ever picks from the
+# likes!=0 pool, so the *assigned* name is always unambiguous at allocation
+# time. But `restore` used to match rows on (scale, column, base_name) alone,
+# with no eligibility filter, so a likes=0 row sharing a name with a likes=1
+# row made the match ambiguous (len != 1) and boot-time restore raised
+# InvariantViolation even though the assignment was perfectly valid.
+
+CSV_DUPLICATE_ENGLISH_NAME = """カテゴリ,規模,意味座標,日,英,羅,いいね
+器,1,猪口,Choko,Cup,Poculum,1
+器,1,杯,Sakazuki,Cup,Calix,0
+"""
+
+CSV_DUPLICATE_ELIGIBLE_ENGLISH_NAME = """カテゴリ,規模,意味座標,日,英,羅,いいね
+器,2,座標A,FooJa,Bar,BarLatA,1
+器,2,座標B,BazJa,Bar,BarLatB,1
+"""
+
+
+def _write_csv(tmp_path: Path, text: str) -> AgentNameRegistry:
+    path = tmp_path / "Agent_name.csv"
+    path.write_text(text, encoding="utf-8")
+    return AgentNameRegistry.from_csv(path)
+
+
+def test_restore_succeeds_when_a_likes_zero_row_duplicates_the_assigned_name(
+    tmp_path,
+):
+    """Reproduces the production boot crash: restoring 'Cup' must not raise
+    InvariantViolation just because a forbidden (likes=0) row also has the
+    name 'Cup'."""
+    source = _write_csv(tmp_path, CSV_DUPLICATE_ENGLISH_NAME)
+    # scale 1 + gpt family ("gpt-" prefix) + "luna" keyword -> column 英, scale 1
+    model = candidate("openai", "gpt-5-luna")
+    first = allocate(source, "one", model)
+    assert first.agent_name == "Cup"
+    assert first.base_name == "Cup"
+
+    restored = AgentNameRegistry(source.rows)
+    restored.restore((first,))
+
+    assert restored.assignment_for_id(first.assignment_id) == first
+    assert restored.is_name_registered("Cup")
+    # A subsequent allocation must still see "Cup" as taken.
+    second = allocate(restored, "two", model)
+    assert second.agent_name != "Cup"
+
+
+def test_restore_warns_and_keeps_first_csv_row_when_eligible_rows_collide(
+    tmp_path, caplog
+):
+    """If two *eligible* rows share a name (a true CSV duplicate), restore
+    must not crash the boot: it logs a warning and deterministically keeps
+    the first matching CSV row."""
+    source = _write_csv(tmp_path, CSV_DUPLICATE_ELIGIBLE_ENGLISH_NAME)
+    restored = AgentNameRegistry(source.rows)
+    assignment = _assignment(
+        assignment_id="assignment:dup",
+        agent_name="Bar",
+        base_name="Bar",
+        name_column="英",
+        scale=2,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="vsm.agent_naming"):
+        restored.restore((assignment,))
+
+    assert restored.assignment_for_id("assignment:dup") == assignment
+    assert restored.is_name_registered("Bar")
+    assert any(
+        "multiple eligible" in record.message for record in caplog.records
+    )
+
+
+def test_restore_still_raises_when_base_name_is_absent_from_csv(tmp_path):
+    """A base_name that matches no CSV row at all is a genuine invariant
+    violation and must still fail boot, unlike the duplicate-row cases
+    above."""
+    source = _write_csv(tmp_path, CSV_DUPLICATE_ENGLISH_NAME)
+    restored = AgentNameRegistry(source.rows)
+    assignment = _assignment(
+        assignment_id="assignment:missing",
+        agent_name="Chalice",
+        base_name="Chalice",
+        name_column="英",
+        scale=1,
+    )
+
+    with pytest.raises(InvariantViolation, match="not present in Agent_name.csv"):
+        restored.restore((assignment,))
+
+
+def _assignment(
+    *, assignment_id: str, agent_name: str, base_name: str, name_column: str, scale: int
+):
+    return AgentNameAssignment(
+        assignment_id=assignment_id,
+        data_space_id="space:personal",
+        work_item_id="work:naming-restore",
+        execution_id="execution:naming-restore",
+        node_id="node:worker",
+        pilot_id="pilot:worker",
+        agent_name=agent_name,
+        base_name=base_name,
+        suffix=1,
+        name_column=name_column,
+        scale=scale,
+        provider="openai",
+        model_candidate_key="model:test",
+    )

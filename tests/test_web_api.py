@@ -13,6 +13,7 @@ from vsm.activation.models import (
     HistorySourceManifest,
     ReorientationAssessment,
 )
+from vsm.agent_naming import AgentNameRegistry, AgentNameRow
 from vsm.dispatcher import (
     DependencyAwareDispatcher,
     DispatchAssignment,
@@ -22,6 +23,8 @@ from vsm.errors import InvariantViolation
 from vsm.interface.models import Conversation, SurfaceBinding
 from vsm.pilot.host import PilotHostCoordinator
 from vsm.kernel.models import (
+    Execution,
+    ExecutionState,
     RouteSnapshot,
     RouteSnapshotState,
     WorkItem,
@@ -46,6 +49,7 @@ def client(
     dispatcher=None,
     coding_pilot_id: str | None = None,
     owner_auth_disabled: bool = False,
+    agent_name_registry: AgentNameRegistry | None = None,
 ) -> TestClient:
     kernel, ledger, interface, _ = system
     router = BayesianRouter(
@@ -113,6 +117,7 @@ def client(
         owner_session_lifetime_seconds=3600,
         history_reader=object(),
         history_max_result_bytes=4096,
+        agent_name_registry=agent_name_registry,
         reorientation_service=reorientation_service,
         reorientation_max_tool_rounds=reorientation_max_tool_rounds,
         coding_pilot_id=coding_pilot_id,
@@ -374,6 +379,8 @@ def test_new_resource_api_is_complete_and_old_surfaces_do_not_exist(system):
         "/api/model-registry",
         "/api/route-snapshots",
         "/api/token-lab",
+        "/api/agent-messages",
+        "/api/agent-identities",
         "/api/history/imports",
         "/api/history/sessions",
         "/api/reorientation",
@@ -390,6 +397,138 @@ def test_new_resource_api_is_complete_and_old_surfaces_do_not_exist(system):
     ):
         assert api.get(removed, headers=auth()).status_code == 404
     assert api.get("/api/nodes").status_code == 401
+
+
+def test_out_of_pipeline_agent_identity_is_issued_by_the_registry(system):
+    kernel, _, _, _ = system
+    names = AgentNameRegistry(
+        [
+            AgentNameRow(
+                category="居",
+                scale=2,
+                semantic_coordinate="甲",
+                japanese_name="Kaba",
+                english_name="Autumn",
+                latin_name="Autumnus",
+                likes="1",
+            ),
+            AgentNameRow(
+                category="居",
+                scale=2,
+                semantic_coordinate="乙",
+                japanese_name="Toki",
+                english_name="Spring",
+                latin_name="Ver",
+                likes="1",
+            ),
+        ]
+    )
+    candidate = ModelCandidate(
+        adapter="test",
+        adapter_version="1",
+        provider="anthropic",
+        selection="exact",
+        model_snapshot="claude-opus-4-1",
+        effort="high",
+        toolset=(),
+        sandbox_fingerprint="sandbox:test",
+        environment_fingerprint="environment:test",
+    )
+    api = client(system, agent_name_registry=names)
+
+    response = api.post(
+        "/api/agent-identities",
+        headers=auth(),
+        json={
+            "actor_id": OWNER_ID,
+            "idempotency_key": "web:agent-identity:register",
+            "registration_id": "registration:web-child",
+            "node_id": INTERFACE_NODE_ID,
+            "pilot_id": "pilot:web-child",
+            "candidate": candidate.model_dump(mode="json", exclude={"key"}),
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["agent_name"] == "Kaba"
+    assert kernel.agent_name_registrations["registration:web-child"].pilot_id == (
+        "pilot:web-child"
+    )
+    second_registration = api.post(
+        "/api/agent-identities",
+        headers=auth(),
+        json={
+            "actor_id": OWNER_ID,
+            "idempotency_key": "web:agent-identity:register-second",
+            "registration_id": "registration:web-child-second",
+            "node_id": INTERFACE_NODE_ID,
+            "pilot_id": "pilot:web-child-second",
+            "candidate": candidate.model_dump(mode="json", exclude={"key"}),
+        },
+    )
+    assert second_registration.status_code == 201
+    work_item = WorkItem(
+        work_item_id="work:web-agent-message",
+        data_space_id=SPACE_ID,
+        title="Agent message context",
+        description="Record one internal message with durable context.",
+        owner_node_id=INTERFACE_NODE_ID,
+        delegated_to_node_id=INTERFACE_NODE_ID,
+        integration_owner_node_id=INTERFACE_NODE_ID,
+        parent_work_item_id=None,
+        acceptance_criteria=("The internal message is audited.",),
+        route_key="route:web-agent-message",
+        state=WorkState.READY,
+        blocking_s3_star_finding_ids=(),
+        completion_evidence=None,
+    )
+    kernel.create_work_item(
+        work_item, actor_id=OWNER_ID, idempotency_key="work:web-agent-message"
+    )
+    execution = Execution(
+        execution_id="execution:web-agent-message",
+        data_space_id=SPACE_ID,
+        node_id=INTERFACE_NODE_ID,
+        work_item_id=work_item.work_item_id,
+        pilot_id="pilot:web-child",
+        model_candidate_key=candidate.key,
+        state=ExecutionState.REQUESTED,
+        provider_session_id=None,
+        pilot_host_id="pilot-host:web-agent-message",
+        pause_reason=None,
+    )
+    kernel.create_execution(
+        execution, actor_id=OWNER_ID, idempotency_key="execution:web-agent-message"
+    )
+    sent = api.post(
+        "/api/agent-messages",
+        headers=auth(),
+        json={
+            "actor_id": OWNER_ID,
+            "idempotency_key": "web:agent-message:send",
+            "data_space_id": SPACE_ID,
+            "source_instance_id": "nanihold:web-test",
+            "sender_agent_name": "Kaba",
+            "recipient_agent_name": "Toki",
+            "source_message_id": "message:web-agent-message",
+            "body": "Please coordinate.",
+            "related_work_item_id": work_item.work_item_id,
+            "related_execution_id": execution.execution_id,
+        },
+    )
+    assert sent.status_code == 201, sent.text
+    assert api.get(
+        "/api/agent-messages?recipient_agent_name=Toki", headers=auth()
+    ).json()["items"][0]["sender_agent_name"] == "Kaba"
+    assert api.get("/api/notifications", headers=auth()).json()["items"][-1][
+        "owner_visible"
+    ] is True
+    identities = api.get("/api/agent-identities", headers=auth())
+    assert identities.status_code == 200
+    assert {item["agent_name"] for item in identities.json()["registrations"]} == {
+        "Kaba",
+        "Toki",
+    }
 
 
 def test_auth_enabled_by_default_rejects_unauthenticated_requests(system):

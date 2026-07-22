@@ -249,6 +249,7 @@ class DependencyAwareDispatcher:
             if assignment is not None:
                 self.kernel.record_agent_name_assignment(
                     assignment,
+                    naming_registry=self.agent_naming_registry,
                     actor_id="system:dispatcher",
                     idempotency_key=(
                         f"{idempotency_key}:{execution.execution_id}:agent-name"

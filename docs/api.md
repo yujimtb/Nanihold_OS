@@ -14,6 +14,10 @@ codeは短寿命で再利用不可、Ledgerにはhashだけを保存します。
 | GET/POST | `/api/nodes` | Node Tree、CapabilityGrant、ReferenceGrant |
 | GET/POST | `/api/work-items` | WorkItem と Work Graph |
 | GET/POST | `/api/notifications` | ACR-02/ACR-07 の宛先付き通知 Ledger Event |
+| GET/POST | `/api/agent-messages` | ACR-07 の内部個名宛て通信（同じ通知 Ledger Event） |
+| GET/POST | `/api/agent-identities` | WorkItem 外エージェントのレジストリ発行個名 |
+| GET | `/api/audit-traces/notifications/{id}` | 着信 Observation → 宛先個名 → Ledger配送／WorkItem昇格の検証済みトレース |
+| GET | `/api/audit-traces/executions/{id}` | 個名割当 → WorkItem → Pilot receipt の検証済みトレース |
 | POST | `/api/notifications/{id}/promotions` | 昇格条件を満たす通知から明示 WorkItem を起票 |
 | POST | `/api/work-items/{id}/delegations` | delegated Nodeを確定 |
 | POST | `/api/work-items/{id}/dispatches` | ACTIVE時に単一WorkItemを明示的にPilotへdispatch |
@@ -50,6 +54,10 @@ codeは短寿命で再利用不可、Ledgerにはhashだけを保存します。
 | POST | `/api/token-lab/weekly-reviews` | model-free週次判定の完了をEvent化 |
 
 POST command は resource payload に加えて `actor_id` と `idempotency_key` を要求します。会話作成と owner message は owner identity が resource から確定するため専用 request 型です。
+
+ACR-08の実経路試験成果物はAPIの送信経路を増設しない。60セルの正本は
+`docs/acr08-e2e-matrix.md`、人間操作は`docs/acr08-owner-checklist.md`、自動化計画と
+Ledger/監査トレースのread-only照合は`python scripts/acr08_connectivity.py`で実行する。
 
 `GET /api/activation/status`はmodelを呼ばず、Assessmentと累積usageに加えて
 `reorientation_attempt_in_progress`と`pending_reorientation_revision_reason`を返します。

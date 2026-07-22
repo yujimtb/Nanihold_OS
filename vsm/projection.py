@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 
 from vsm.errors import InvariantViolation
-from vsm.agent_naming import assignment_from_payload
+from vsm.agent_naming import AgentIdentityRegistration, assignment_from_payload
 from vsm.activation.models import (
     ActivationState,
     CurrentWorkGraphSnapshot,
@@ -217,6 +217,8 @@ class OperationalProjection:
 
     def _on_agent_notification_delivered(self, event) -> None:
         notification = AgentNotification.model_validate(event.payload["notification"])
+        if notification.source_kind.value == "agent_to_agent":
+            self.kernel._validate_agent_message_identity(notification)
         existing = self.kernel.agent_notifications.get(notification.notification_id)
         if existing is not None and existing != notification:
             raise InvariantViolation(
@@ -284,6 +286,35 @@ class OperationalProjection:
         )
         self._kernel_version(event)
 
+    def _on_agent_identity_registered(self, event) -> None:
+        registration = AgentIdentityRegistration.model_validate(
+            event.payload["registration"]
+        )
+        existing = self.kernel.agent_name_registrations.get(
+            registration.registration_id
+        )
+        if existing is not None and existing != registration:
+            raise InvariantViolation(
+                "agent identity registration collision during projection"
+            )
+        if any(
+            identity.agent_name == registration.agent_name
+            and identity.registration_id != registration.registration_id
+            for identity in self.kernel.agent_name_registrations.values()
+        ) or self.kernel.agent_name_is_registered(registration.agent_name):
+            if existing is None:
+                raise InvariantViolation(
+                    "agent identity registration name collision during projection"
+                )
+        if registration.node_id not in self.kernel.nodes:
+            raise InvariantViolation(
+                "agent identity registration references an unknown Node"
+            )
+        self.kernel.agent_name_registrations[registration.registration_id] = (
+            registration
+        )
+        self._kernel_version(event)
+
     def _on_execution_state_changed(self, event) -> None:
         execution = self.kernel.executions[event.stream_id]
         self.kernel.executions[event.stream_id] = execution.model_copy(
@@ -306,6 +337,21 @@ class OperationalProjection:
 
     def _on_pilot_execution_receipt_recorded(self, event) -> None:
         execution = self.kernel.executions[event.stream_id]
+        if event.payload.get("execution_id", event.stream_id) != event.stream_id:
+            raise InvariantViolation(
+                "PilotHost receipt Execution does not match its stream"
+            )
+        if event.payload.get("work_item_id", execution.work_item_id) != execution.work_item_id:
+            raise InvariantViolation(
+                "PilotHost receipt WorkItem does not match Execution"
+            )
+        assignment_id = event.payload.get("assignment_id")
+        if assignment_id is not None:
+            assignment = self.kernel.agent_name_assignments.get(assignment_id)
+            if assignment is None or assignment.execution_id != event.stream_id:
+                raise InvariantViolation(
+                    "PilotHost receipt assignment does not match Execution"
+                )
         if event.payload.get("agent_name") != execution.agent_name:
             raise InvariantViolation(
                 "PilotHost receipt agent name does not match Execution"
@@ -924,6 +970,9 @@ class OperationalProjection:
             "work_items": self.kernel.work_items,
             "work_edges": self.kernel.work_edges,
             "executions": self.kernel.executions,
+            "agent_name_assignments": self.kernel.agent_name_assignments,
+            "agent_name_registrations": self.kernel.agent_name_registrations,
+            "agent_notifications": self.kernel.agent_notifications,
             "capability_grants": self.kernel.capability_grants,
             "effect_leases": self.kernel.effect_leases,
             "effect_approvals": self.kernel.effect_approvals,

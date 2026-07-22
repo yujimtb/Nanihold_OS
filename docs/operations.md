@@ -61,7 +61,10 @@ vsm inspect events \
   --limit 250
 ```
 
-resource は `data-spaces`、`nodes`、`work-items`、`executions`、`events`、`conversations`、`pilot-hosts`、`model-registry`、`route-snapshots`、`token-lab` です。
+resource は `data-spaces`、`nodes`、`work-items`、`executions`、`events`、`notifications`、
+`agent-messages`、`agent-identities`、`conversations`、`pilot-hosts`、`model-registry`、
+`route-snapshots`、`token-lab` です。`agent-messages` は `notifications` と同じ
+Operational Ledger projection であり、外部チャネル送信のキューではありません。
 
 単一Executionの障害調査では、Ledgerを手動joinせずにdispatch、receipt記録、receiptの
 `usage`・`actual_model`・`error`、`provider_session_id`参照をcursor順で確認します。
@@ -72,6 +75,38 @@ Execution状態と`provider_session_id_refs`を含めます。
 ```powershell
 vsm trace execution:example --config vsm.toml
 ```
+
+ACR-04 の配送・帰属トレースは次で確認します。通知とExecutionの読取はOperational
+Ledgerだけで完結し、返信だけはLETHEから取得したsupplemental envelopeのJSON配列を
+明示的に渡します。トレース中にEventや補助記録を作成・推測することはありません。
+
+```powershell
+vsm audit-trace notification:example --config vsm.toml
+vsm audit-trace execution:example --config vsm.toml
+vsm audit-trace sup:draft-example --config vsm.toml --supplementals supplementals.json
+```
+
+## 3. ACR-08 実経路試験成果物
+
+ACR-08は `docs/acr08-e2e-matrix.md` にDiscord/Slack × 5宛先解決 × 2種別 × 3方向の
+60セルを列挙し、適用26セルとN/A34セルを理由付きで固定する。オーナー操作の20セルは
+`docs/acr08-owner-checklist.md`（送る文言・操作・期待結果付き）、自動化6セルは次でdry-runする。
+
+```powershell
+python scripts/acr08_connectivity.py matrix --output acr08-matrix.json
+python scripts/acr08_connectivity.py dry-run --output acr08-dry-run.json
+```
+
+dry-runは実Discord/実Slackへ送信せず、`POST /api/agent-messages` の計画と観測のみの
+負の制御をJSON化する。オーナー実施後のLedger `/api/events` と既存 `vsm audit-trace`
+結果を `evidence.json` に保存し、次で全26適用セルをread-only検証する。
+
+```powershell
+python scripts/acr08_connectivity.py verify --results results.json --evidence evidence.json
+```
+
+検証中にEvent、supplemental、外部送信を追加しない。実Discord/実Slackの実測はオーナー
+承認後の別作業であり、このWorkItemでは行わない。
 
 production objective は `quality_max` です。production exploration は禁止です。証拠更新後は古い snapshot が stale になり、再起動時に失敗します。
 

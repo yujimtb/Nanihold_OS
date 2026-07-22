@@ -8,7 +8,12 @@ from datetime import UTC, datetime
 from vsm.errors import InvariantViolation, ReconciliationRequired
 from vsm.activation.service import ActivationService
 from vsm.activation.models import ActivationState, CurrentWorkGraphSnapshot
-from vsm.agent_naming import AgentNameAssignment
+from vsm.agent_naming import (
+    RESERVED_AGENT_NAME,
+    AgentIdentityRegistration,
+    AgentNameAssignment,
+    AgentNameRegistry,
+)
 from vsm.auth import OwnerBootstrapService
 from vsm.ids import deterministic_event_id
 from vsm.notifications import AgentNotification
@@ -82,6 +87,7 @@ class Kernel:
         self.work_edges: list[WorkEdge] = []
         self.executions: dict[str, Execution] = {}
         self.agent_name_assignments: dict[str, AgentNameAssignment] = {}
+        self.agent_name_registrations: dict[str, AgentIdentityRegistration] = {}
         self.agent_notifications: dict[str, AgentNotification] = {}
         self.capability_grants: dict[str, CapabilityGrant] = {}
         self.effect_leases: dict[str, EffectLease] = {}
@@ -521,6 +527,8 @@ class Kernel:
 
         if notification.data_space_id != self.data_space.data_space_id:
             raise InvariantViolation("AgentNotification DataSpace mismatch")
+        if notification.source_kind.value == "agent_to_agent":
+            self._validate_agent_message_identity(notification)
         if notification.notification_id in self.agent_notifications:
             raise InvariantViolation(
                 f"AgentNotification already exists: {notification.notification_id}"
@@ -539,6 +547,73 @@ class Kernel:
         )
         self.agent_notifications[notification.notification_id] = notification
         return event
+
+    def _validate_agent_message_identity(
+        self, notification: AgentNotification
+    ) -> None:
+        # Sender/recipient identities must be issued by the agent-name
+        # registry OR be the reserved S5 owner-interface seat, RESERVED_AGENT_NAME
+        # ("Nagi", node:owner-interface). Per openspec ACR-02/ACR-07
+        # (openspec/changes/add-agent-comm-routing/specs/agent-comm-routing/spec.md
+        # sections "宛先種別" and the Nagi-aggregation scenarios), Nagi is a
+        # first-class agent-to-agent sender and recipient even though it is
+        # never issued through the naming pipeline — see
+        # Kernel.agent_name_is_registered for the reserved-seat carve-out.
+        sender = notification.sender_agent_name
+        if sender is None or not self.agent_name_is_registered(sender):
+            raise InvariantViolation(
+                "agent-to-agent sender must be issued by the agent-name registry"
+            )
+        if not self.agent_name_is_registered(notification.recipient_agent_name):
+            raise InvariantViolation(
+                "agent-to-agent recipient must be issued by the agent-name registry"
+            )
+        if (
+            notification.related_work_item_id is None
+            or notification.related_execution_id is None
+        ):
+            raise InvariantViolation(
+                "agent-to-agent messages require WorkItem and Execution references"
+            )
+        work_item = self.work_items.get(notification.related_work_item_id)
+        execution = self.executions.get(notification.related_execution_id)
+        if work_item is None or execution is None:
+            raise InvariantViolation(
+                "agent-to-agent references must resolve to WorkItem and Execution"
+            )
+        if execution.work_item_id != work_item.work_item_id:
+            raise InvariantViolation(
+                "agent-to-agent WorkItem and Execution references do not match"
+            )
+
+    def agent_name_is_registered(self, agent_name: str) -> bool:
+        """Return whether ``agent_name`` is a valid kernel-known identity.
+
+        This covers registry-issued ``AgentNameAssignment`` /
+        ``AgentIdentityRegistration`` identities *and* the reserved S5
+        owner-interface seat name (``RESERVED_AGENT_NAME`` = "Nagi",
+        ``node:owner-interface``). Per openspec ACR-02/ACR-06/ACR-07
+        (openspec/changes/add-agent-comm-routing/specs/agent-comm-routing/spec.md),
+        Nagi is a first-class agent-message sender/recipient — the owner's
+        S5 standing seat, target of unattributable-reply aggregation, and a
+        named party in agent-to-agent messaging — even though ACR-06
+        deliberately excludes it from the naming engine's rotating
+        allocation pool (see ``AgentNameRow.is_reserved`` in
+        vsm/agent_naming.py) so it can never be issued to a pilot by the
+        pipeline or an out-of-pipeline registration. Treating it as
+        registered here does not create a fabricated
+        AgentIdentityRegistration; it only makes identity *validation*
+        recognize the seat that already structurally exists.
+        """
+        if agent_name == RESERVED_AGENT_NAME:
+            return True
+        return any(
+            identity.agent_name == agent_name
+            for identity in (
+                *self.agent_name_assignments.values(),
+                *self.agent_name_registrations.values(),
+            )
+        )
 
     def promote_agent_notification(
         self,
@@ -598,9 +673,14 @@ class Kernel:
         self,
         assignment: AgentNameAssignment,
         *,
+        naming_registry: AgentNameRegistry,
         actor_id: str,
         idempotency_key: str,
     ) -> EventEnvelope:
+        if naming_registry.assignment_for_id(assignment.assignment_id) != assignment:
+            raise InvariantViolation(
+                "AgentNameAssignment was not issued by the configured name registry"
+            )
         if assignment.data_space_id != self.data_space.data_space_id:
             raise InvariantViolation("AgentNameAssignment DataSpace mismatch")
         if assignment.assignment_id in self.agent_name_assignments:
@@ -645,6 +725,48 @@ class Kernel:
         self.executions[assignment.execution_id] = execution.model_copy(
             update={"agent_name": assignment.agent_name}
         )
+        return event
+
+    def register_agent_identity(
+        self,
+        registration: AgentIdentityRegistration,
+        *,
+        naming_registry: AgentNameRegistry,
+        actor_id: str,
+        idempotency_key: str,
+    ) -> EventEnvelope:
+        """Persist a registry-issued identity for an out-of-pipeline agent."""
+
+        if naming_registry.registration_for_id(registration.registration_id) != registration:
+            raise InvariantViolation(
+                "AgentIdentityRegistration was not issued by the configured name registry"
+            )
+        if registration.data_space_id != self.data_space.data_space_id:
+            raise InvariantViolation("AgentIdentityRegistration DataSpace mismatch")
+        if registration.registration_id in self.agent_name_registrations:
+            raise InvariantViolation(
+                "AgentIdentityRegistration already exists: "
+                f"{registration.registration_id}"
+            )
+        if self.agent_name_is_registered(registration.agent_name):
+            raise InvariantViolation(
+                "AgentIdentityRegistration name is already assigned: "
+                f"{registration.agent_name}"
+            )
+        if registration.node_id not in self.nodes:
+            raise InvariantViolation(
+                "AgentIdentityRegistration Node does not exist"
+            )
+        event = self._record(
+            stream_id=registration.registration_id,
+            event_type="agent_identity_registered",
+            payload={"registration": self._json(registration)},
+            actor_type="system",
+            actor_id=actor_id,
+            idempotency_key=idempotency_key,
+            correlation_id=registration.node_id,
+        )
+        self.agent_name_registrations[registration.registration_id] = registration
         return event
 
     def set_execution_state(
@@ -753,6 +875,16 @@ class Kernel:
             event_type="pilot_execution_receipt_recorded",
             payload={
                 "receipt_id": receipt_id,
+                "execution_id": execution_id,
+                "work_item_id": execution.work_item_id,
+                "assignment_id": next(
+                    (
+                        assignment.assignment_id
+                        for assignment in self.agent_name_assignments.values()
+                        if assignment.execution_id == execution_id
+                    ),
+                    None,
+                ),
                 "receipt_status": receipt_status,
                 "requested_model": requested_model,
                 "actual_model": actual_model,

@@ -8,6 +8,7 @@ from pathlib import Path
 import httpx
 import typer
 
+from vsm.audit_trace import AuditTraceService
 from vsm.activation.models import ReorientationRevisionReason
 from vsm.errors import ConfigurationError, InvariantViolation
 from vsm.config import load_config
@@ -182,7 +183,7 @@ def _execution_trace(runtime: object, execution_id: str) -> dict[str, object]:
         if "provider_session_id" in item
         and item["provider_session_id"] is not None
     ]
-    return {
+    trace: dict[str, object] = {
         "execution_id": execution_id,
         "execution": execution.model_dump(mode="json"),
         "timeline": timeline,
@@ -190,6 +191,11 @@ def _execution_trace(runtime: object, execution_id: str) -> dict[str, object]:
         "provider_session_id": execution.provider_session_id,
         "provider_session_id_refs": provider_session_id_refs,
     }
+    if execution.agent_name is not None:
+        trace["audit_trace"] = AuditTraceService(runtime.kernel).trace_execution(
+            execution_id
+        )
+    return trace
 
 
 @app.command()
@@ -741,6 +747,51 @@ def execution_trace(
     runtime = bootstrap(config)
     try:
         _json(_execution_trace(runtime, execution_id))
+    finally:
+        runtime.close()
+
+
+def _load_audit_supplementals(path: Path) -> list[dict[str, object]]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise typer.BadParameter(f"invalid supplemental audit file: {path}") from exc
+    if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
+        raise typer.BadParameter(
+            "supplemental audit file must contain a JSON array of records"
+        )
+    return raw
+
+
+@app.command("audit-trace")
+def audit_trace(
+    subject_id: str = typer.Argument(..., min=1),
+    config: Path = typer.Option(..., exists=True, dir_okay=False, readable=True),
+    supplementals: Path | None = typer.Option(
+        None, exists=True, dir_okay=False, readable=True
+    ),
+) -> None:
+    """Reconstruct an ACR-04 notification, reply, or execution attribution trace."""
+    runtime = bootstrap(config, require_active_route=False)
+    try:
+        tracer = AuditTraceService(runtime.kernel)
+        if subject_id.startswith("notification:"):
+            result = tracer.trace_notification(subject_id)
+        elif subject_id.startswith("execution:"):
+            result = tracer.trace_execution(subject_id)
+        elif subject_id.startswith("sup:"):
+            if supplementals is None:
+                raise typer.BadParameter(
+                    "reply trace requires --supplementals with LETHE records"
+                )
+            result = tracer.trace_reply(
+                _load_audit_supplementals(supplementals), subject_id
+            )
+        else:
+            raise typer.BadParameter(
+                "audit trace subject must be notification:, execution:, or sup:"
+            )
+        _json(result)
     finally:
         runtime.close()
 
