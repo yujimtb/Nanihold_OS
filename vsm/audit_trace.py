@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
+from threading import Event
 
 from vsm.errors import InvariantViolation
 from vsm.ids import validate_id
-from vsm.kernel.models import EventEnvelope
+from vsm.kernel.models import EventEnvelope, Execution, StoredEvent, WorkItem
 from vsm.kernel.service import Kernel
 from vsm.notifications import AgentNotification
 
@@ -24,6 +25,10 @@ _LINEAGE = re.compile(
     r"^nanihold/work-item/(?P<work_item_id>[^/]+)/execution/"
     r"(?P<execution_id>[^/]+)/agent/(?P<agent_name>[A-Za-z0-9][A-Za-z0-9_-]*)$"
 )
+
+
+class _AuditTraceCancelled(Exception):
+    """Internal cooperative cancellation signal for the HTTP read path."""
 
 
 def _required_string(value: object, *, field: str, context: str) -> str:
@@ -63,7 +68,7 @@ def _derived_supplementals(
     return values
 
 
-def _event_ref(stored: object) -> dict[str, object]:
+def _event_ref(stored: StoredEvent) -> dict[str, object]:
     event = stored.event
     return {
         "cursor": stored.cursor,
@@ -78,20 +83,35 @@ def _event_ref(stored: object) -> dict[str, object]:
 class AuditTraceService:
     """Reconstruct and validate ACR-04 links without mutating the Kernel."""
 
-    def __init__(self, kernel: Kernel, *, page_size: int = 1000) -> None:
+    def __init__(
+        self,
+        kernel: Kernel,
+        *,
+        page_size: int = 1000,
+        cancellation_event: Event | None = None,
+    ) -> None:
         if page_size <= 0:
             raise InvariantViolation("audit trace page_size must be positive")
         self.kernel = kernel
         self.page_size = page_size
+        self._cancellation_event = cancellation_event
 
-    def _events(self) -> tuple[object, ...]:
-        events: list[object] = []
+    def _check_cancelled(self) -> None:
+        if self._cancellation_event is not None and self._cancellation_event.is_set():
+            raise _AuditTraceCancelled
+
+    def _events(self) -> tuple[StoredEvent, ...]:
+        """Read the complete ledger for the ATA-04 canonical test reference."""
+
+        events: list[StoredEvent] = []
         cursor = 0
         while True:
+            self._check_cancelled()
             page = self.kernel.ledger.page(cursor, self.page_size)
             if not page:
                 return tuple(events)
             for stored in page:
+                self._check_cancelled()
                 if stored.cursor != cursor + 1:
                     raise InvariantViolation(
                         "audit trace Event Ledger cursor is not contiguous"
@@ -99,21 +119,62 @@ class AuditTraceService:
                 events.append(stored)
                 cursor = stored.cursor
 
+    def _stream_events(self, stream_id: str) -> tuple[StoredEvent, ...]:
+        """Read one Ledger stream without touching the global event cursor."""
+
+        events: list[StoredEvent] = []
+        stream_version = 0
+        last_cursor = 0
+        while True:
+            self._check_cancelled()
+            page = self.kernel.ledger.stream(
+                stream_id, stream_version, self.page_size
+            )
+            if not page:
+                return tuple(events)
+            for stored in page:
+                self._check_cancelled()
+                if stored.event.stream_id != stream_id:
+                    raise InvariantViolation(
+                        "audit trace Event stream response has a mismatched stream"
+                    )
+                if stored.event.stream_version != stream_version + 1:
+                    raise InvariantViolation(
+                        "audit trace Event stream version is not contiguous"
+                    )
+                if stored.cursor <= last_cursor:
+                    raise InvariantViolation(
+                        "audit trace Event Ledger cursor is not increasing"
+                    )
+                events.append(stored)
+                stream_version = stored.event.stream_version
+                last_cursor = stored.cursor
+
+    def _notification_stream_events(self, notification_id: str) -> tuple[StoredEvent, ...]:
+        """Return only the notification stream used by the fast trace path."""
+
+        return self._stream_events(notification_id)
+
+    def _execution_stream_events(self, execution_id: str) -> tuple[StoredEvent, ...]:
+        """Return the receipt stream for one execution."""
+
+        return self._stream_events(execution_id)
+
     @staticmethod
     def _payload_mapping(event: EventEnvelope, *, context: str) -> Mapping[str, object]:
         if not isinstance(event.payload, Mapping):
             raise InvariantViolation(f"{context} payload is malformed")
         return event.payload
 
-    def trace_notification(self, notification_id: str) -> dict[str, object]:
-        """Return the inbound observation/name/delivery chain for one notification."""
-
-        notification = self.kernel.agent_notifications.get(notification_id)
-        if notification is None:
-            raise InvariantViolation(f"notification_id not found: {notification_id}")
-        delivered: list[object] = []
-        promotions: list[object] = []
-        for stored in self._events():
+    def _validate_notification_trace(
+        self,
+        notification_id: str,
+        notification: AgentNotification,
+        events: Iterable[StoredEvent],
+    ) -> dict[str, object]:
+        delivered: list[StoredEvent] = []
+        promotions: list[StoredEvent] = []
+        for stored in events:
             event = stored.event
             payload = self._payload_mapping(event, context=event.event_type)
             if event.event_type == "agent_notification_delivered":
@@ -220,33 +281,35 @@ class AuditTraceService:
             "verified": True,
         }
 
-    def trace_execution(self, execution_id: str) -> dict[str, object]:
-        """Return and validate the individual-name/WorkItem/receipt chain."""
+    def trace_notification(self, notification_id: str) -> dict[str, object]:
+        """Return the inbound observation/name/delivery chain for one notification."""
 
-        execution = self.kernel.executions.get(execution_id)
-        if execution is None:
-            raise InvariantViolation(f"execution_id not found: {execution_id}")
-        work_item = self.kernel.work_items.get(execution.work_item_id)
-        if work_item is None:
-            raise InvariantViolation(
-                f"execution WorkItem not found: {execution.work_item_id}"
-            )
+        notification = self.kernel.agent_notifications.get(notification_id)
+        if notification is None:
+            raise InvariantViolation(f"notification_id not found: {notification_id}")
+        events = self._notification_stream_events(notification_id)
+        return self._validate_notification_trace(notification_id, notification, events)
 
-        assignment_events: list[object] = []
-        receipt_events: list[object] = []
-        for stored in self._events():
-            event = stored.event
-            payload = self._payload_mapping(event, context=event.event_type)
-            if event.event_type == "agent_name_assigned":
-                raw = payload.get("assignment")
-                if not isinstance(raw, Mapping):
-                    raise InvariantViolation("agent name assignment payload is malformed")
-                if raw.get("execution_id") == execution_id:
-                    assignment_events.append(stored)
-            elif event.event_type == "pilot_execution_receipt_recorded":
-                if event.stream_id == execution_id or payload.get("execution_id") == execution_id:
-                    receipt_events.append(stored)
+    def _trace_notification_canonical(self, notification_id: str) -> dict[str, object]:
+        """Canonical O(N) reference retained for ATA-04 differential tests."""
 
+        notification = self.kernel.agent_notifications.get(notification_id)
+        if notification is None:
+            raise InvariantViolation(f"notification_id not found: {notification_id}")
+        return self._validate_notification_trace(
+            notification_id, notification, self._events()
+        )
+
+    def _validate_execution_trace(
+        self,
+        execution_id: str,
+        execution: Execution,
+        work_item: WorkItem,
+        assignment_events: Iterable[StoredEvent],
+        receipt_events: Iterable[StoredEvent],
+    ) -> dict[str, object]:
+        assignment_events = list(assignment_events)
+        receipt_events = list(receipt_events)
         if execution.agent_name is None:
             raise InvariantViolation(
                 f"execution has no assigned individual name: {execution_id}"
@@ -336,6 +399,82 @@ class AuditTraceService:
             ],
             "verified": True,
         }
+
+    def _trace_execution_from_events(
+        self, execution_id: str, events: Iterable[StoredEvent]
+    ) -> dict[str, object]:
+        execution = self.kernel.executions.get(execution_id)
+        if execution is None:
+            raise InvariantViolation(f"execution_id not found: {execution_id}")
+        work_item = self.kernel.work_items.get(execution.work_item_id)
+        if work_item is None:
+            raise InvariantViolation(
+                f"execution WorkItem not found: {execution.work_item_id}"
+            )
+
+        assignment_events: list[StoredEvent] = []
+        receipt_events: list[StoredEvent] = []
+        for stored in events:
+            event = stored.event
+            payload = self._payload_mapping(event, context=event.event_type)
+            if event.event_type == "agent_name_assigned":
+                raw = payload.get("assignment")
+                if not isinstance(raw, Mapping):
+                    raise InvariantViolation("agent name assignment payload is malformed")
+                if raw.get("execution_id") == execution_id:
+                    assignment_events.append(stored)
+            elif event.event_type == "pilot_execution_receipt_recorded":
+                if event.stream_id == execution_id or payload.get("execution_id") == execution_id:
+                    receipt_events.append(stored)
+        return self._validate_execution_trace(
+            execution_id,
+            execution,
+            work_item,
+            assignment_events,
+            receipt_events,
+        )
+
+    def trace_execution(self, execution_id: str) -> dict[str, object]:
+        """Return and validate the individual-name/WorkItem/receipt chain."""
+
+        execution = self.kernel.executions.get(execution_id)
+        if execution is None:
+            raise InvariantViolation(f"execution_id not found: {execution_id}")
+        work_item = self.kernel.work_items.get(execution.work_item_id)
+        if work_item is None:
+            raise InvariantViolation(
+                f"execution WorkItem not found: {execution.work_item_id}"
+            )
+
+        assignments = [
+            assignment
+            for assignment in self.kernel.agent_name_assignments.values()
+            if assignment.execution_id == execution_id
+        ]
+        assignment_events: list[StoredEvent] = []
+        if len(assignments) == 1:
+            assignment_events = [
+                stored
+                for stored in self._stream_events(assignments[0].assignment_id)
+                if stored.event.event_type == "agent_name_assigned"
+            ]
+        receipt_events = [
+            stored
+            for stored in self._execution_stream_events(execution_id)
+            if stored.event.event_type == "pilot_execution_receipt_recorded"
+        ]
+        return self._validate_execution_trace(
+            execution_id,
+            execution,
+            work_item,
+            assignment_events,
+            receipt_events,
+        )
+
+    def _trace_execution_canonical(self, execution_id: str) -> dict[str, object]:
+        """Canonical O(N) reference retained for ATA-04 differential tests."""
+
+        return self._trace_execution_from_events(execution_id, self._events())
 
     @staticmethod
     def trace_reply(
