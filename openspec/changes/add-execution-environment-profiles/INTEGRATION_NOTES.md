@@ -62,23 +62,35 @@ Ledger Event. `DependencyAwareDispatcher` also accepts the lifecycle service
 through its `EnvironmentFailover` protocol and invokes it when PilotHost is
 unreachable, while retaining the ACR#3 `agent_naming_registry` injection.
 
-## Remaining production wiring TODOs
+## Phase 1 production wiring
 
-- `scripts/production_pilot_host.py` has an explicit `TODO(EEP production
-  wiring)`: the production JSON does not yet identify a commissioned DataSpace,
-  EnvironmentInstance ID, or Operational Ledger connection, so the launcher
-  cannot construct and inject the lifecycle evidence hook itself.
-- `vsm/runtime.py` has the corresponding failover TODO: active instance
-  identity and concrete bindings are not yet in `NaniholdConfig`, so runtime
-  cannot construct `EnvironmentInstanceService` and inject it into the
-  dispatcher without inventing configuration.
-- PilotHost startup does not yet retrieve the selected versioned contract from
-  the control plane. The `VersionedArtifactTransport` implementation and
-  artifact key/version settings must be added without a local fallback.
-- The built-in Codex trial reads rollout sandbox policy and workspace mode.
-  Endpoint, memory, shell, and logical-path probes require an instance-aware
-  runner built from explicit EnvironmentInstance bindings; until it is wired,
-  the gate fails closed when those required measurements are absent.
+`NaniholdConfig` now carries the commissioned local artifact selector and
+`EnvironmentInstance` binding under `environment_contract_artifact` and
+`environment_instance`. Runtime bootstrap retrieves the immutable artifact from
+`LocalEnvironmentContractStore`, requires it to equal the Kernel's declared
+`environment_contract`, computes the instance fingerprint from the concrete
+bindings, and injects an active `EnvironmentInstanceService` into
+`DependencyAwareDispatcher(environment_failover=...)`. The configured
+`preflight_instance_fingerprint` must equal that computed binding fingerprint.
+
+`ProductionPilotHost` accepts `preflight.kernel_config_path`. When present, the
+Kernel TOML is authoritative for `preflight_enabled`, version/cache paths,
+contract, artifact selector, and instance binding; the PilotHost JSON `preflight`
+fields are the explicit fallback used when that path is absent. A configured
+local artifact is validated through `LocalEnvironmentContractStore` and must
+match any inline contract. A configured instance replaces Codex's executable,
+workspace, `CODEX_HOME`, and child environment with its explicit bindings. The
+default runner adds endpoint, memory, shell, path, and workspace-write probes to
+the Codex rollout observation. With an explicit Operational Ledger connection,
+the launcher creates `EnvironmentInstanceService` and uses its
+`preflight_evidence_hook(instance_id, idempotency_key_prefix=...)`.
+
+The control-plane `VersionedArtifactTransport` adapter remains a separate
+deployment integration. Phase 1's local store connection is intentionally
+fail-fast and does not silently substitute an uncommissioned artifact.
+- The built-in Codex trial reads rollout sandbox policy and workspace mode; when
+  explicit EnvironmentInstance bindings are present, the injected runner adds
+  endpoint, memory, shell, logical-path, and workspace-write measurements.
 - The environment lifecycle records registration, verification, activation,
   retirement, failover, and reprovision requests. A procurement-boundary-aware
   provisioner and asynchronous owner notification transport remain to be

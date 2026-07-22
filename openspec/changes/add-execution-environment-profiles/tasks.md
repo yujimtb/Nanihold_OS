@@ -13,7 +13,10 @@
 
 - [x] B1 環境契約を LETHE の版付きアーティファクトとして保存する経路を定義する
   - Spec: EEP-04 / 受け入れ: 版付き保存の確認
-- [ ] B2 PilotHost 起動時にコントロールプレーンから環境契約を取得する
+- [x] B2 PilotHost 起動時に Kernel 設定を正本として環境契約を取得し、版付きローカル artifact を検証する
+  - PilotHost は `kernel_config_path` を優先し、`LocalEnvironmentContractStore.get(artifact_key, version)` の
+    artifact と `environment_contract` の fingerprint を照合する。LETHE `VersionedArtifactTransport`
+    の本番 adapter は別配備作業として残る。
   - Spec: EEP-04 / 受け入れ: 起動時取得の確認
 
 ## Track C. PilotHost 環境吸収
@@ -69,8 +72,10 @@
 ## Track G. 段階導入
 
 - [ ] G1 Phase 1: 契約/実体機構 + 契約適合 preflight + dispatch 時検証/キャッシュを導入し、初期実体(Windows ネイティブ / WSL)を契約適合として登録する
+  - 契約・実体・preflight・dispatch wiring は実装済み。Windows/WSL のcommission、実測、登録は配備時の手動作業。
   - Spec: EEP-08
 - [ ] G2 Phase 1: WSL 実体で preflight が通ることを検証してから coding 既定を WSL へ切替え、バイパスを撤去する
+  - `win32_codex_sandbox_bypass_enabled`（既定 `false`）と通常 sandbox のfail-fast境界を実装済み。WSL 検証、切替、撤去は未実施。
   - Spec: EEP-08 / 受け入れ: バイパス撤去前の preflight 検証
 - [ ] G3 Phase 2: docker 実体と Mac 側実体を同一契約に適合する新実体として追加する
   - Spec: EEP-08

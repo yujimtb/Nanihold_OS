@@ -92,6 +92,15 @@
   instance fingerprint 付き Operational Ledger Event へ記録する
 - 同一契約の verified 実体への自律 failover と、適合実体が無い場合の再プロビジョニング
   要求イベント／注入フック、および dispatcher の failover 接続点を実装した
+- Phase 1 本番配線として、Kernel `vsm.toml` の契約と版付き `LocalEnvironmentContractStore`
+  artifact を照合し、commission 済み EnvironmentInstance の identity/bindings を
+  `EnvironmentInstanceService` と dispatcher failover 境界へ注入した
+- PilotHost の preflight は `kernel_config_path` の Kernel 設定を正本とし、JSON は明示的な
+  fallback とした。実体 binding から endpoint・memory・shell・path・workspace write の
+  証拠を補い、`environment_instance_verified` hookへ接続する
+- Windows Codex の `win32_codex_sandbox_bypass_enabled` は既定 `false` とし、通常の
+  `--sandbox workspace-write` は契約適合 preflight 後だけ起動する。WSL 実体の構築・切替は
+  配備時の手動作業として残る
 - ACR-07の個名宛て通信 API。送り手・受け手を AgentNameRegistry 発行名に限定し、
   WorkItem / Execution 参照を必須として `correlation_id` / `causation_id` とともに
   `agent_notification_delivered`へ記録する。`GET /api/notifications` と
