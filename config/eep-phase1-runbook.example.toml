@@ -1,0 +1,190 @@
+# EEP Phase 1 runbook example. This is schema/load validation input only.
+# It is not a production secret file and must not be used to start a service.
+
+[deployment]
+mode = "production"
+
+[kernel.data_space]
+data_space_id = "space:personal-primary"
+owner_id = "owner:primary"
+kind = "personal"
+lethe_location = "http://host.docker.internal:8080/lakes/personal-primary"
+
+[kernel.lethe]
+base_url = "http://host.docker.internal:8080"
+bearer_token_env = "LETHE_NANIHOLD_TOKEN"
+timeout_seconds = 30.0
+max_page_size = 500
+history_max_result_bytes = 24000
+
+[kernel.audit_policy]
+policy_id = "policy:audit-primary"
+data_space_id = "space:personal-primary"
+independent_s3_star_required = true
+raw_drill_down_required = true
+retention_days = 3650
+
+[kernel.control_policy]
+policy_id = "policy:control-primary"
+data_space_id = "space:personal-primary"
+stop_scope = "affected_work_and_effects"
+severe_finding_requires_s5_risk_acceptance = true
+completion_requires_remote_push = true
+
+[pilot]
+mode = "sandboxed_bypass"
+permission_classifier_enabled = false
+writes_allowed = true
+pilot_host_id = "pilot-host:interface-primary"
+device_id = "device:interface-primary"
+device_certificate_sha256 = "ba36c850da95663816362241fde18e3e9769156247cbd45367d2f8a31bbbfc8e"
+
+[pilot.sandbox]
+profile_id = "sandbox:interface-primary"
+certificate_file = "/cutover/production/sandbox-profile.json"
+certificate_sha256 = "9c3f887ecaa32c291b59fb2f6849428b7a06e2a3e78507a9f4d52e4c0c9d533d"
+filesystem_write_roots = ["D:/userdata/docs/projects"]
+network_destinations = ["api.anthropic.com", "api.openai.com", "github.com", "127.0.0.1", "172.31.100.10"]
+issued_at = 2026-07-20T00:00:00Z
+expires_at = 2027-07-20T00:00:00Z
+
+[environment_contract]
+required_shell = "powershell"
+required_endpoints = ["api.openai.com"]
+workspace_writable = true
+minimum_memory_mb = 4096
+supported_sandboxes = ["workspace-write"]
+required_sandbox = "workspace-write"
+path_mapping_names = ["workspace-root"]
+minimum_cli_version = "0.144.5"
+
+[environment_contract_artifact]
+store_path = "/cutover/production/environment-artifacts"
+artifact_key = "codex-workspace"
+artifact_version = 1
+
+[environment_instance]
+instance_id = "environment-instance:windows-native-primary"
+logical_path_bindings = { workspace-root = "D:/userdata/docs/projects" }
+cli_executable_path = "C:/Users/mitob/AppData/Roaming/npm/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe"
+codex_home = "C:/Users/mitob/.codex"
+environment_variables = {}
+machine_identity = { execution = "windows-native", os = "windows" }
+
+[interface_pilot]
+node_id = "node:owner-interface"
+pilot_id = "pilot:interface"
+adapter = "claude-code"
+adapter_version = "2.1.215"
+provider = "anthropic"
+model_selection = "provider_configured"
+effort = "high"
+toolset = []
+sandbox_fingerprint = "sandbox:9c3f887ecaa32c291b59fb2f6849428b7a06e2a3e78507a9f4d52e4c0c9d533d"
+environment_fingerprint = "environment-contract-sha256:64582256f16c6eaa19ba3232ca48fe027142c01877bec780318db0586c6ae07d"
+pilot_host_base_url = "http://host.docker.internal:51872"
+pilot_host_bearer_token_env = "PILOT_HOST_BEARER_TOKEN"
+timeout_seconds = 330.0
+
+[production_pilot_host]
+coding_pilot_id = "pilot:codex-coding-s1"
+coding_candidate_model_snapshot = "gpt-5.6-luna"
+agent_name_csv_path = "/cutover/asset/Agent_name.csv"
+interface_max_budget_usd = 5.0
+transport_timeout_seconds = 1830.0
+work_cwd = "D:/userdata/docs/projects"
+work_sandbox = "workspace-write"
+work_max_input_tokens = 50000000
+work_max_output_tokens = 2000000
+work_max_total_tokens = 52000000
+work_timeout_seconds = 1800.0
+max_parallelism = 3
+reorientation_max_tool_rounds = 8
+preflight_enabled = true
+preflight_cli_version_file = "C:\\Users\\mitob\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\package.json"
+preflight_cache_path = "D:\\userdata\\docs\\projects\\_cutover_20260720_fable_activation\\production\\preflight-cache.json"
+preflight_instance_fingerprint = "a349962aeb65f08fb8b5e5b7cebffbad573d1c595f2158cf9d2fc84de536b510"
+
+[routing]
+active_route_snapshot_id = "route:coding-production-20260722-eep08-luna-first"
+expected_utility_quality_weight = 10.0
+expected_utility_cost_weight = 1.0
+expected_utility_latency_weight = 0.001
+production_exploration_enabled = false
+
+[[routing.candidates]]
+[routing.candidates.candidate]
+adapter = "claude-code"
+adapter_version = "2.1.215"
+provider = "anthropic"
+selection = "provider_configured"
+effort = "high"
+toolset = []
+sandbox_fingerprint = "sandbox:9c3f887ecaa32c291b59fb2f6849428b7a06e2a3e78507a9f4d52e4c0c9d533d"
+environment_fingerprint = "environment-contract-sha256:64582256f16c6eaa19ba3232ca48fe027142c01877bec780318db0586c6ae07d"
+[[routing.candidates.priors]]
+source = "bfcl"
+benchmark_family = "tool_use"
+version = "bfcl-v3-noninformative-transfer"
+sample_count = 2
+harness = "noninformative-transfer:no-toolset-equivalence"
+successes = 1
+failures = 1
+log_token_samples = [6.907755]
+log_cost_samples = [-2.302585]
+log_latency_samples = [4.605170]
+
+[[routing.candidates]]
+[routing.candidates.candidate]
+adapter = "codex-cli"
+adapter_version = "0.144.5"
+provider = "openai"
+selection = "exact"
+model_snapshot = "gpt-5.6-luna"
+effort = "xhigh"
+toolset = []
+sandbox_fingerprint = "sandbox:workspace-write"
+environment_fingerprint = "environment-contract-sha256:64582256f16c6eaa19ba3232ca48fe027142c01877bec780318db0586c6ae07d"
+[[routing.candidates.priors]]
+source = "terminal-bench"
+benchmark_family = "coding"
+version = "terminal-bench-2.1-noninformative-transfer"
+sample_count = 2
+harness = "noninformative-transfer:environment-isolation"
+successes = 1
+failures = 1
+log_token_samples = [6.907755]
+log_cost_samples = [-2.302585]
+log_latency_samples = [4.605170]
+
+[[routing.candidates]]
+[routing.candidates.candidate]
+adapter = "codex-cli"
+adapter_version = "0.144.5"
+provider = "openai"
+selection = "exact"
+model_snapshot = "gpt-5.6-sol"
+effort = "xhigh"
+toolset = []
+sandbox_fingerprint = "sandbox:workspace-write"
+environment_fingerprint = "environment-contract-sha256:64582256f16c6eaa19ba3232ca48fe027142c01877bec780318db0586c6ae07d"
+[[routing.candidates.priors]]
+source = "terminal-bench"
+benchmark_family = "coding"
+version = "terminal-bench-2.1-noninformative-transfer"
+sample_count = 2
+harness = "noninformative-transfer:environment-isolation"
+successes = 1
+failures = 1
+log_token_samples = [6.907755]
+log_cost_samples = [-2.302585]
+log_latency_samples = [4.605170]
+
+[server]
+bind_host = "0.0.0.0"
+bind_port = 8000
+api_bearer_token_env = "NANIHOLD_API_BEARER_TOKEN"
+allowed_origins = ["http://localhost:51874"]
+authorized_device_ids = ["device:interface-primary", "device:owner-web", "device:intercom"]
+owner_session_lifetime_seconds = 43200
+owner_auth_disabled = true
