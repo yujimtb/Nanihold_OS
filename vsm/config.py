@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from vsm.errors import ConfigurationError, InvariantViolation
+from vsm.environment import EnvironmentContract, environment_fingerprint
 from vsm.kernel.models import (
     AuditPolicy,
     ControlPolicy,
@@ -147,6 +148,10 @@ class ProductionPilotHostRuntimeConfig(StrictConfig):
     work_timeout_seconds: float = Field(gt=0)
     max_parallelism: int = Field(gt=0, le=32)
     reorientation_max_tool_rounds: int = Field(gt=0, le=100)
+    preflight_enabled: bool = False
+    preflight_cli_version_file: Path | None = None
+    preflight_cache_path: Path | None = None
+    preflight_instance_fingerprint: str | None = None
 
     @model_validator(mode="after")
     def work_total_covers_parts(self) -> "ProductionPilotHostRuntimeConfig":
@@ -158,6 +163,55 @@ class ProductionPilotHostRuntimeConfig(StrictConfig):
             )
         return self
 
+    @model_validator(mode="after")
+    def preflight_paths_are_explicit(self) -> "ProductionPilotHostRuntimeConfig":
+        configured = (
+            self.preflight_cli_version_file,
+            self.preflight_cache_path,
+            self.preflight_instance_fingerprint,
+        )
+        if self.preflight_enabled and any(item is None for item in configured):
+            raise ValueError(
+                "enabled production preflight requires version file, cache path, "
+                "and instance fingerprint"
+            )
+        if not self.preflight_enabled and any(item is not None for item in configured):
+            raise ValueError(
+                "production preflight paths require preflight_enabled=true"
+            )
+        if (
+            self.preflight_instance_fingerprint is not None
+            and not self.preflight_instance_fingerprint.strip()
+        ):
+            raise ValueError("preflight_instance_fingerprint must not be blank")
+        return self
+
+
+class EnvironmentContractArtifactConfig(StrictConfig):
+    """The commissioned local store and immutable contract artifact selector."""
+
+    store_path: Path
+    artifact_key: str = Field(pattern=r"^[a-z][a-z0-9._-]{0,127}$")
+    artifact_version: int = Field(ge=1)
+
+
+class EnvironmentInstanceConfig(StrictConfig):
+    """Machine-specific binding for the commissioned execution instance."""
+
+    instance_id: str = Field(min_length=1)
+    logical_path_bindings: dict[str, str] = Field(min_length=1)
+    cli_executable_path: str = Field(min_length=1)
+    codex_home: str = Field(min_length=1)
+    environment_variables: dict[str, str] = Field(default_factory=dict)
+    machine_identity: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def bindings_are_explicit(self) -> "EnvironmentInstanceConfig":
+        if any(not name.strip() or not path.strip() for name, path in self.logical_path_bindings.items()):
+            raise ValueError("environment_instance logical path bindings must be non-blank")
+        if not self.cli_executable_path.strip() or not self.codex_home.strip():
+            raise ValueError("environment_instance executable and CODEX_HOME are required")
+        return self
 
 class CandidateRegistration(StrictConfig):
     candidate: ModelCandidate
@@ -201,6 +255,9 @@ class NaniholdConfig(StrictConfig):
     kernel: KernelConfig
     pilot: PilotConfig
     interface_pilot: InterfacePilotConfig
+    environment_contract: EnvironmentContract | None = None
+    environment_contract_artifact: EnvironmentContractArtifactConfig | None = None
+    environment_instance: EnvironmentInstanceConfig | None = None
     production_pilot_host: ProductionPilotHostRuntimeConfig | None = None
     routing: RoutingConfig
     server: ServerConfig
@@ -214,6 +271,27 @@ class NaniholdConfig(StrictConfig):
             raise ValueError("ControlPolicy DataSpace does not match Kernel DataSpace")
         if not self.routing.candidates:
             raise ValueError("routing candidates must not be empty")
+        if self.environment_contract is not None:
+            expected_environment_fingerprint = environment_fingerprint(
+                self.environment_contract
+            )
+            declared_fingerprints = {
+                "interface_pilot": self.interface_pilot.environment_fingerprint,
+                **{
+                    f"routing.candidates[{index}]": registration.candidate.environment_fingerprint
+                    for index, registration in enumerate(self.routing.candidates)
+                },
+            }
+            mismatches = [
+                location
+                for location, declared in declared_fingerprints.items()
+                if declared != expected_environment_fingerprint
+            ]
+            if mismatches:
+                raise ConfigurationError(
+                    "environment_fingerprint does not match environment_contract: "
+                    + ", ".join(mismatches)
+                )
         keys = [item.candidate.key for item in self.routing.candidates]
         if len(keys) != len(set(keys)):
             raise ValueError("routing ModelCandidate keys must be unique")

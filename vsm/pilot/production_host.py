@@ -161,6 +161,7 @@ class ProductionPilotHostClient:
         interface_timeout_seconds: float,
         work_profile: WorkExecutionProfile,
         transport_timeout_seconds: float,
+        preflight_expectation: dict[str, object] | None = None,
     ) -> None:
         if (
             not base_url
@@ -177,6 +178,9 @@ class ProductionPilotHostClient:
         self.interface_max_budget_usd = interface_max_budget_usd
         self.interface_timeout_seconds = interface_timeout_seconds
         self.work_profile = work_profile
+        self.preflight_expectation = (
+            None if preflight_expectation is None else dict(preflight_expectation)
+        )
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
             headers={
@@ -455,6 +459,11 @@ class ProductionPilotHostClient:
             raise InvariantViolation("production PilotHost permission mode mismatch")
         if health.get("receipt_reconciliation") is not True:
             raise InvariantViolation("production PilotHost lacks receipt reconciliation")
+        if self.preflight_expectation is not None:
+            if health.get("preflight") != self.preflight_expectation:
+                raise InvariantViolation(
+                    "production PilotHost preflight configuration mismatch"
+                )
 
     def _validate_receipt(
         self,

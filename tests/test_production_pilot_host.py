@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from scripts.production_pilot_host import (
     ConflictError,
+    ContractError,
     InterfaceTurnRequest,
     ProductionPilotHost,
     ReceiptStore,
@@ -865,7 +866,9 @@ def test_codex_win32_bypasses_sandbox_instead_of_workspace_write(
         )
         return subprocess.CompletedProcess(argv, 0, _codex_stdout(), "")
 
-    host = _make_host(tmp_path, monkeypatch, fake_run)
+    config = _config(tmp_path)
+    config["codex"]["win32_codex_sandbox_bypass_enabled"] = True
+    host = _make_host(tmp_path, monkeypatch, fake_run, config=config)
     receipt = host.execute("/v1/work-executions", _work_request(tmp_path))
 
     assert receipt["status"] == "succeeded"
@@ -877,6 +880,21 @@ def test_codex_win32_bypasses_sandbox_instead_of_workspace_write(
     assert "workspace-write" not in argv
     assert "--strict-config" in argv
     assert "--ignore-user-config" in argv
+
+
+def test_codex_win32_bypass_is_disabled_by_default(
+    tmp_path: Path, monkeypatch, provider_env
+):
+    monkeypatch.setattr("scripts.production_pilot_host.sys.platform", "win32")
+
+    host = _make_host(
+        tmp_path,
+        monkeypatch,
+        lambda argv, **kwargs: pytest.fail("Codex must not start without preflight"),
+    )
+
+    with pytest.raises(ContractError, match="Windows workspace-write execution requires a successful"):
+        host.execute("/v1/work-executions", _work_request(tmp_path))
 
 
 def test_codex_rejects_acceptance_criterion_not_copied_verbatim(

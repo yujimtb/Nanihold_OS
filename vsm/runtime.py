@@ -12,6 +12,9 @@ from vsm.interface.pilot_host import PilotHostInterfacePilot
 from vsm.interface.service import InterfaceService
 from vsm.kernel.service import Kernel, utc_now
 from vsm.lethe.client import LetheHistoryClient, LetheOperationalLedger
+from vsm.environment import environment_fingerprint
+from vsm.environment.artifacts import LocalEnvironmentContractStore
+from vsm.environment_instance import EnvironmentInstance, EnvironmentInstanceService
 from vsm.pilot.host import PilotHostCoordinator
 from vsm.pilot.models import DeviceIdentity
 from vsm.pilot.production_host import (
@@ -34,6 +37,7 @@ class Runtime:
     dispatcher: DependencyAwareDispatcher
     projection: OperationalProjection
     state: AppState
+    environment_instance_service: EnvironmentInstanceService | None = None
 
     def close(self) -> None:
         self.dispatcher.close()
@@ -61,6 +65,58 @@ def _interrupt_reorientation_lost_on_runtime_restart(kernel: Kernel) -> bool:
         ),
     )
     return True
+
+
+def _build_environment_instance_service(
+    *, loaded: LoadedConfig, ledger: LetheOperationalLedger
+) -> EnvironmentInstanceService | None:
+    """Resolve the commissioned contract and bind its active runtime instance."""
+
+    config = loaded.config
+    production = config.production_pilot_host
+    if production is None or not production.preflight_enabled:
+        return None
+    if config.environment_contract is None:
+        raise RuntimeError("production preflight requires environment_contract in vsm.toml")
+    artifact_config = config.environment_contract_artifact
+    instance_config = config.environment_instance
+    if artifact_config is None or instance_config is None:
+        raise RuntimeError(
+            "production preflight requires environment_contract_artifact and "
+            "environment_instance in vsm.toml"
+        )
+    artifact = LocalEnvironmentContractStore(artifact_config.store_path).get(
+        artifact_key=artifact_config.artifact_key,
+        version=artifact_config.artifact_version,
+    )
+    if artifact.contract != config.environment_contract:
+        raise RuntimeError(
+            "vsm.toml environment_contract differs from the commissioned artifact"
+        )
+    contract = artifact.contract
+    if environment_fingerprint(contract) != config.interface_pilot.environment_fingerprint:
+        raise RuntimeError("commissioned environment contract fingerprint is not registered")
+    instance = EnvironmentInstance.from_contract(
+        contract,
+        instance_id=instance_config.instance_id,
+        data_space_id=config.kernel.data_space.data_space_id,
+        logical_path_bindings=instance_config.logical_path_bindings,
+        cli_executable_path=instance_config.cli_executable_path,
+        codex_home=instance_config.codex_home,
+        environment_variables=instance_config.environment_variables,
+        machine_identity=instance_config.machine_identity,
+    )
+    if instance.instance_fingerprint != production.preflight_instance_fingerprint:
+        raise RuntimeError(
+            "preflight_instance_fingerprint does not match the commissioned binding"
+        )
+    service = EnvironmentInstanceService(
+        data_space_id=config.kernel.data_space.data_space_id,
+        ledger=ledger,
+        clock=utc_now,
+    )
+    service.attach_active(instance, contract=contract)
+    return service
 
 
 def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtime:
@@ -145,6 +201,25 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
                 timeout_seconds=production_config.work_timeout_seconds,
             ),
             transport_timeout_seconds=(production_config.transport_timeout_seconds),
+            preflight_expectation={
+                "enabled": production_config.preflight_enabled,
+                "cli_version_file": (
+                    None
+                    if production_config.preflight_cli_version_file is None
+                    else str(production_config.preflight_cli_version_file)
+                ),
+                "cache_path": (
+                    None
+                    if production_config.preflight_cache_path is None
+                    else str(production_config.preflight_cache_path)
+                ),
+                "instance_fingerprint": production_config.preflight_instance_fingerprint,
+                "environment_fingerprint": (
+                    None
+                    if config.environment_contract is None
+                    else environment_fingerprint(config.environment_contract)
+                ),
+            },
         )
     else:
         pilot = PilotHostInterfacePilot(
@@ -225,6 +300,10 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
             history_reader.close()
             ledger.close()
             raise RuntimeError("active RouteSnapshot evidence cursor is stale")
+    environment_instance_service = _build_environment_instance_service(
+        loaded=loaded,
+        ledger=ledger,
+    )
     dispatcher = DependencyAwareDispatcher(
         kernel=kernel,
         router=router,
@@ -233,6 +312,7 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
         model_registry=registry if production_config is not None else None,
         work_executor=pilot if production_config is not None else None,
         agent_naming_registry=agent_naming_registry,
+        environment_failover=environment_instance_service,
         max_parallelism=(
             production_config.max_parallelism if production_config is not None else None
         ),
@@ -287,6 +367,7 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
         dispatcher=dispatcher,
         projection=projection,
         state=state,
+        environment_instance_service=environment_instance_service,
     )
 
 

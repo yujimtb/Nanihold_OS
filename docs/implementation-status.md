@@ -1,6 +1,6 @@
 # Implementation status
 
-基準日: 2026-07-20
+基準日: 2026-07-22
 
 ## 実装済み
 
@@ -84,6 +84,23 @@
   `requires_work_item=true`の明示条件だけを`agent_notification_promoted`と既存
   `work_item_created`へ連結する。`AgentNotificationDelivery`はエージェント間通信にも
   同じLedger Event契約を使用し、外部返信経路を追加しない。
+- EnvironmentInstance の論理パス・CLI・`CODEX_HOME` 束縛、契約 fingerprint と分離した
+  instance fingerprint、candidate/verified/active/retired ライフサイクルを実装し、
+  Operational Ledger への登録・検証・稼働化・退役記録を追加した
+- PreflightGate を正式な EnvironmentContract / `environment_fingerprint()` へ統合し、
+  合格証拠を `EnvironmentInstanceService.preflight_evidence_hook()` から
+  instance fingerprint 付き Operational Ledger Event へ記録する
+- 同一契約の verified 実体への自律 failover と、適合実体が無い場合の再プロビジョニング
+  要求イベント／注入フック、および dispatcher の failover 接続点を実装した
+- Phase 1 本番配線として、Kernel `vsm.toml` の契約と版付き `LocalEnvironmentContractStore`
+  artifact を照合し、commission 済み EnvironmentInstance の identity/bindings を
+  `EnvironmentInstanceService` と dispatcher failover 境界へ注入した
+- PilotHost の preflight は `kernel_config_path` の Kernel 設定を正本とし、JSON は明示的な
+  fallback とした。実体 binding から endpoint・memory・shell・path・workspace write の
+  証拠を補い、`environment_instance_verified` hookへ接続する
+- Windows Codex の `win32_codex_sandbox_bypass_enabled` は既定 `false` とし、通常の
+  `--sandbox workspace-write` は契約適合 preflight 後だけ起動する。WSL 実体の構築・切替は
+  配備時の手動作業として残る
 - ACR-07の個名宛て通信 API。送り手・受け手を AgentNameRegistry 発行名に限定し、
   WorkItem / Execution 参照を必須として `correlation_id` / `causation_id` とともに
   `agent_notification_delivered`へ記録する。`GET /api/notifications` と
@@ -135,6 +152,9 @@
   owner checklist 20、Ledger/監査トレース突合、外部送信のfail-fastを検証する。
 - Windows PilotHost launcher: 3 passed。親`PATH`保持、認証付きready、
   2秒後のprocess生存、長いstderr非転送を検証
+- EEP 3トラック統合後のNanihold全体回帰: 167 passed、3 skipped。
+  正式EnvironmentContract、dispatch preflight、EnvironmentInstance lifecycle、
+  ACR#3通知配送・個名割当を同一構成で検証
 
 履歴取込前のlegacy scan:
 
