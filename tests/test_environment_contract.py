@@ -14,7 +14,6 @@ from vsm.environment import (
     OwnerApprovalTarget,
     ProcurementPolicyBoundary,
     SandboxMode,
-    ShellKind,
     deserialize_environment_contract_artifact,
     environment_fingerprint,
     serialize_environment_contract_artifact,
@@ -24,7 +23,7 @@ from vsm.errors import ConfigurationError
 
 def _contract(**updates: object) -> EnvironmentContract:
     data: dict[str, object] = {
-        "required_shell": "posix",
+        "supported_shells": ["posix"],
         "required_endpoints": ["api.openai.com", "api.anthropic.com"],
         "workspace_writable": True,
         "minimum_memory_mb": 4096,
@@ -41,7 +40,7 @@ def test_environment_contract_is_capability_only_and_rejects_host_fields():
     contract = _contract()
 
     assert set(EnvironmentContract.model_fields) == {
-        "required_shell",
+        "supported_shells",
         "required_endpoints",
         "workspace_writable",
         "minimum_memory_mb",
@@ -55,7 +54,7 @@ def test_environment_contract_is_capability_only_and_rejects_host_fields():
         "path" in field and field != "path_mapping_names"
         for field in EnvironmentContract.model_fields
     )
-    assert contract.required_shell is ShellKind.POSIX
+    assert contract.supported_shells == ("posix",)
     assert contract.required_sandbox is SandboxMode.WORKSPACE_WRITE
 
     with pytest.raises(ValidationError):
@@ -86,13 +85,25 @@ def test_environment_fingerprint_is_normalized_and_contract_only():
         path_mapping_names=["workspace-root"],
     )
     changed = _contract(minimum_memory_mb=8192)
+    powershell_first = _contract(supported_shells=["powershell", "posix"])
+    posix_first = _contract(supported_shells=["posix", "powershell"])
 
     assert environment_fingerprint(first) == environment_fingerprint(second)
+    assert environment_fingerprint(powershell_first) == environment_fingerprint(posix_first)
     assert environment_fingerprint(first).startswith("environment-contract-sha256:")
     assert environment_fingerprint(first) != environment_fingerprint(changed)
     assert list(inspect.signature(environment_fingerprint).parameters) == ["contract"]
     with pytest.raises(TypeError):
         environment_fingerprint({"contract": first})  # type: ignore[arg-type]
+
+
+def test_supported_shells_are_non_empty_unique_and_known():
+    with pytest.raises(ValidationError):
+        _contract(supported_shells=[])
+    with pytest.raises(ValidationError, match="supported_shells must be unique"):
+        _contract(supported_shells=["posix", "posix"])
+    with pytest.raises(ValidationError, match="unknown shell"):
+        _contract(supported_shells=["posix", "fish"])
 
 
 def test_versioned_artifact_round_trip_preserves_fingerprint(tmp_path: Path):
@@ -141,7 +152,7 @@ def test_owner_approval_target_contains_only_contract_and_boundary():
 def test_declared_environment_fingerprint_mismatch_is_configuration_error(tmp_path: Path):
     example = Path(__file__).parents[1] / "config" / "nanihold.example.toml"
     config_path = tmp_path / "vsm.toml"
-    fingerprint = "environment-contract-sha256:c4287fdd9d0cb74ad49b0ce96a4a26af4a7a097438f466038dab604fdd6aff66"
+    fingerprint = "environment-contract-sha256:f0fa8e57493b08815e5ab2389dfbf6193030a08d5dc3a72eba160f6138a4496d"
     config_path.write_text(
         example.read_text("utf-8").replace(
             fingerprint, "environment-contract-sha256:" + "0" * 64, 1

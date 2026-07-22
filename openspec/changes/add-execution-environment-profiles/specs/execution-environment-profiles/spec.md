@@ -1,12 +1,12 @@
 ## ADDED Requirements
 
 ### Requirement: EEP-01 環境契約(EnvironmentContract)の定義
-システムは実行環境を、まず「何が満たされていればよいか」を宣言する **環境契約(EnvironmentContract)** として定義しなければならない(SHALL)。環境契約は満たすべき能力要件を宣言しなければならず(SHALL)、少なくとも次を含む: 要求シェル種別(例: POSIX シェル)、要求エンドポイント疎通(例: `api.openai.com` 到達可能)、workspace 書き込み可能、最低メモリ、要求 sandbox モード(`supported_sandboxes`)、パス写像の論理名(例: `workspace-root`)、および版制約が必要な場合の最低要求 CLI バージョン(任意)。環境契約は機械非依存でポータブルでなければならない(SHALL)。環境契約は具体的な実行場所の名前(例: `windows-native` / `wsl-ubuntu`)を identity の要素として列挙してはならない(SHALL NOT)。環境契約に機械固有パス・CLI 実体パス等の機械固有情報を含めてはならない(SHALL NOT)。
+システムは実行環境を、まず「何が満たされていればよいか」を宣言する **環境契約(EnvironmentContract)** として定義しなければならない(SHALL)。環境契約は満たすべき能力要件を宣言しなければならず(SHALL)、少なくとも次を含む: `supported_shells` による1つ以上のシェル種別の集合(いずれかに適合するOR要件。例: POSIX / PowerShell シェル)、要求エンドポイント疎通(例: `api.openai.com` 到達可能)、workspace 書き込み可能、最低メモリ、要求 sandbox モード(`supported_sandboxes`)、パス写像の論理名(例: `workspace-root`)、および版制約が必要な場合の最低要求 CLI バージョン(任意)。環境契約は機械非依存でポータブルでなければならない(SHALL)。環境契約は具体的な実行場所の名前(例: `windows-native` / `wsl-ubuntu`)を identity の要素として列挙してはならない(SHALL NOT)。環境契約に機械固有パス・CLI 実体パス等の機械固有情報を含めてはならない(SHALL NOT)。
 
 #### Scenario: 契約が能力要件で表される
 - **GIVEN** ある WorkItem の実行に必要な環境
 - **WHEN** その環境契約を確認する
-- **THEN** POSIX シェル・エンドポイント疎通・workspace 書き込み可・最低メモリ・要求 sandbox モード・パス論理名といった能力要件で表され、具体的実行場所の名前や機械固有パスは含まれない
+- **THEN** 1つ以上のシェル種別の集合(OR適合)・エンドポイント疎通・workspace 書き込み可・最低メモリ・要求 sandbox モード・パス論理名といった能力要件で表され、具体的実行場所の名前や機械固有パスは含まれない
 
 #### Scenario: 同一契約は別実体へ持ち運べる
 - **GIVEN** ある機械で定義された環境契約

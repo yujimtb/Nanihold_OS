@@ -24,7 +24,7 @@
 
 ## What Changes
 
-- **ADDED:** 実行環境を **環境契約(EnvironmentContract / ポータブル)** と **環境実体(EnvironmentInstance / S3 が自律管理)** の 2 層に分離して定義する(EEP-01 / EEP-03)。環境契約は「何が満たされていればよいか」を能力要件(POSIX シェル・`api.openai.com` 疎通・workspace 書き込み可・最低メモリ・要求 sandbox モード・パス論理名・最低要求 CLI バージョン(任意))で宣言し、具体名で実行場所を列挙しない。環境実体は契約を満たす具体的実行場所(Windows ホスト・WSL・NAS コンテナ・将来のクラウド VM)で、S3 が自律的に発見・構築・検証・廃棄する。
+- **ADDED:** 実行環境を **環境契約(EnvironmentContract / ポータブル)** と **環境実体(EnvironmentInstance / S3 が自律管理)** の 2 層に分離して定義する(EEP-01 / EEP-03)。環境契約は「何が満たされていればよいか」を能力要件(1つ以上のシェル種別の集合(OR適合)・`api.openai.com` 疎通・workspace 書き込み可・最低メモリ・要求 sandbox モード・パス論理名・最低要求 CLI バージョン(任意))で宣言し、具体名で実行場所を列挙しない。環境実体は契約を満たす具体的実行場所(Windows ホスト・WSL・NAS コンテナ・将来のクラウド VM)で、S3 が自律的に発見・構築・検証・廃棄する。
 - **ADDED:** candidate identity の `environment_fingerprint` を、**環境契約の正規化ハッシュ**として正式定義する(EEP-02)。環境実体側の機械固有情報(instance fingerprint を含む)はハッシュに含めない。
 - **ADDED:** 環境契約アーティファクトのスケール時保管を規定する(EEP-04)。LETHE に版付きアーティファクトとして保存し、PilotHost が起動時にコントロールプレーンから取得する。
 - **ADDED:** PilotHost の **環境吸収責務** を規定する(EEP-05)。実体種別に応じた argv 前置(`wsl -d <distro> --`、`docker compose exec` 等)、work_cwd / allowlist / 成果物パスの双方向変換、provider セッション記録(rollout)の読み出し先解決、エンドポイント URL(`localhost` vs `host.docker.internal`)の環境別書換え。

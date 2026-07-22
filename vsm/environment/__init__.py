@@ -27,7 +27,6 @@ from .contracts import (
     EnvironmentContract,
     EnvironmentModel,
     SandboxMode,
-    ShellKind,
     environment_fingerprint,
 )
 
@@ -45,7 +44,6 @@ __all__ = [
     "OwnerApprovalTarget",
     "ProcurementPolicyBoundary",
     "SandboxMode",
-    "ShellKind",
     "VersionedArtifactTransport",
     "deserialize_environment_contract_artifact",
     "environment_fingerprint",

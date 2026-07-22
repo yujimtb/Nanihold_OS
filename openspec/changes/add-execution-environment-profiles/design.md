@@ -24,7 +24,7 @@
 
 環境が満たすべき能力を機械非依存で表す。以下を含む。
 
-- 要求能力: POSIX シェル、`api.openai.com` 疎通、workspace 書き込み可、最低メモリ等。
+- 要求能力: 1つ以上のシェル種別(`supported_shells`)のいずれか、`api.openai.com` 疎通、workspace 書き込み可、最低メモリ等。
 - `supported_sandboxes` / 要求 sandbox モード: この契約が要求し、実体が実際に提供できるべき sandbox モード(例: `["workspace-write", "read-only"]`)。
 - 最低要求 CLI バージョン(任意): 版制約が必要な場合のみ宣言する下限。identity には含めない(FAV 方針に整合)。
 - パス写像の論理名: 例 `workspace-root`。物理パスではなく論理名のみを宣言する。

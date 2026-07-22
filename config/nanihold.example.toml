@@ -50,7 +50,7 @@ issued_at = 2026-07-19T00:00:00Z
 expires_at = 2027-07-19T00:00:00Z
 
 [environment_contract]
-required_shell = "posix"
+supported_shells = ["powershell", "posix"]
 required_endpoints = ["api.anthropic.com", "api.openai.com"]
 workspace_writable = true
 minimum_memory_mb = 4096
@@ -69,7 +69,7 @@ model_selection = "provider_configured"
 effort = "high"
 toolset = ["nanihold-api"]
 sandbox_fingerprint = "sandbox-profile-sha256:replace"
-environment_fingerprint = "environment-contract-sha256:c4287fdd9d0cb74ad49b0ce96a4a26af4a7a097438f466038dab604fdd6aff66"
+environment_fingerprint = "environment-contract-sha256:f0fa8e57493b08815e5ab2389dfbf6193030a08d5dc3a72eba160f6138a4496d"
 pilot_host_base_url = "https://pilot-host.example.invalid"
 pilot_host_bearer_token_env = "PILOT_HOST_BEARER_TOKEN"
 timeout_seconds = 120.0
@@ -109,7 +109,7 @@ selection = "provider_configured"
 effort = "high"
 toolset = ["nanihold-api"]
 sandbox_fingerprint = "sandbox-profile-sha256:replace"
-environment_fingerprint = "environment-contract-sha256:c4287fdd9d0cb74ad49b0ce96a4a26af4a7a097438f466038dab604fdd6aff66"
+environment_fingerprint = "environment-contract-sha256:f0fa8e57493b08815e5ab2389dfbf6193030a08d5dc3a72eba160f6138a4496d"
 [[routing.candidates.priors]]
 source = "bfcl"
 benchmark_family = "tool_use"
@@ -132,7 +132,7 @@ model_snapshot = "gpt-5.6-luna"
 effort = "xhigh"
 toolset = ["filesystem", "git", "tests"]
 sandbox_fingerprint = "sandbox-profile-sha256:replace"
-environment_fingerprint = "environment-contract-sha256:c4287fdd9d0cb74ad49b0ce96a4a26af4a7a097438f466038dab604fdd6aff66"
+environment_fingerprint = "environment-contract-sha256:f0fa8e57493b08815e5ab2389dfbf6193030a08d5dc3a72eba160f6138a4496d"
 [[routing.candidates.priors]]
 source = "swe-bench"
 benchmark_family = "coding"
@@ -155,7 +155,7 @@ model_snapshot = "gpt-5.6-sol"
 effort = "xhigh"
 toolset = ["filesystem", "git", "tests"]
 sandbox_fingerprint = "sandbox-profile-sha256:replace"
-environment_fingerprint = "environment-contract-sha256:c4287fdd9d0cb74ad49b0ce96a4a26af4a7a097438f466038dab604fdd6aff66"
+environment_fingerprint = "environment-contract-sha256:f0fa8e57493b08815e5ab2389dfbf6193030a08d5dc3a72eba160f6138a4496d"
 [[routing.candidates.priors]]
 source = "terminal-bench"
 benchmark_family = "coding"

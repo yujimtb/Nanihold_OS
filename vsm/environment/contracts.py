@@ -25,14 +25,6 @@ class EnvironmentModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class ShellKind(StrEnum):
-    """Shell capability requested by a portable environment contract."""
-
-    POSIX = "posix"
-    POWERSHELL = "powershell"
-    CMD = "cmd"
-
-
 class SandboxMode(StrEnum):
     """Sandbox modes understood by the contract layer."""
 
@@ -42,6 +34,7 @@ class SandboxMode(StrEnum):
 
 _LOGICAL_NAME = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 _CLI_VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?$")
+_KNOWN_SHELLS = frozenset({"powershell", "posix", "cmd"})
 
 
 def _normalise_collection(value: Any) -> Any:
@@ -58,7 +51,7 @@ class EnvironmentContract(EnvironmentModel):
     are not part of this model and are rejected as extra fields.
     """
 
-    required_shell: ShellKind
+    supported_shells: tuple[str, ...] = Field(min_length=1)
     required_endpoints: tuple[str, ...] = Field(min_length=1)
     workspace_writable: bool
     minimum_memory_mb: int = Field(gt=0)
@@ -74,6 +67,7 @@ class EnvironmentContract(EnvironmentModel):
             return value
         normalised = dict(value)
         for field_name in (
+            "supported_shells",
             "required_endpoints",
             "supported_sandboxes",
             "path_mapping_names",
@@ -84,7 +78,7 @@ class EnvironmentContract(EnvironmentModel):
             item = normalised.get(field_name)
             if isinstance(item, str):
                 normalised[field_name] = item.strip()
-        for field_name in ("required_shell", "required_sandbox"):
+        for field_name in ("required_sandbox",):
             item = normalised.get(field_name)
             if isinstance(item, str):
                 normalised[field_name] = item.strip().lower()
@@ -124,6 +118,19 @@ class EnvironmentContract(EnvironmentModel):
                 raise ValueError("EnvironmentContract endpoints must use portable DNS names")
             result.append(endpoint.lower())
         return tuple(sorted(result))
+
+    @field_validator("supported_shells")
+    @classmethod
+    def shells_are_known_and_unique(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("EnvironmentContract supported_shells must be unique")
+        unknown = sorted(set(value) - _KNOWN_SHELLS)
+        if unknown:
+            raise ValueError(
+                "EnvironmentContract supported_shells contains unknown shell(s): "
+                + ", ".join(unknown)
+            )
+        return tuple(sorted(value))
 
     @field_validator("supported_sandboxes")
     @classmethod

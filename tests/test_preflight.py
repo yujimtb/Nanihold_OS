@@ -30,7 +30,7 @@ def _write_version(path: Path, version: str, *, mtime_ns: int | None = None) -> 
 
 
 CONTRACT = EnvironmentContract(
-    required_shell="posix",
+    supported_shells=("posix",),
     required_endpoints=("api.openai.com",),
     workspace_writable=True,
     minimum_memory_mb=1,
@@ -45,6 +45,7 @@ def _observation(
     *,
     sandbox_policy: str = "workspace-write",
     workspace_writable: bool = True,
+    shell: str = "posix",
     rollout_ref: str | None = None,
 ) -> dict[str, object]:
     return {
@@ -52,7 +53,7 @@ def _observation(
         "workspace_writable": workspace_writable,
         "endpoint_reachable": ["api.openai.com"],
         "memory_bytes": 2 * 1024 * 1024,
-        "shell": "posix",
+        "shell": shell,
         "path_mappings": ["workspace-root"],
         "rollout_ref": rollout_ref,
     }
@@ -66,13 +67,14 @@ def _gate(
     evidence_hook=None,
     event_hook=None,
     version: str = "0.145.0",
+    contract: EnvironmentContract = CONTRACT,
 ):
     version_file = tmp_path / "node_modules" / "codex" / "package.json"
     version_file.parent.mkdir(parents=True, exist_ok=True)
     if not version_file.exists():
         _write_version(version_file, version)
     return PreflightGate(
-        contract=CONTRACT,
+        contract=contract,
         instance_fingerprint="instance:test",
         version_reader=CliVersionReader(version_file),
         cache_path=tmp_path / "state" / "preflight.json",
@@ -82,6 +84,27 @@ def _gate(
         evidence_hook=evidence_hook,
         clock=lambda: datetime(2026, 7, 21, 12, 0, tzinfo=UTC),
     ), version_file
+
+
+def test_preflight_rejects_powershell_for_posix_only_contract(tmp_path: Path):
+    gate, _ = _gate(
+        tmp_path,
+        runner=lambda _value: _observation(shell="powershell"),
+    )
+
+    with pytest.raises(PreflightContractError, match="required shell capability"):
+        gate.dispatch_preflight()
+
+
+def test_preflight_accepts_any_supported_shell(tmp_path: Path):
+    contract = CONTRACT.model_copy(update={"supported_shells": ("powershell", "posix")})
+    gate, _ = _gate(
+        tmp_path,
+        contract=contract,
+        runner=lambda _value: _observation(shell="powershell"),
+    )
+
+    assert gate.dispatch_preflight().cache_hit is False
 
 
 def test_変化なしはキャッシュヒットして試走をスキップ(tmp_path: Path):

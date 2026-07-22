@@ -28,7 +28,7 @@ SPACE_ID = "space:environment"
 NOW = datetime(2026, 7, 21, 12, 0, tzinfo=UTC)
 
 CONTRACT = EnvironmentContract(
-    required_shell="posix",
+    supported_shells=("posix",),
     required_endpoints=("api.openai.com",),
     workspace_writable=True,
     minimum_memory_mb=1024,

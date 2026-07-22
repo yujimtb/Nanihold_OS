@@ -432,7 +432,7 @@ class PreflightGate:
             or memory < minimum_memory_bytes
         ):
             raise PreflightContractError("minimum memory capability was not met")
-        if capabilities.get("shell") != self.contract.required_shell.value:
+        if capabilities.get("shell") not in self.contract.supported_shells:
             raise PreflightContractError("required shell capability was not measured")
         path_mappings = capabilities.get("path_mappings")
         if isinstance(path_mappings, Mapping):
