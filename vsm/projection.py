@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from datetime import datetime
 
 from vsm.errors import InvariantViolation
@@ -64,6 +65,8 @@ LETHE_EXTERNAL_EVENT_STREAM_PREFIXES = {
     "history.import_completed": "history-import:",
 }
 
+logger = logging.getLogger(__name__)
+
 
 class OperationalProjection:
     """Rebuilds all mutable views from the DataSpace Event Ledger."""
@@ -81,6 +84,7 @@ class OperationalProjection:
         self.routing_evidence = routing_evidence
         self.token_lab_events = token_lab_events
         self.cursor = 0
+        self.legacy_flat_notification_events_replayed = 0
 
     def rebuild(self, *, page_size: int = 500) -> int:
         if page_size <= 0:
@@ -216,7 +220,24 @@ class OperationalProjection:
         self._kernel_version(event)
 
     def _on_agent_notification_delivered(self, event) -> None:
-        notification = AgentNotification.model_validate(event.payload["notification"])
+        # Back-compat: intercom commit 36c4a27 switched to nesting the
+        # notification fields under a "notification" key. Production
+        # ledgers still hold pre-cutover (<=2026-07-22) events written with
+        # the notification fields flat at the top level of
+        # observation.payload — replay must keep accepting that shape.
+        notification_payload = event.payload.get("notification")
+        if notification_payload is None:
+            notification_payload = event.payload
+            self.legacy_flat_notification_events_replayed += 1
+            if self.legacy_flat_notification_events_replayed == 1:
+                logger.warning(
+                    "projection: replaying legacy flat agent_notification_delivered "
+                    "payload (pre-2026-07-22 intercom writer, no 'notification' key) "
+                    "for event_id=%s; interpreting payload as the notification body "
+                    "directly",
+                    event.event_id,
+                )
+        notification = AgentNotification.model_validate(notification_payload)
         if notification.source_kind.value == "agent_to_agent":
             self.kernel._validate_agent_message_identity(notification)
         existing = self.kernel.agent_notifications.get(notification.notification_id)

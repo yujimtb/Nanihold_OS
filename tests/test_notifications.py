@@ -1,3 +1,5 @@
+import logging
+
 from vsm.notifications import (
     AgentNotification,
     AgentNotificationDelivery,
@@ -8,8 +10,11 @@ from vsm.notifications import (
     notification_id_for,
 )
 from vsm.agent_naming import RESERVED_AGENT_NAME, AgentNameRegistry, AgentNameRow
+from vsm.interface.service import InterfaceService
 from vsm.kernel.models import Execution, ExecutionState, WorkItem, WorkState
+from vsm.kernel.service import Kernel
 from vsm.pilot.models import ModelCandidate
+from vsm.projection import OperationalProjection
 from vsm.errors import InvariantViolation
 import pytest
 
@@ -495,3 +500,208 @@ def test_nagi_remains_excluded_from_rotation_pool_allocation(system) -> None:
 
     assert RESERVED_AGENT_NAME not in allocated_names
     assert all(name.startswith("Toki") for name in allocated_names)
+
+
+def _rebuild_from_ledger(kernel, ledger, pilot, token_lab_events) -> OperationalProjection:
+    """Replay the shared Ledger into a fresh Kernel/Interface pair, the way
+    a real bootstrap (API restart, vsm CLI) does."""
+
+    rebuilt_kernel = Kernel(
+        data_space=kernel.data_space,
+        ledger=ledger,
+        audit_policy=kernel.audit_policy,
+        control_policy=kernel.control_policy,
+        clock=kernel.clock,
+    )
+    rebuilt_interface = InterfaceService(
+        kernel=rebuilt_kernel,
+        ledger=ledger,
+        pilot=pilot,
+        token_lab_events=token_lab_events,
+        clock=kernel.clock,
+    )
+    projection = OperationalProjection(kernel=rebuilt_kernel, interface=rebuilt_interface)
+    projection.rebuild()
+    return projection
+
+
+def test_replay_accepts_legacy_flat_agent_notification_delivered_payload(
+    system, caplog
+) -> None:
+    """Before intercom 36c4a27, agent_notification_delivered events were
+    written with the AgentNotification fields flat at the top level of
+    observation.payload (no "notification" wrapper key). Production
+    ledgers still hold many such events (cursor ~48700+), so replay/
+    bootstrap must keep accepting them instead of raising
+    KeyError('notification')."""
+
+    kernel, ledger, interface, pilot = system
+    names = AgentNameRegistry(
+        [
+            AgentNameRow(
+                category="居",
+                scale=2,
+                semantic_coordinate="甲",
+                japanese_name="Kaba",
+                english_name="Kaba",
+                latin_name="Kaba",
+                likes="1",
+            ),
+            AgentNameRow(
+                category="居",
+                scale=2,
+                semantic_coordinate="乙",
+                japanese_name="Toki",
+                english_name="Toki",
+                latin_name="Toki",
+                likes="1",
+            ),
+        ]
+    )
+    candidate = ModelCandidate(
+        adapter="test",
+        adapter_version="1",
+        provider="anthropic",
+        selection="exact",
+        model_snapshot="claude-opus-4-1",
+        effort="high",
+        toolset=(),
+        sandbox_fingerprint="sandbox:test",
+        environment_fingerprint="environment:test",
+    )
+    for suffix, node_id in (("kaba", INTERFACE_NODE_ID), ("toki", INTERFACE_NODE_ID)):
+        registration = names.allocate_out_of_pipeline(
+            registration_id=f"registration:{suffix}",
+            data_space_id=SPACE_ID,
+            node_id=node_id,
+            pilot_id=f"pilot:{suffix}",
+            candidate=candidate,
+        )
+        kernel.register_agent_identity(
+            registration,
+            naming_registry=names,
+            actor_id=OWNER_ID,
+            idempotency_key=f"registration:{suffix}",
+        )
+
+    work_item, execution = _agent_message_context(kernel, suffix="legacy-replay")
+
+    # One notification delivered through the current (nested) code path.
+    new_format_receipt = AgentNotificationDelivery(kernel).send_agent_message(
+        data_space_id=SPACE_ID,
+        source_instance_id="nanihold:primary",
+        sender_actor_id="system:agent-kaba",
+        sender_agent_name="Kaba",
+        recipient_agent_name="Toki",
+        source_message_id="message:legacy-replay-new",
+        body="New-format message.",
+        related_work_item_id=work_item.work_item_id,
+        related_execution_id=execution.execution_id,
+        idempotency_key="agent-message:legacy-replay-new",
+    )
+
+    # Two notifications appended the way pre-2026-07-22 intercom wrote
+    # them: the AgentNotification fields flat at the top level of the
+    # payload, with no "notification" wrapper key.
+    legacy_notifications = []
+    for index in range(2):
+        message_id = f"message:legacy-replay-old-{index}"
+        notification_id = notification_id_for(
+            data_space_id=SPACE_ID,
+            source_instance_id="nanihold:primary",
+            source_platform=NotificationPlatform.INTERNAL,
+            source_channel="operational",
+            source_message_id=message_id,
+            recipient_agent_name="Toki",
+            body="Legacy-format message.",
+            sender_agent_name="Kaba",
+            related_work_item_id=work_item.work_item_id,
+            related_execution_id=execution.execution_id,
+        )
+        notification = AgentNotification(
+            notification_id=notification_id,
+            data_space_id=SPACE_ID,
+            source_kind=NotificationSourceKind.AGENT_TO_AGENT,
+            source_platform=NotificationPlatform.INTERNAL,
+            source_instance_id="nanihold:primary",
+            source_channel="operational",
+            source_message_id=message_id,
+            sender_actor_id="system:agent-kaba",
+            sender_agent_name="Kaba",
+            recipient_agent_name="Toki",
+            body="Legacy-format message.",
+            resolution_kind=NotificationResolutionKind.AGENT_ADDRESS,
+            requires_work_item=False,
+            related_work_item_id=work_item.work_item_id,
+            related_execution_id=execution.execution_id,
+        )
+        legacy_notifications.append(notification)
+        kernel._record(
+            stream_id=notification.notification_id,
+            event_type="agent_notification_delivered",
+            payload=kernel._json(notification),
+            actor_type="system",
+            actor_id="system:agent-kaba",
+            idempotency_key=f"agent-message:legacy-replay-old-{index}",
+            correlation_id=work_item.work_item_id,
+            causation_id=execution.execution_id,
+        )
+        kernel.agent_notifications[notification.notification_id] = notification
+
+    legacy_event = ledger.page(0, 100)[-1].event
+    assert "notification" not in legacy_event.payload
+    assert legacy_event.payload["recipient_agent_name"] == "Toki"
+
+    caplog.set_level(logging.WARNING, logger="vsm.projection")
+    projection = _rebuild_from_ledger(
+        kernel, ledger, pilot, interface.token_lab_events
+    )
+
+    # Both formats replay to the identical Kernel state.
+    assert projection.legacy_flat_notification_events_replayed == 2
+    assert projection.kernel.agent_notifications == kernel.agent_notifications
+    assert projection.kernel.agent_notifications[
+        new_format_receipt.notification_id
+    ].sender_agent_name == "Kaba"
+    for notification in legacy_notifications:
+        assert projection.kernel.agent_notifications[
+            notification.notification_id
+        ] == notification
+
+    legacy_warnings = [
+        record
+        for record in caplog.records
+        if "legacy flat agent_notification_delivered" in record.getMessage()
+    ]
+    assert len(legacy_warnings) == 1
+
+
+def test_replay_accepts_legacy_flat_channel_inbound_notification_payload(
+    system,
+) -> None:
+    """The back-compat fallback is keyed on the "notification" wrapper
+    being absent, not on source_kind — channel-inbound legacy events must
+    replay too."""
+
+    kernel, ledger, interface, pilot = system
+    notification = addressed_notification(requires_work_item=False)
+    kernel._record(
+        stream_id=notification.notification_id,
+        event_type="agent_notification_delivered",
+        payload=kernel._json(notification),
+        actor_type="system",
+        actor_id="system:intercom",
+        idempotency_key="notification:legacy-channel-inbound",
+        correlation_id=notification.notification_id,
+    )
+    kernel.agent_notifications[notification.notification_id] = notification
+
+    projection = _rebuild_from_ledger(
+        kernel, ledger, pilot, interface.token_lab_events
+    )
+
+    assert projection.legacy_flat_notification_events_replayed == 1
+    assert (
+        projection.kernel.agent_notifications[notification.notification_id]
+        == notification
+    )
