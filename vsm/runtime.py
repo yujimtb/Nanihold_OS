@@ -203,10 +203,13 @@ def bootstrap(config_path: Path, *, require_active_route: bool = True) -> Runtim
             transport_timeout_seconds=(production_config.transport_timeout_seconds),
             preflight_expectation={
                 "enabled": production_config.preflight_enabled,
-                "cli_version_file": (
+                "cli_version_files": (
                     None
-                    if production_config.preflight_cli_version_file is None
-                    else str(production_config.preflight_cli_version_file)
+                    if production_config.preflight_cli_version_files is None
+                    else {
+                        adapter: str(path)
+                        for adapter, path in production_config.preflight_cli_version_files.items()
+                    }
                 ),
                 "cache_path": (
                     None

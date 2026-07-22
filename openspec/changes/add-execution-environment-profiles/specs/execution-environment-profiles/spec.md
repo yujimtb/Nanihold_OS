@@ -1,12 +1,12 @@
 ## ADDED Requirements
 
 ### Requirement: EEP-01 環境契約(EnvironmentContract)の定義
-システムは実行環境を、まず「何が満たされていればよいか」を宣言する **環境契約(EnvironmentContract)** として定義しなければならない(SHALL)。環境契約は満たすべき能力要件を宣言しなければならず(SHALL)、少なくとも次を含む: `supported_shells` による1つ以上のシェル種別の集合(いずれかに適合するOR要件。例: POSIX / PowerShell シェル)、要求エンドポイント疎通(例: `api.openai.com` 到達可能)、workspace 書き込み可能、最低メモリ、要求 sandbox モード(`supported_sandboxes`)、パス写像の論理名(例: `workspace-root`)、および版制約が必要な場合の最低要求 CLI バージョン(任意)。環境契約は機械非依存でポータブルでなければならない(SHALL)。環境契約は具体的な実行場所の名前(例: `windows-native` / `wsl-ubuntu`)を identity の要素として列挙してはならない(SHALL NOT)。環境契約に機械固有パス・CLI 実体パス等の機械固有情報を含めてはならない(SHALL NOT)。
+システムは実行環境を、まず「何が満たされていればよいか」を宣言する **環境契約(EnvironmentContract)** として定義しなければならない(SHALL)。環境契約は、全アダプタに共通する能力要件と、`adapters` に列挙した各アダプタの要件集合を宣言しなければならない(SHALL)。共通要件は `supported_shells` による1つ以上のシェル種別の集合(いずれかに適合するOR要件。例: POSIX / PowerShell シェル)、workspace 書き込み可能、最低メモリ、要求 sandbox モード(`supported_sandboxes`)、パス写像の論理名(例: `workspace-root`)を含まなければならない(SHALL)。各アダプタ要件は `required_endpoints` と任意の `minimum_cli_version` を含み、環境契約はそこに列挙された全アダプタをホストできることを宣言する(SHALL)。契約全体の要求エンドポイントはアダプタ要件の和集合として導出されなければならない(SHALL)。環境契約は機械非依存でポータブルでなければならない(SHALL)。環境契約は具体的な実行場所の名前(例: `windows-native` / `wsl-ubuntu`)を identity の要素として列挙してはならない(SHALL NOT)。環境契約に機械固有パス・CLI 実体パス等の機械固有情報を含めてはならない(SHALL NOT)。
 
 #### Scenario: 契約が能力要件で表される
 - **GIVEN** ある WorkItem の実行に必要な環境
 - **WHEN** その環境契約を確認する
-- **THEN** 1つ以上のシェル種別の集合(OR適合)・エンドポイント疎通・workspace 書き込み可・最低メモリ・要求 sandbox モード・パス論理名といった能力要件で表され、具体的実行場所の名前や機械固有パスは含まれない
+- **THEN** 共通能力要件と、codex-cli / claude-code 等の各アダプタの endpoint・最低CLI版からなる要件集合で表され、具体的実行場所の名前や機械固有パスは含まれない
 
 #### Scenario: 同一契約は別実体へ持ち運べる
 - **GIVEN** ある機械で定義された環境契約
@@ -66,7 +66,7 @@
 - **THEN** `localhost` が `host.docker.internal` 等の環境別表現へ書き換えられる
 
 ### Requirement: EEP-06 Preflight = 契約適合テストによる fail-fast
-システムは preflight を、環境実体が環境契約に適合するかを実測で確かめる **契約適合テスト** として実行しなければならない(SHALL)。preflight は codex を 1 回試走させ、生成された rollout の `sandbox_policy` を環境契約の `supported_sandboxes` および要求モードと突き合わせ、あわせて契約が要求する他の能力(エンドポイント疎通・workspace 書き込み可・最低メモリ等)を実測しなければならない(SHALL)。契約に適合しない場合(例: 要求 workspace-write に対する rollout のサイレント read-only 降格)、システムは当該実体での実行を拒否して fail-fast しなければならない(SHALL)。不適合を検知したまま本実行へ進んではならない(SHALL NOT)。契約に合格した実体は instance fingerprint 付きで Operational Ledger に記録されなければならない(SHALL)。
+システムは preflight を、環境実体が環境契約に適合するかを実測で確かめる **契約適合テスト** として実行しなければならない(SHALL)。preflight は dispatch 対象の candidate の adapter を選択し、そのアダプタを 1 回試走させ、生成された rollout の `sandbox_policy` を環境契約の `supported_sandboxes` および要求モードと突き合わせ、あわせて共通能力と対象アダプタ要件の endpoint 疎通・workspace 書き込み可・最低メモリ等を実測しなければならない(SHALL)。契約に適合しない場合(例: 要求 workspace-write に対する rollout のサイレント read-only 降格)、システムは当該実体での実行を拒否して fail-fast しなければならない(SHALL)。不適合を検知したまま本実行へ進んではならない(SHALL NOT)。契約に合格した実体は instance fingerprint 付きで Operational Ledger に記録されなければならない(SHALL)。契約に宣言されていない adapter の dispatch は契約違反として拒否しなければならない(SHALL)。
 
 #### Scenario: 契約適合なら実行を継続する
 - **GIVEN** 契約が workspace-write を要求し、preflight 試走の rollout も `sandbox_policy = workspace-write` で他の能力要件も満たす
@@ -105,10 +105,10 @@
 - **THEN** docker 実体と Mac 側実体を、同一契約に適合する新実体として追加する
 
 ### Requirement: EEP-09 dispatch 時バージョン検証と preflight キャッシュ
-システムは PilotHost に、タスク dispatch 直前に毎回、CLI(codex-cli / claude-code)の実バージョンを **決定論的に**(バイナリ/パッケージのバージョンファイル参照 + mtime 比較で、プロセス起動を伴わずコストほぼゼロで)読み取らせなければならない(SHALL)。PilotHost は検証タプル(CLI バージョン × sandbox モード × `environment_fingerprint`)を保持し、dispatch 時のタプルが前回検証済みタプルと一致する場合は preflight をスキップ(キャッシュヒット)しなければならない(SHALL)。タプルが不一致(キャッシュミス)の場合、システムはその場で preflight 試走(EEP-06 の契約適合テスト)を行い、あわせて追従して安全な宣言メタデータ(RouteSnapshot 候補の最低要求版メモ等)の自動更新(FAV-06)を行ってから本実行へ進まなければならない(SHALL)。検証結果キャッシュは Ledger または PilotHost ローカルに永続化され、再起動を跨いで有効でなければならない(SHALL)。preflight 試走はキャッシュミス時に限られ、変化が無い間の dispatch でプロセス起動を伴う試走を繰り返してはならない(SHALL NOT)。キャッシュミス時の preflight が失敗した場合、宣言を書き換えて通すことはせず(FAV-06 参照)fail-fast しなければならない(SHALL)。
+システムは PilotHost に、タスク dispatch 直前に毎回、dispatch 対象の adapter (codex-cli / claude-code 等)の実バージョンを **決定論的に**(バイナリ/パッケージのバージョンファイル参照 + mtime 比較で、プロセス起動を伴わずコストほぼゼロで)読み取らせなければならない(SHALL)。PilotHost は adapter を含む検証タプル(adapter × CLI バージョン × sandbox モード × `environment_fingerprint`)を保持し、dispatch 時のタプルが前回検証済みタプルと一致する場合は preflight をスキップ(キャッシュヒット)しなければならない(SHALL)。タプルが不一致(キャッシュミス)の場合、システムはその adapter の要件(対象 endpoint と最低CLI版)を用いて preflight 試走(EEP-06 の契約適合テスト)を行い、あわせて追従して安全な宣言メタデータ(RouteSnapshot 候補の最低要求版メモ等)の自動更新(FAV-06)を行ってから本実行へ進まなければならない(SHALL)。検証結果キャッシュは Ledger または PilotHost ローカルに永続化され、再起動を跨いで有効でなければならない(SHALL)。preflight 試走はキャッシュミス時に限られ、変化が無い間の dispatch でプロセス起動を伴う試走を繰り返してはならない(SHALL NOT)。キャッシュミス時の preflight が失敗した場合、宣言を書き換えて通すことはせず(FAV-06 参照)fail-fast しなければならない(SHALL)。
 
 #### Scenario: 変化が無ければ preflight をスキップする
-- **GIVEN** 前回検証済みタプル(CLI バージョン × sandbox モード × `environment_fingerprint`)と一致する状態で新しいタスクを dispatch する
+- **GIVEN** 前回検証済みタプル(adapter × CLI バージョン × sandbox モード × `environment_fingerprint`)と一致する状態で新しいタスクを dispatch する
 - **WHEN** PilotHost が dispatch 直前にバージョンファイルを mtime 比較で決定論的に読み、タプルを突き合わせる
 - **THEN** キャッシュヒットとして preflight 試走をスキップし、プロセス起動を伴う試走を行わずに本実行へ進む
 
@@ -118,7 +118,7 @@
 - **THEN** キャッシュミスとして、その場で preflight 試走(契約適合テスト)と宣言メタデータの自動更新(FAV-06)を行ってから本実行へ進み、検証結果を新タプルでキャッシュに永続化する
 
 #### Scenario: キャッシュは再起動を跨いで有効
-- **GIVEN** 検証済みタプルが Ledger または PilotHost ローカルに永続化されている
+- **GIVEN** 対象 adapter を含む検証済みタプルが Ledger または PilotHost ローカルに永続化されている
 - **WHEN** PilotHost を再起動し、変化の無い状態で最初の dispatch を行う
 - **THEN** 永続化キャッシュがヒットし、再起動を理由とした余分な preflight 試走は行われない
 

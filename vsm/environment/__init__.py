@@ -23,6 +23,7 @@ from .artifacts import (
     serialize_environment_contract_artifact,
 )
 from .contracts import (
+    AdapterRequirement,
     ENVIRONMENT_FINGERPRINT_PREFIX,
     EnvironmentContract,
     EnvironmentModel,
@@ -32,6 +33,7 @@ from .contracts import (
 
 __all__ = [
     "ApprovalTargetKind",
+    "AdapterRequirement",
     "ENVIRONMENT_FINGERPRINT_PREFIX",
     "EnvironmentContract",
     "EnvironmentContractArtifact",

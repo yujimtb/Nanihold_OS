@@ -2,11 +2,11 @@
 
 ## Track A. 環境契約 / 環境実体の 2 層定義
 
-- [x] A1 環境契約(EnvironmentContract)スキーマを定義する(能力要件 / `supported_sandboxes` / 最低要求 CLI バージョン(任意) / パス論理名。具体名列挙なし)
+- [x] A1 環境契約(EnvironmentContract)スキーマを定義する(共通能力要件 / `adapters` 内のアダプタ別 endpoint・最低CLI版 / `supported_sandboxes` / パス論理名。具体名列挙なし)
   - Spec: EEP-01 / 受け入れ: 能力要件で表され機械固有情報・実行場所名を含まないことの確認
 - [x] A2 環境実体(EnvironmentInstance)スキーマを定義する(論理名→機械固有パス / CLI 実体パス / `CODEX_HOME`)
   - Spec: EEP-03 / 受け入れ: 実体識別情報が identity ハッシュに含まれないことの確認
-- [x] A3 `environment_fingerprint` を環境契約の正規化ハッシュとして定義する
+- [x] A3 `environment_fingerprint` を環境契約の正規化ハッシュとして定義する(アダプタmapキー・内部tuple順序を正規化)
   - Spec: EEP-02 / 受け入れ: 実体変更で fingerprint 不変
 
 ## Track B. 環境契約アーティファクトの保管
@@ -30,7 +30,7 @@
 
 ## Track D. Preflight = 契約適合テスト(中核)
 
-- [x] D1 codex を 1 回試走させ rollout の `sandbox_policy` と契約の他能力要件を実測する
+- [x] D1 dispatch 対象アダプタを 1 回試走させ rollout の `sandbox_policy` と共通/対象アダプタ要件を実測する
   - Spec: EEP-06 / 受け入れ: 契約適合の実測
 - [x] D2 契約に不適合(サイレント降格等)で当該実体の実行を拒否・fail-fast し、合格実体を instance fingerprint 付きで Operational Ledger に記録する
   - Track B の fail-fast・証拠生成と Track C の `EnvironmentInstanceService.preflight_evidence_hook()` を接続済み。
@@ -40,7 +40,7 @@
 
 - [x] Db1 dispatch 直前に CLI 実バージョンを決定論的に読む(バージョンファイル + mtime 比較、プロセス起動なし)
   - Spec: EEP-09 / 受け入れ: プロセス起動を伴わない読み取り
-- [x] Db2 検証タプル(CLI バージョン × sandbox モード × `environment_fingerprint`)一致で preflight をスキップする
+- [x] Db2 検証タプル(adapter × CLI バージョン × sandbox モード × `environment_fingerprint`)一致で対象アダプタの preflight をスキップする
   - Spec: EEP-09 / 受け入れ: キャッシュヒットで試走スキップ
 - [x] Db3 タプル不一致で preflight 試走 + 宣言メタデータ自動更新(FAV-06)を行ってから実行する
   - Spec: EEP-09 / 受け入れ: キャッシュミスで試走 + 自動更新
@@ -82,4 +82,4 @@
 
 ## Track H. 検証
 
-- [ ] H1 `openspec validate add-execution-environment-profiles --strict` を通す
+- [x] H1 `openspec validate add-execution-environment-profiles --strict` を通す

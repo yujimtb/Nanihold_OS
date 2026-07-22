@@ -31,12 +31,21 @@ def _write_version(path: Path, version: str, *, mtime_ns: int | None = None) -> 
 
 CONTRACT = EnvironmentContract(
     supported_shells=("posix",),
-    required_endpoints=("api.openai.com",),
     workspace_writable=True,
     minimum_memory_mb=1,
     supported_sandboxes=("workspace-write", "read-only"),
     required_sandbox="workspace-write",
     path_mapping_names=("workspace-root",),
+    adapters={
+        "codex-cli": {
+            "required_endpoints": ("api.openai.com",),
+            "minimum_cli_version": "0.144.5",
+        },
+        "claude-code": {
+            "required_endpoints": ("api.anthropic.com",),
+            "minimum_cli_version": "2.1.215",
+        },
+    },
 )
 CONTRACT_FINGERPRINT = environment_fingerprint(CONTRACT)
 
@@ -46,12 +55,13 @@ def _observation(
     sandbox_policy: str = "workspace-write",
     workspace_writable: bool = True,
     shell: str = "posix",
+    endpoint: str = "api.openai.com",
     rollout_ref: str | None = None,
 ) -> dict[str, object]:
     return {
         "sandbox_policy": sandbox_policy,
         "workspace_writable": workspace_writable,
-        "endpoint_reachable": ["api.openai.com"],
+        "endpoint_reachable": [endpoint],
         "memory_bytes": 2 * 1024 * 1024,
         "shell": shell,
         "path_mappings": ["workspace-root"],
@@ -73,13 +83,22 @@ def _gate(
     version_file.parent.mkdir(parents=True, exist_ok=True)
     if not version_file.exists():
         _write_version(version_file, version)
+    claude_version_file = tmp_path / "node_modules" / "claude" / "package.json"
+    claude_version_file.parent.mkdir(parents=True, exist_ok=True)
+    if not claude_version_file.exists():
+        _write_version(claude_version_file, "2.1.215")
     return PreflightGate(
         contract=contract,
         instance_fingerprint="instance:test",
-        version_reader=CliVersionReader(version_file),
+        version_readers={
+            "codex-cli": CliVersionReader(version_file),
+            "claude-code": CliVersionReader(claude_version_file),
+        },
         cache_path=tmp_path / "state" / "preflight.json",
-        preflight_runner=runner,
-        candidate_declaration=declaration,
+        preflight_runners={"codex-cli": runner, "claude-code": runner},
+        candidate_declarations=(
+            None if declaration is None else {"codex-cli": declaration}
+        ),
         declaration_event_hook=event_hook,
         evidence_hook=evidence_hook,
         clock=lambda: datetime(2026, 7, 21, 12, 0, tzinfo=UTC),
@@ -93,7 +112,7 @@ def test_preflight_rejects_powershell_for_posix_only_contract(tmp_path: Path):
     )
 
     with pytest.raises(PreflightContractError, match="required shell capability"):
-        gate.dispatch_preflight()
+        gate.dispatch_preflight("codex-cli")
 
 
 def test_preflight_accepts_any_supported_shell(tmp_path: Path):
@@ -104,7 +123,61 @@ def test_preflight_accepts_any_supported_shell(tmp_path: Path):
         runner=lambda _value: _observation(shell="powershell"),
     )
 
-    assert gate.dispatch_preflight().cache_hit is False
+    assert gate.dispatch_preflight("codex-cli").cache_hit is False
+
+
+def test_preflight_validates_target_adapter_requirement(tmp_path: Path):
+    gate, _ = _gate(
+        tmp_path,
+        runner=lambda value: _observation(
+            endpoint="api.anthropic.com"
+            if value.adapter == "claude-code"
+            else "api.openai.com"
+        ),
+    )
+
+    result = gate.dispatch_preflight("claude-code")
+
+    assert result.cache_hit is False
+    assert result.evidence.verification_tuple.adapter == "claude-code"
+
+
+def test_preflight_rejects_target_adapter_endpoint_and_version(tmp_path: Path):
+    gate, _ = _gate(
+        tmp_path,
+        runner=lambda _value: _observation(),
+    )
+
+    with pytest.raises(PreflightContractError, match="required endpoints"):
+        gate.dispatch_preflight("claude-code")
+
+    low_version_gate, _ = _gate(
+        tmp_path / "low-version",
+        runner=lambda value: _observation(
+            endpoint="api.anthropic.com" if value.adapter == "claude-code" else "api.openai.com"
+        ),
+        contract=EnvironmentContract.model_validate(
+            {
+                **CONTRACT.model_dump(),
+                "adapters": {
+                    **CONTRACT.model_dump()["adapters"],
+                    "claude-code": {
+                        "required_endpoints": ("api.anthropic.com",),
+                        "minimum_cli_version": "2.1.216",
+                    },
+                },
+            }
+        ),
+    )
+    with pytest.raises(PreflightContractError, match="below the contract minimum"):
+        low_version_gate.dispatch_preflight("claude-code")
+
+
+def test_preflight_rejects_undeclared_adapter_fail_closed(tmp_path: Path):
+    gate, _ = _gate(tmp_path, runner=lambda _value: _observation())
+
+    with pytest.raises(PreflightContractError, match="not declared"):
+        gate.dispatch_preflight("future-cli")
 
 
 def test_変化なしはキャッシュヒットして試走をスキップ(tmp_path: Path):
@@ -115,13 +188,13 @@ def test_変化なしはキャッシュヒットして試走をスキップ(tmp_
         return _observation(rollout_ref="rollout:test:1")
 
     gate, _ = _gate(tmp_path, runner=runner)
-    assert gate.dispatch_preflight().cache_hit is False
+    assert gate.dispatch_preflight("codex-cli").cache_hit is False
 
     def should_not_run(_value):
         raise AssertionError("cache hit must not run Codex preflight")
 
     second, _ = _gate(tmp_path, runner=should_not_run)
-    result = second.dispatch_preflight()
+    result = second.dispatch_preflight("codex-cli")
     assert result.cache_hit is True
     assert len(calls) == 1
 
@@ -143,11 +216,11 @@ def test_cli更新は最初のdispatchで試走し自動更新して新タプル
         declaration=declaration,
         event_hook=events.append,
     )
-    gate.dispatch_preflight()
+    gate.dispatch_preflight("codex-cli")
     old_mtime = version_file.stat().st_mtime_ns
     _write_version(version_file, "0.146.0", mtime_ns=old_mtime + 1_000_000)
 
-    result = gate.dispatch_preflight()
+    result = gate.dispatch_preflight("codex-cli")
     assert result.cache_hit is False
     assert calls == ["0.145.0", "0.146.0"]
     assert declaration["adapter_version"] == "0.146.0"
@@ -169,12 +242,12 @@ def test_cacheはオブジェクト再生成後も有効(tmp_path: Path):
         return _observation()
 
     first, _ = _gate(tmp_path, runner=runner)
-    first.dispatch_preflight()
+    first.dispatch_preflight("codex-cli")
     second, _ = _gate(
         tmp_path,
         runner=lambda _value: pytest.fail("restart must reuse durable cache"),
     )
-    assert second.dispatch_preflight().cache_hit is True
+    assert second.dispatch_preflight("codex-cli").cache_hit is True
     assert calls == 1
 
 
@@ -190,7 +263,7 @@ def test_preflight失敗はfail_fastで宣言と自動更新を変更しない(t
         event_hook=events.append,
     )
     with pytest.raises(PreflightContractError):
-        gate.dispatch_preflight()
+        gate.dispatch_preflight("codex-cli")
     assert declaration == {"adapter_version": "0.145.0"}
     assert events == []
     assert not (tmp_path / "state" / "preflight.json").exists()
@@ -221,7 +294,7 @@ data_space_id = "space:kernel"
 
 [production_pilot_host]
 preflight_enabled = true
-preflight_cli_version_file = "/kernel/codex/package.json"
+preflight_cli_version_files = { codex-cli = "/kernel/codex/package.json", claude-code = "/kernel/claude/package.json" }
 preflight_cache_path = "/kernel/preflight.json"
 preflight_instance_fingerprint = "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
 """,
@@ -233,7 +306,10 @@ preflight_instance_fingerprint = "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
         raw_config={
             "enabled": False,
             "kernel_config_path": str(kernel_path),
-            "cli_version_file": "/fallback/package.json",
+            "cli_version_files": {
+                "codex-cli": "/fallback/codex/package.json",
+                "claude-code": "/fallback/claude/package.json",
+            },
             "cache_path": "/fallback/preflight.json",
             "instance_fingerprint": "f" * 64,
         },
@@ -241,7 +317,10 @@ preflight_instance_fingerprint = "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
 
     assert source_path == kernel_path
     assert effective["enabled"] is True
-    assert effective["cli_version_file"] == "/kernel/codex/package.json"
+    assert effective["cli_version_files"] == {
+        "codex-cli": "/kernel/codex/package.json",
+        "claude-code": "/kernel/claude/package.json",
+    }
     assert effective["cache_path"] == "/kernel/preflight.json"
     assert effective["instance_fingerprint"] == "k" * 64
 
@@ -256,7 +335,7 @@ def test候補宣言更新フックは決定論的な監査イベントを生成
     )
     # The direct updater API is exercised independently of the gate's default
     # updater so callers can choose either injection surface.
-    evidence = gate.dispatch_preflight().evidence
+    evidence = gate.dispatch_preflight("codex-cli").evidence
     event = updater(evidence)
     assert declaration["adapter_version"] == "0.145.0"
     assert event.field == "candidate.adapter_version"
@@ -342,7 +421,10 @@ def test_production_pilot_hostはdispatch直前にpreflightをゲートする(
     version_file.write_text(json.dumps({"version": "0.146.0"}), encoding="utf-8")
     config["preflight"] = {
         "enabled": True,
-        "cli_version_file": str(version_file),
+        "cli_version_files": {
+            "codex-cli": str(version_file),
+            "claude-code": str(tmp_path / "claude-package.json"),
+        },
         "cache_path": str(tmp_path / "preflight.json"),
         "instance_fingerprint": "c" * 64,
         "environment_contract": CONTRACT.model_dump(mode="json"),

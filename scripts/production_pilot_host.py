@@ -46,6 +46,7 @@ from vsm.preflight import (
     PreflightGate,
     PreflightObservation,
     PreflightRunner,
+    PreflightContractError,
     PreflightError,
     VerificationTuple,
     CliVersionReader,
@@ -736,6 +737,71 @@ class ClaudeAdapter:
         self.timeout_seconds = _positive_number(
             data["timeout_seconds"], "Claude timeout"
         )
+
+    def run_preflight(self, verification_tuple: VerificationTuple) -> PreflightObservation:
+        """Run one non-mutating Claude Code trial for environment verification."""
+
+        if verification_tuple.adapter != self.candidate.adapter:
+            raise PreflightError("Claude preflight received a different adapter")
+        permission_flag = {
+            "sandboxed_bypass": "bypassPermissions",
+            "managed_permissions": "auto",
+            "observe_only": "plan",
+        }[self.permission_mode]
+        argv = [
+            self.executable,
+            "-p",
+            "--output-format",
+            "json",
+            "--permission-mode",
+            permission_flag,
+            "--tools",
+            "",
+            "--disable-slash-commands",
+            "--no-chrome",
+            "--strict-mcp-config",
+            "--mcp-config",
+            self.mcp.claude_json(),
+            "--allowedTools",
+            "",
+            "--max-budget-usd",
+            str(self.max_budget_usd),
+        ]
+        completed = subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+            input=(
+                "Nanihold execution-environment preflight. Do not modify the "
+                "workspace. Return a short acknowledgement only."
+            ),
+            timeout=self.timeout_seconds,
+            shell=False,
+            cwd=self.working_directory,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if completed.returncode != 0:
+            raise PreflightError("Claude preflight trial exited unsuccessfully")
+        try:
+            result = json.loads(completed.stdout)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise PreflightError("Claude preflight returned invalid JSON") from exc
+        if not isinstance(result, dict):
+            raise PreflightError("Claude preflight returned a non-object response")
+        sandbox_policy = (
+            "workspace-write"
+            if self.permission_mode == "sandboxed_bypass"
+            else "read-only"
+        )
+        return PreflightObservation(
+            sandbox_policy=sandbox_policy,
+            capabilities={
+                "workspace_writable": sandbox_policy == "workspace-write",
+            },
+            rollout_ref=None,
+        )
+
     def invoke(
         self,
         endpoint: str,
@@ -1712,7 +1778,7 @@ def _load_kernel_preflight(path: Path) -> dict[str, object]:
     if isinstance(data_space, Mapping) and "data_space_id" in data_space:
         settings["data_space_id"] = data_space["data_space_id"]
     for kernel_name, preflight_name in (
-        ("preflight_cli_version_file", "cli_version_file"),
+        ("preflight_cli_version_files", "cli_version_files"),
         ("preflight_cache_path", "cache_path"),
         ("preflight_instance_fingerprint", "instance_fingerprint"),
     ):
@@ -1736,7 +1802,7 @@ def _effective_preflight_config(
         {"enabled"},
         "preflight config",
         optional_fields={
-            "cli_version_file",
+            "cli_version_files",
             "cache_path",
             "environment_contract",
             "environment_contract_artifact",
@@ -1878,19 +1944,24 @@ def _instance_preflight_runner(
     *,
     instance: EnvironmentInstance,
     contract: EnvironmentContract,
-    codex_runner: PreflightRunner,
+    adapter_runner: PreflightRunner,
 ) -> PreflightRunner:
     def run(verification_tuple: VerificationTuple) -> PreflightObservation:
-        raw = codex_runner(verification_tuple)
+        raw = adapter_runner(verification_tuple)
         if isinstance(raw, PreflightObservation):
             observation = raw
         elif isinstance(raw, Mapping):
             observation = PreflightObservation.from_mapping(raw)
         else:
-            raise PreflightError("Codex preflight returned invalid evidence")
+            raise PreflightError("adapter preflight returned invalid evidence")
         capabilities = dict(observation.capabilities)
         endpoint_reachable: dict[str, bool] = {}
-        for endpoint in contract.required_endpoints:
+        requirement = contract.adapters.get(verification_tuple.adapter)
+        if requirement is None:
+            raise PreflightContractError(
+                "preflight adapter is not declared by the environment contract"
+            )
+        for endpoint in requirement.required_endpoints:
             try:
                 with socket.create_connection((endpoint, 443), timeout=5):
                     endpoint_reachable[endpoint] = True
@@ -2010,7 +2081,7 @@ class ProductionPilotHost:
         self._environment_ledger: LetheOperationalLedger | None = None
         self._preflight_status: dict[str, object] = {
             "enabled": False,
-            "cli_version_file": None,
+            "cli_version_files": None,
             "cache_path": None,
             "instance_fingerprint": None,
             "environment_fingerprint": None,
@@ -2046,10 +2117,16 @@ class ProductionPilotHost:
         if not config["enabled"]:
             self._preflight_status["enabled"] = False
             return None
-        cli_version_file = _config_path(
-            source_path,
-            _nonblank(config["cli_version_file"], "preflight CLI version file"),
-        )
+        raw_version_files = config.get("cli_version_files")
+        if not isinstance(raw_version_files, Mapping) or not raw_version_files:
+            raise RuntimeError("preflight CLI version files must be an object")
+        cli_version_files = {
+            adapter: _config_path(
+                source_path,
+                _nonblank(path, f"preflight CLI version file for {adapter}"),
+            )
+            for adapter, path in raw_version_files.items()
+        }
         cache_path = _config_path(
             source_path,
             _nonblank(config["cache_path"], "preflight cache path"),
@@ -2081,21 +2158,33 @@ class ProductionPilotHost:
             raise RuntimeError(
                 "preflight requires environment_contract or a local contract artifact"
             )
+        missing_version_files = sorted(set(contract.adapters) - set(cli_version_files))
+        if missing_version_files:
+            raise RuntimeError(
+                "preflight CLI version files are missing adapters: "
+                + ", ".join(missing_version_files)
+            )
         contract_fingerprint = environment_fingerprint(contract)
         self._preflight_status = {
             "enabled": True,
-            "cli_version_file": str(cli_version_file),
+            "cli_version_files": {
+                adapter: str(path) for adapter, path in cli_version_files.items()
+            },
             "cache_path": str(cache_path),
             "instance_fingerprint": instance_fingerprint,
             "environment_fingerprint": contract_fingerprint,
         }
-        if contract_fingerprint != self.codex.candidate.environment_fingerprint:
-            raise RuntimeError(
-                "preflight environment fingerprint differs from the Codex candidate"
-            )
-        declaration = document["codex"]["candidate"]
-        if not isinstance(declaration, dict):
-            raise RuntimeError("Codex candidate declaration must be an object")
+        declarations = {
+            "claude-code": document["claude"]["candidate"],
+            "codex-cli": document["codex"]["candidate"],
+        }
+        for adapter, declaration in declarations.items():
+            if not isinstance(declaration, dict):
+                raise RuntimeError(f"{adapter} candidate declaration must be an object")
+            if declaration.get("environment_fingerprint") != contract_fingerprint:
+                raise RuntimeError(
+                    f"preflight environment fingerprint differs from the {adapter} candidate"
+                )
 
         def record_event(event: DeclarationUpdateEvent) -> None:
             self.preflight_update_events.append(event)
@@ -2167,20 +2256,32 @@ class ProductionPilotHost:
                     instance.instance_id,
                     idempotency_key_prefix="environment:preflight:verify",
                 )
-        runner = preflight_runner or self.codex.run_preflight
+        runners: dict[str, PreflightRunner] = {
+            adapter: preflight_runner
+            for adapter in contract.adapters
+        } if preflight_runner is not None else {
+            "claude-code": self.claude.run_preflight,
+            "codex-cli": self.codex.run_preflight,
+        }
         if instance is not None and preflight_runner is None:
-            runner = _instance_preflight_runner(
-                instance=instance,
-                contract=contract,
-                codex_runner=runner,
-            )
+            runners = {
+                adapter: _instance_preflight_runner(
+                    instance=instance,
+                    contract=contract,
+                    adapter_runner=runner,
+                )
+                for adapter, runner in runners.items()
+            }
         return PreflightGate(
             contract=contract,
             instance_fingerprint=instance_fingerprint,
-            version_reader=CliVersionReader(cli_version_file),
+            version_readers={
+                adapter: CliVersionReader(path)
+                for adapter, path in cli_version_files.items()
+            },
             cache_path=cache_path,
-            preflight_runner=runner,
-            candidate_declaration=declaration,
+            preflight_runners=runners,
+            candidate_declarations=declarations,
             declaration_event_hook=record_event,
             declaration_persist_hook=lambda: _atomic_write_json(config_path, document),
             evidence_hook=record_evidence,
@@ -2280,15 +2381,15 @@ class ProductionPilotHost:
                     "Windows workspace-write execution requires a successful "
                     "EnvironmentContract preflight"
                 )
-            if self.preflight is not None:
-                try:
-                    self.preflight.dispatch_preflight()
-                except PreflightError as exc:
-                    raise ContractError(
-                        f"preflight rejected the execution: {exc}"
-                    ) from exc
         else:
             self.claude.validate_request(request)
+        if self.preflight is not None:
+            try:
+                self.preflight.dispatch_preflight(request.candidate.adapter)
+            except PreflightError as exc:
+                raise ContractError(
+                    f"preflight rejected the execution: {exc}"
+                ) from exc
 
         request_digest = _request_sha256(request)
         receipt, created = self.receipts.begin(

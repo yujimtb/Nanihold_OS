@@ -17,7 +17,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from vsm.environment import EnvironmentContract, environment_fingerprint
+from vsm.environment import (
+    AdapterRequirement,
+    EnvironmentContract,
+    environment_fingerprint,
+)
 
 
 class PreflightError(RuntimeError):
@@ -99,6 +103,7 @@ class CliVersionReader:
 
 @dataclass(frozen=True)
 class VerificationTuple:
+    adapter: str
     cli_version: str
     sandbox_mode: str
     environment_fingerprint: str
@@ -106,7 +111,7 @@ class VerificationTuple:
 
 @dataclass(frozen=True)
 class PreflightObservation:
-    """Measured values returned by one injected Codex preflight trial."""
+    """Measured values returned by one injected adapter preflight trial."""
 
     sandbox_policy: str
     capabilities: Mapping[str, object]
@@ -177,6 +182,7 @@ class PreflightEvidence:
         if not isinstance(raw_tuple, Mapping):
             raise PreflightCacheError("preflight cache evidence has no verification tuple")
         verification_tuple = VerificationTuple(
+            adapter=_nonblank(raw_tuple.get("adapter"), "cached adapter"),
             cli_version=_nonblank(raw_tuple.get("cli_version"), "cached cli_version"),
             sandbox_mode=_nonblank(raw_tuple.get("sandbox_mode"), "cached sandbox_mode"),
             environment_fingerprint=_nonblank(
@@ -261,7 +267,7 @@ def candidate_metadata_updater(
             from_value=old_value,
             to_value=evidence.verification_tuple.cli_version,
             source="dispatch_preflight",
-            reason="cli_version_file_changed",
+            reason="cli_version_changed",
         )
         changed = old_value != evidence.verification_tuple.cli_version
         if changed and persist_hook is not None:
@@ -281,18 +287,20 @@ def candidate_metadata_updater(
 class PreflightGate:
     """Dispatch-time version gate, preflight runner, and durable cache."""
 
-    CACHE_SCHEMA_VERSION = 1
+    CACHE_SCHEMA_VERSION = 2
 
     def __init__(
         self,
         *,
         contract: EnvironmentContract,
         instance_fingerprint: str,
-        version_reader: CliVersionReader,
+        version_readers: Mapping[str, CliVersionReader],
         cache_path: Path,
-        preflight_runner: PreflightRunner,
-        declaration_updater: Callable[[PreflightEvidence], object] | None = None,
-        candidate_declaration: MutableMapping[str, object] | None = None,
+        preflight_runners: Mapping[str, PreflightRunner],
+        declaration_updaters: Mapping[
+            str, Callable[[PreflightEvidence], object]
+        ] | None = None,
+        candidate_declarations: Mapping[str, MutableMapping[str, object]] | None = None,
         declaration_event_hook: Callable[[DeclarationUpdateEvent], object] | None = None,
         declaration_persist_hook: Callable[[], object] | None = None,
         evidence_hook: Callable[[PreflightEvidence], object] | None = None,
@@ -302,32 +310,60 @@ class PreflightGate:
             raise TypeError("contract must be an EnvironmentContract")
         self.contract = contract
         self.instance_fingerprint = _nonblank(instance_fingerprint, "instance_fingerprint")
-        self.version_reader = version_reader
+        if not isinstance(version_readers, Mapping) or not version_readers:
+            raise ValueError("version_readers must be a non-empty mapping")
+        if not isinstance(preflight_runners, Mapping) or not preflight_runners:
+            raise ValueError("preflight_runners must be a non-empty mapping")
+        self.version_readers = dict(version_readers)
+        self.preflight_runners = dict(preflight_runners)
         self.cache_path = cache_path
-        self.preflight_runner = preflight_runner
         self._lock = threading.RLock()
-        if declaration_updater is not None and candidate_declaration is not None:
-            raise ValueError("provide declaration_updater or candidate_declaration, not both")
-        self.declaration_updater = declaration_updater
-        if candidate_declaration is not None:
-            self.declaration_updater = candidate_metadata_updater(
-                candidate_declaration,
-                event_hook=declaration_event_hook,
-                persist_hook=declaration_persist_hook,
-            )
+        self.declaration_updaters = dict(declaration_updaters or {})
+        if candidate_declarations is not None:
+            if self.declaration_updaters:
+                raise ValueError(
+                    "provide declaration_updaters or candidate_declarations, not both"
+                )
+            self.declaration_updaters = {
+                adapter: candidate_metadata_updater(
+                    declaration,
+                    event_hook=declaration_event_hook,
+                    persist_hook=declaration_persist_hook,
+                )
+                for adapter, declaration in candidate_declarations.items()
+            }
         self.evidence_hook = evidence_hook
         self.clock = clock or (lambda: datetime.now(UTC))
 
-    def dispatch_preflight(self) -> PreflightResult:
+    def dispatch_preflight(self, adapter: str) -> PreflightResult:
         """Read the version and gate the next dispatch immediately before launch."""
 
         with self._lock:
-            return self._dispatch_preflight()
+            return self._dispatch_preflight(adapter)
 
-    def _dispatch_preflight(self) -> PreflightResult:
+    def _dispatch_preflight(self, adapter: str) -> PreflightResult:
+        if not isinstance(adapter, str) or not adapter.strip():
+            raise PreflightContractError("dispatch adapter must be a non-blank string")
+        adapter = adapter.strip()
+        requirement = self.contract.adapters.get(adapter)
+        if requirement is None:
+            raise PreflightContractError(
+                f"dispatch adapter is not declared by the environment contract: {adapter}"
+            )
+        version_reader = self.version_readers.get(adapter)
+        if version_reader is None:
+            raise PreflightContractError(
+                f"no CLI version reader is configured for adapter: {adapter}"
+            )
+        preflight_runner = self.preflight_runners.get(adapter)
+        if preflight_runner is None:
+            raise PreflightContractError(
+                f"no preflight runner is configured for adapter: {adapter}"
+            )
 
-        cli_version = self.version_reader.read()
+        cli_version = version_reader.read()
         verification_tuple = VerificationTuple(
+            adapter=adapter,
             cli_version=cli_version.version,
             sandbox_mode=self.contract.required_sandbox.value,
             environment_fingerprint=environment_fingerprint(self.contract),
@@ -337,7 +373,7 @@ class PreflightGate:
             return PreflightResult(evidence=cached, cache_hit=True)
 
         try:
-            raw_observation = self.preflight_runner(verification_tuple)
+            raw_observation = preflight_runner(verification_tuple)
         except PreflightError:
             raise
         except Exception as exc:
@@ -353,7 +389,7 @@ class PreflightGate:
             raise
         except Exception as exc:
             raise PreflightError("preflight trial returned invalid evidence") from exc
-        self._validate_observation(verification_tuple, observation)
+        self._validate_observation(verification_tuple, observation, requirement)
         checked_at = self.clock()
         if checked_at.tzinfo is None:
             raise PreflightError("preflight clock must return a timezone-aware datetime")
@@ -367,9 +403,10 @@ class PreflightGate:
             version_file=cli_version.version_file,
             version_file_mtime_ns=cli_version.version_file_mtime_ns,
         )
-        if self.declaration_updater is not None:
+        declaration_updater = self.declaration_updaters.get(adapter)
+        if declaration_updater is not None:
             try:
-                self.declaration_updater(evidence)
+                declaration_updater(evidence)
             except PreflightError:
                 raise
             except Exception as exc:
@@ -386,6 +423,7 @@ class PreflightGate:
         self,
         verification_tuple: VerificationTuple,
         observation: PreflightObservation,
+        requirement: AdapterRequirement,
     ) -> None:
         supported_sandboxes = {
             sandbox.value for sandbox in self.contract.supported_sandboxes
@@ -405,7 +443,7 @@ class PreflightGate:
         if isinstance(endpoint_values, Mapping):
             missing_endpoints = [
                 endpoint
-                for endpoint in self.contract.required_endpoints
+                for endpoint in requirement.required_endpoints
                 if endpoint_values.get(endpoint) is not True
             ]
         elif isinstance(endpoint_values, Sequence) and not isinstance(
@@ -414,11 +452,11 @@ class PreflightGate:
             reachable = set(endpoint_values)
             missing_endpoints = [
                 endpoint
-                for endpoint in self.contract.required_endpoints
+                for endpoint in requirement.required_endpoints
                 if endpoint not in reachable
             ]
         else:
-            missing_endpoints = list(self.contract.required_endpoints)
+            missing_endpoints = list(requirement.required_endpoints)
         if missing_endpoints:
             raise PreflightContractError(
                 "required endpoints were not measured as reachable: "
@@ -453,8 +491,8 @@ class PreflightGate:
                 "required path mappings were not measured: "
                 + ", ".join(missing_path_names)
             )
-        if self.contract.minimum_cli_version is not None and _compare_versions(
-            verification_tuple.cli_version, self.contract.minimum_cli_version
+        if requirement.minimum_cli_version is not None and _compare_versions(
+            verification_tuple.cli_version, requirement.minimum_cli_version
         ) < 0:
             raise PreflightContractError("CLI version is below the contract minimum")
 
@@ -543,7 +581,8 @@ def _same_verification_tuple(value: object, expected: VerificationTuple) -> bool
     if not isinstance(value, Mapping):
         return False
     return (
-        value.get("cli_version") == expected.cli_version
+        value.get("adapter") == expected.adapter
+        and value.get("cli_version") == expected.cli_version
         and value.get("sandbox_mode") == expected.sandbox_mode
         and value.get("environment_fingerprint") == expected.environment_fingerprint
     )

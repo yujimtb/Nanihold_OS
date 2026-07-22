@@ -29,13 +29,17 @@ NOW = datetime(2026, 7, 21, 12, 0, tzinfo=UTC)
 
 CONTRACT = EnvironmentContract(
     supported_shells=("posix",),
-    required_endpoints=("api.openai.com",),
     workspace_writable=True,
     minimum_memory_mb=1024,
     supported_sandboxes=("workspace-write",),
     required_sandbox="workspace-write",
     path_mapping_names=("workspace-root",),
-    minimum_cli_version="0.145.0",
+    adapters={
+        "codex-cli": {
+            "required_endpoints": ("api.openai.com",),
+            "minimum_cli_version": "0.145.0",
+        }
+    },
 )
 ENVIRONMENT_FINGERPRINT = environment_fingerprint(CONTRACT)
 
@@ -67,8 +71,9 @@ def service(
 
 def evidence(candidate: EnvironmentInstance) -> PreflightEvidence:
     return PreflightEvidence(
-        verification_tuple=VerificationTuple(
-            cli_version="0.145.0",
+            verification_tuple=VerificationTuple(
+                adapter="codex-cli",
+                cli_version="0.145.0",
             sandbox_mode="workspace-write",
             environment_fingerprint=ENVIRONMENT_FINGERPRINT,
         ),
@@ -191,16 +196,16 @@ def test_preflight_evidence_hook_verifies_instance_in_operational_ledger(
     gate = PreflightGate(
         contract=CONTRACT,
         instance_fingerprint=candidate.instance_fingerprint,
-        version_reader=CliVersionReader(version_file),
+        version_readers={"codex-cli": CliVersionReader(version_file)},
         cache_path=tmp_path / "preflight-cache.json",
-        preflight_runner=lambda _verification: {
+        preflight_runners={"codex-cli": lambda _verification: {
             "sandbox_policy": "workspace-write",
             "workspace_writable": True,
             "endpoint_reachable": ["api.openai.com"],
             "memory_bytes": 2 * 1024 * 1024 * 1024,
             "shell": "posix",
             "path_mappings": ["workspace-root"],
-        },
+        }},
         evidence_hook=lifecycle.preflight_evidence_hook(
             candidate.instance_id,
             idempotency_key_prefix="environment:preflight:verify",
@@ -208,7 +213,7 @@ def test_preflight_evidence_hook_verifies_instance_in_operational_ledger(
         clock=lambda: NOW,
     )
 
-    result = gate.dispatch_preflight()
+    result = gate.dispatch_preflight("codex-cli")
 
     assert result.cache_hit is False
     assert lifecycle.instances[candidate.instance_id].state is EnvironmentInstanceState.VERIFIED

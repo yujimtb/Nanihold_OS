@@ -149,7 +149,7 @@ class ProductionPilotHostRuntimeConfig(StrictConfig):
     max_parallelism: int = Field(gt=0, le=32)
     reorientation_max_tool_rounds: int = Field(gt=0, le=100)
     preflight_enabled: bool = False
-    preflight_cli_version_file: Path | None = None
+    preflight_cli_version_files: dict[str, Path] | None = None
     preflight_cache_path: Path | None = None
     preflight_instance_fingerprint: str | None = None
 
@@ -166,7 +166,7 @@ class ProductionPilotHostRuntimeConfig(StrictConfig):
     @model_validator(mode="after")
     def preflight_paths_are_explicit(self) -> "ProductionPilotHostRuntimeConfig":
         configured = (
-            self.preflight_cli_version_file,
+            self.preflight_cli_version_files,
             self.preflight_cache_path,
             self.preflight_instance_fingerprint,
         )
@@ -179,6 +179,11 @@ class ProductionPilotHostRuntimeConfig(StrictConfig):
             raise ValueError(
                 "production preflight paths require preflight_enabled=true"
             )
+        if (
+            self.preflight_cli_version_files is not None
+            and not self.preflight_cli_version_files
+        ):
+            raise ValueError("preflight_cli_version_files must not be empty")
         if (
             self.preflight_instance_fingerprint is not None
             and not self.preflight_instance_fingerprint.strip()

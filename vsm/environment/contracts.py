@@ -43,6 +43,76 @@ def _normalise_collection(value: Any) -> Any:
     return tuple(sorted(str(item).strip() for item in value))
 
 
+def _validate_endpoints(value: tuple[str, ...], owner: str) -> tuple[str, ...]:
+    result: list[str] = []
+    for endpoint in value:
+        if not endpoint:
+            raise ValueError(f"{owner} endpoints must not be blank")
+        if (
+            endpoint.startswith(("/", "~"))
+            or re.match(r"^[A-Za-z]:[\\/]", endpoint)
+            or any(token in endpoint for token in ("\\", "CODEX_HOME", "$HOME"))
+        ):
+            raise ValueError(f"{owner} endpoint contains host-specific data")
+        parsed = urlsplit(endpoint if "://" in endpoint else f"//{endpoint}")
+        host = parsed.hostname
+        if host is None:
+            raise ValueError(f"{owner} endpoint is invalid: {endpoint!r}")
+        lowered_host = host.lower()
+        if lowered_host in {
+            "localhost",
+            "host.docker.internal",
+            "ip6-localhost",
+        }:
+            raise ValueError(f"{owner} endpoints must not name a local host")
+        try:
+            ipaddress.ip_address(lowered_host)
+        except ValueError:
+            pass
+        else:
+            raise ValueError(f"{owner} endpoints must use portable DNS names")
+        result.append(endpoint.lower())
+    if len(result) != len(set(result)):
+        raise ValueError(f"{owner} required_endpoints must be unique")
+    return tuple(sorted(result))
+
+
+class AdapterRequirement(EnvironmentModel):
+    """Requirements contributed by one execution CLI adapter."""
+
+    required_endpoints: tuple[str, ...] = Field(min_length=1)
+    minimum_cli_version: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalise_collections_and_text(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        normalised = dict(value)
+        if "required_endpoints" in normalised:
+            normalised["required_endpoints"] = _normalise_collection(
+                normalised["required_endpoints"]
+            )
+        item = normalised.get("minimum_cli_version")
+        if isinstance(item, str):
+            normalised["minimum_cli_version"] = item.strip()
+        return normalised
+
+    @field_validator("required_endpoints")
+    @classmethod
+    def endpoints_are_portable(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _validate_endpoints(value, "AdapterRequirement")
+
+    @field_validator("minimum_cli_version")
+    @classmethod
+    def cli_version_is_a_version(cls, value: str | None) -> str | None:
+        if value is not None and not _CLI_VERSION.fullmatch(value):
+            raise ValueError(
+                "AdapterRequirement minimum_cli_version must be a version, not a path"
+            )
+        return value
+
+
 class EnvironmentContract(EnvironmentModel):
     """Machine-independent capabilities required from an execution environment.
 
@@ -52,13 +122,12 @@ class EnvironmentContract(EnvironmentModel):
     """
 
     supported_shells: tuple[str, ...] = Field(min_length=1)
-    required_endpoints: tuple[str, ...] = Field(min_length=1)
     workspace_writable: bool
     minimum_memory_mb: int = Field(gt=0)
     supported_sandboxes: tuple[SandboxMode, ...] = Field(min_length=1)
     required_sandbox: SandboxMode
     path_mapping_names: tuple[str, ...] = Field(min_length=1)
-    minimum_cli_version: str | None = None
+    adapters: Mapping[str, AdapterRequirement]
 
     @model_validator(mode="before")
     @classmethod
@@ -68,56 +137,16 @@ class EnvironmentContract(EnvironmentModel):
         normalised = dict(value)
         for field_name in (
             "supported_shells",
-            "required_endpoints",
             "supported_sandboxes",
             "path_mapping_names",
         ):
             if field_name in normalised:
                 normalised[field_name] = _normalise_collection(normalised[field_name])
-        for field_name in ("minimum_cli_version",):
-            item = normalised.get(field_name)
-            if isinstance(item, str):
-                normalised[field_name] = item.strip()
         for field_name in ("required_sandbox",):
             item = normalised.get(field_name)
             if isinstance(item, str):
                 normalised[field_name] = item.strip().lower()
         return normalised
-
-    @field_validator("required_endpoints")
-    @classmethod
-    def endpoints_are_portable(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(value) != len(set(value)):
-            raise ValueError("EnvironmentContract required_endpoints must be unique")
-        result: list[str] = []
-        for endpoint in value:
-            if not endpoint:
-                raise ValueError("EnvironmentContract endpoints must not be blank")
-            if (
-                endpoint.startswith(("/", "~"))
-                or re.match(r"^[A-Za-z]:[\\/]", endpoint)
-                or any(token in endpoint for token in ("\\", "CODEX_HOME", "$HOME"))
-            ):
-                raise ValueError("EnvironmentContract endpoint contains host-specific data")
-            parsed = urlsplit(endpoint if "://" in endpoint else f"//{endpoint}")
-            host = parsed.hostname
-            if host is None:
-                raise ValueError(f"EnvironmentContract endpoint is invalid: {endpoint!r}")
-            lowered_host = host.lower()
-            if lowered_host in {
-                "localhost",
-                "host.docker.internal",
-                "ip6-localhost",
-            }:
-                raise ValueError("EnvironmentContract endpoints must not name a local host")
-            try:
-                ipaddress.ip_address(lowered_host)
-            except ValueError:
-                pass
-            else:
-                raise ValueError("EnvironmentContract endpoints must use portable DNS names")
-            result.append(endpoint.lower())
-        return tuple(sorted(result))
 
     @field_validator("supported_shells")
     @classmethod
@@ -150,14 +179,24 @@ class EnvironmentContract(EnvironmentModel):
             )
         return tuple(sorted(value))
 
-    @field_validator("minimum_cli_version")
+    @field_validator("adapters")
     @classmethod
-    def cli_version_is_a_version(cls, value: str | None) -> str | None:
-        if value is not None and not _CLI_VERSION.fullmatch(value):
-            raise ValueError(
-                "EnvironmentContract minimum_cli_version must be a version, not a path"
-            )
-        return value
+    def adapters_are_named_and_non_empty(
+        cls, value: Mapping[str, AdapterRequirement]
+    ) -> dict[str, AdapterRequirement]:
+        if not value:
+            raise ValueError("EnvironmentContract adapters must not be empty")
+        normalized: dict[str, AdapterRequirement] = {}
+        for name, requirement in value.items():
+            if not isinstance(name, str) or not _LOGICAL_NAME.fullmatch(name.strip()):
+                raise ValueError(
+                    "EnvironmentContract adapter names must be logical names"
+                )
+            normalized_name = name.strip()
+            if normalized_name in normalized:
+                raise ValueError("EnvironmentContract adapter names must be unique")
+            normalized[normalized_name] = requirement
+        return dict(sorted(normalized.items()))
 
     @model_validator(mode="after")
     def required_sandbox_is_supported(self) -> "EnvironmentContract":
@@ -167,10 +206,29 @@ class EnvironmentContract(EnvironmentModel):
             )
         return self
 
+    @property
+    def required_endpoints(self) -> tuple[str, ...]:
+        """Return the union of all adapter endpoint requirements."""
+
+        return tuple(
+            sorted(
+                {
+                    endpoint
+                    for requirement in self.adapters.values()
+                    for endpoint in requirement.required_endpoints
+                }
+            )
+        )
+
     def canonical_document(self) -> dict[str, object]:
         """Return the normalized, machine-independent fingerprint document."""
 
-        return self.model_dump(mode="json")
+        document = self.model_dump(mode="json")
+        document["adapters"] = {
+            name: self.adapters[name].model_dump(mode="json")
+            for name in sorted(self.adapters)
+        }
+        return document
 
 
 ENVIRONMENT_FINGERPRINT_PREFIX = "environment-contract-sha256:"

@@ -33,11 +33,14 @@ fingerprint into its instance/preflight flow.
 ## Integrated preflight and instance connections
 
 `vsm.preflight.PreflightGate` accepts Track A's concrete
-`vsm.environment.EnvironmentContract`. It computes the verification tuple with
-`environment_fingerprint(contract)`; a caller cannot supply a second,
-potentially divergent contract fingerprint. The PilotHost JSON parser validates
-the same formal contract and compares the computed value with the Codex
-candidate declaration before constructing the gate.
+`vsm.environment.EnvironmentContract`. The contract has common capabilities and
+an `adapters` map of `AdapterRequirement` values. It computes the adapter-aware
+verification tuple with `environment_fingerprint(contract)`; a caller cannot
+supply a second, potentially divergent contract fingerprint. The PilotHost JSON
+parser validates the same formal contract and compares the computed value with
+each declared adapter candidate before constructing the gate. The contract-wide
+endpoint set is derived from the adapter map; the old single endpoint/version
+fields are intentionally not retained.
 
 Track C's `EnvironmentInstance.from_contract(contract, ...)` uses the same
 function and keeps its machine-specific `instance_fingerprint` separate.
@@ -52,7 +55,7 @@ gate = PreflightGate(
     contract=contract,
     instance_fingerprint=instance.instance_fingerprint,
     evidence_hook=evidence_hook,
-    # version_reader, cache_path, preflight_runner, ...
+    # version_readers, cache_path, preflight_runners, ...
 )
 ```
 
@@ -74,7 +77,7 @@ bindings, and injects an active `EnvironmentInstanceService` into
 `preflight_instance_fingerprint` must equal that computed binding fingerprint.
 
 `ProductionPilotHost` accepts `preflight.kernel_config_path`. When present, the
-Kernel TOML is authoritative for `preflight_enabled`, version/cache paths,
+Kernel TOML is authoritative for `preflight_enabled`, adapter別 version/cache paths,
 contract, artifact selector, and instance binding; the PilotHost JSON `preflight`
 fields are the explicit fallback used when that path is absent. A configured
 local artifact is validated through `LocalEnvironmentContractStore` and must
@@ -89,8 +92,10 @@ The control-plane `VersionedArtifactTransport` adapter remains a separate
 deployment integration. Phase 1's local store connection is intentionally
 fail-fast and does not silently substitute an uncommissioned artifact.
 - The built-in Codex trial reads rollout sandbox policy and workspace mode; when
-  explicit EnvironmentInstance bindings are present, the injected runner adds
+  explicit EnvironmentInstance bindings are present, the adapter-specific runner adds
   endpoint, memory, shell, logical-path, and workspace-write measurements.
+- Claude Code and Codex CLI have separate version readers and preflight runners;
+  dispatching an adapter absent from `EnvironmentContract.adapters` fails closed.
 - The environment lifecycle records registration, verification, activation,
   retirement, failover, and reprovision requests. A procurement-boundary-aware
   provisioner and asynchronous owner notification transport remain to be
