@@ -7,10 +7,12 @@ import json
 import os
 import re
 import sqlite3
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
+import tomllib
 from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -27,12 +29,16 @@ from pydantic import (
 )
 
 from vsm.environment import EnvironmentContract, environment_fingerprint
+from vsm.environment.artifacts import LocalEnvironmentContractStore
+from vsm.environment_instance import EnvironmentInstance, EnvironmentInstanceService
 from vsm.interface.models import (
     InterfaceAction,
     ReadHistoryAction,
     SubmitReorientationAction,
 )
 from vsm.kernel.models import WorkState
+from vsm.kernel.service import utc_now
+from vsm.lethe.client import LetheOperationalLedger
 from vsm.pilot.models import DeviceIdentity, ModelCandidate
 from vsm.preflight import (
     DeclarationUpdateEvent,
@@ -1162,6 +1168,7 @@ class CodexAdapter:
                 "timeout_seconds",
             },
             "Codex adapter",
+            optional_fields={"win32_codex_sandbox_bypass_enabled"},
         )
         self.candidate = ModelCandidate.model_validate(data["candidate"])
         if (
@@ -1185,6 +1192,11 @@ class CodexAdapter:
         self.sandbox = _nonblank(data["sandbox"], "Codex sandbox")
         if self.sandbox not in {"read-only", "workspace-write"}:
             raise RuntimeError("production Codex sandbox is unsupported")
+        bypass_enabled = data.get("win32_codex_sandbox_bypass_enabled", False)
+        if not isinstance(bypass_enabled, bool):
+            raise RuntimeError("win32_codex_sandbox_bypass_enabled must be boolean")
+        self.win32_codex_sandbox_bypass_enabled = bypass_enabled
+        self.environment_variables: dict[str, str] = {}
         self.mcp = McpAllowlist(data["mcp"])
         self.mcp.validate_candidate_tools(self.candidate)
         self.max_input_tokens = _positive_integer(
@@ -1210,6 +1222,41 @@ class CodexAdapter:
         self.codex_home = Path(
             os.environ.get("CODEX_HOME") or (Path.home() / ".codex")
         ).resolve()
+
+    def bind_environment_instance(self, instance: EnvironmentInstance) -> None:
+        """Replace host-local defaults with the commissioned instance binding."""
+
+        workspace = instance.logical_path_bindings.get("workspace-root")
+        if workspace is None:
+            raise RuntimeError(
+                "EnvironmentInstance must bind the workspace-root logical path"
+            )
+        workspace_path = Path(workspace).resolve()
+        if not workspace_path.is_dir():
+            raise RuntimeError("EnvironmentInstance workspace-root is not a directory")
+        executable = Path(instance.cli_executable_path)
+        if not executable.is_absolute() or not executable.is_file():
+            raise RuntimeError(
+                "EnvironmentInstance CLI executable path must be an existing absolute file"
+            )
+        self.executable = str(executable)
+        self.working_directories = {str(workspace_path)}
+        self.codex_home = Path(instance.codex_home).resolve()
+        self.environment_variables = dict(instance.environment_variables)
+
+    def _sandbox_arguments(self, sandbox_mode: str) -> list[str]:
+        if (
+            sys.platform == "win32"
+            and self.win32_codex_sandbox_bypass_enabled
+        ):
+            return ["--dangerously-bypass-approvals-and-sandbox"]
+        return ["--sandbox", sandbox_mode]
+
+    def _subprocess_environment(self) -> dict[str, str]:
+        environment = os.environ.copy()
+        environment.update(self.environment_variables)
+        return environment
+
     def run_preflight(self, verification_tuple: VerificationTuple) -> PreflightObservation:
         """Run exactly one Codex trial and read its authoritative rollout policy."""
 
@@ -1224,8 +1271,7 @@ class CodexAdapter:
             "--json",
             "--cd",
             resolved_cwd,
-            "--sandbox",
-            verification_tuple.sandbox_mode,
+            *self._sandbox_arguments(verification_tuple.sandbox_mode),
             "--strict-config",
             "--ignore-user-config",
             *self.mcp.codex_config_arguments(),
@@ -1239,6 +1285,7 @@ class CodexAdapter:
             timeout=self.timeout_seconds,
             shell=False,
             cwd=resolved_cwd,
+            env=self._subprocess_environment(),
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if completed.returncode != 0:
@@ -1359,13 +1406,7 @@ class CodexAdapter:
                 "--cd",
                 resolved_cwd,
             ]
-            if sys.platform == "win32":
-                # 暫定: (c3)で環境非依存実行に置換予定、宣言境界はNanihold側で維持。
-                # codex 0.144.5 の Windows ネイティブは --sandbox workspace-write を
-                # read-only に降格させ書き込みを拒否するため、バイパスで実効化する。
-                argv.append("--dangerously-bypass-approvals-and-sandbox")
-            else:
-                argv.extend(("--sandbox", self.sandbox))
+            argv.extend(self._sandbox_arguments(self.sandbox))
             argv.extend(("--strict-config", "--ignore-user-config"))
             argv.extend(self.mcp.codex_config_arguments())
             argv.append(prompt)
@@ -1377,6 +1418,7 @@ class CodexAdapter:
                 timeout=request.timeout_seconds,
                 shell=False,
                 cwd=resolved_cwd,
+                env=self._subprocess_environment(),
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             result_text = (
@@ -1650,6 +1692,248 @@ def _config_path(config_path: Path, value: str) -> Path:
     return candidate if candidate.is_absolute() else (config_path.parent / candidate).resolve()
 
 
+def _load_kernel_preflight(path: Path) -> dict[str, object]:
+    """Read only the execution-environment section from the Kernel TOML."""
+
+    try:
+        document = tomllib.loads(path.read_text("utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise RuntimeError(f"Kernel config could not be read: {path}") from exc
+    if not isinstance(document, dict):
+        raise RuntimeError("Kernel config must be a TOML object")
+    production = document.get("production_pilot_host")
+    if not isinstance(production, Mapping):
+        raise RuntimeError("Kernel config has no production_pilot_host section")
+    kernel = document.get("kernel")
+    data_space = kernel.get("data_space") if isinstance(kernel, Mapping) else None
+    settings: dict[str, object] = {
+        "enabled": production.get("preflight_enabled", False),
+    }
+    if isinstance(data_space, Mapping) and "data_space_id" in data_space:
+        settings["data_space_id"] = data_space["data_space_id"]
+    for kernel_name, preflight_name in (
+        ("preflight_cli_version_file", "cli_version_file"),
+        ("preflight_cache_path", "cache_path"),
+        ("preflight_instance_fingerprint", "instance_fingerprint"),
+    ):
+        if kernel_name in production:
+            settings[preflight_name] = production[kernel_name]
+    for name in (
+        "environment_contract",
+        "environment_contract_artifact",
+        "environment_instance",
+    ):
+        if name in document:
+            settings[name] = document[name]
+    return settings
+
+
+def _effective_preflight_config(
+    *, config_path: Path, raw_config: object
+) -> tuple[dict[str, object], Path]:
+    fallback = _exact_fields(
+        raw_config,
+        {"enabled"},
+        "preflight config",
+        optional_fields={
+            "cli_version_file",
+            "cache_path",
+            "environment_contract",
+            "environment_contract_artifact",
+            "environment_instance",
+            "instance_fingerprint",
+            "kernel_config_path",
+            "operational_ledger",
+            "data_space_id",
+        },
+    )
+    effective = dict(fallback)
+    source_path = config_path
+    kernel_path_value = fallback.get("kernel_config_path")
+    if kernel_path_value is not None:
+        kernel_path = _config_path(
+            config_path,
+            _nonblank(kernel_path_value, "preflight kernel config path"),
+        )
+        effective.update(_load_kernel_preflight(kernel_path))
+        source_path = kernel_path
+    return effective, source_path
+
+
+def _environment_contract_artifact(
+    *, config: Mapping[str, object], base_path: Path
+) -> object | None:
+    raw = config.get("environment_contract_artifact")
+    if raw is None:
+        return None
+    artifact_config = _exact_fields(
+        raw,
+        {"store_path", "artifact_key", "artifact_version"},
+        "environment contract artifact",
+    )
+    store = LocalEnvironmentContractStore(
+        _config_path(
+            base_path,
+            _nonblank(artifact_config["store_path"], "contract artifact store path"),
+        )
+    )
+    artifact_key = _nonblank(artifact_config["artifact_key"], "contract artifact key")
+    artifact_version = _positive_integer(
+        artifact_config["artifact_version"], "contract artifact version"
+    )
+    return store.get(artifact_key=artifact_key, version=artifact_version)
+
+
+def _environment_instance(
+    *, config: Mapping[str, object], contract: EnvironmentContract
+) -> EnvironmentInstance | None:
+    raw = config.get("environment_instance")
+    if raw is None:
+        return None
+    instance_config = _exact_fields(
+        raw,
+        {
+            "instance_id",
+            "logical_path_bindings",
+            "cli_executable_path",
+            "codex_home",
+        },
+        "environment instance",
+        optional_fields={"environment_variables", "machine_identity"},
+    )
+    bindings = instance_config["logical_path_bindings"]
+    if not isinstance(bindings, Mapping) or not bindings:
+        raise RuntimeError("environment instance logical_path_bindings must be an object")
+    if any(
+        not isinstance(name, str)
+        or not name.strip()
+        or not isinstance(path, str)
+        or not path.strip()
+        for name, path in bindings.items()
+    ):
+        raise RuntimeError("environment instance path bindings must be non-blank strings")
+    environment_variables = instance_config.get("environment_variables", {})
+    machine_identity = instance_config.get("machine_identity", {})
+    if not isinstance(environment_variables, Mapping) or not isinstance(
+        machine_identity, Mapping
+    ):
+        raise RuntimeError("environment instance metadata must be objects")
+    if any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in [
+            *environment_variables.items(),
+            *machine_identity.items(),
+        ]
+    ):
+        raise RuntimeError("environment instance metadata must contain strings")
+    return EnvironmentInstance.from_contract(
+        contract,
+        instance_id=_nonblank(instance_config["instance_id"], "environment instance ID"),
+        data_space_id=_nonblank(
+            config.get("data_space_id"), "environment instance DataSpace ID"
+        ),
+        logical_path_bindings=dict(bindings),
+        cli_executable_path=_nonblank(
+            instance_config["cli_executable_path"],
+            "environment instance CLI executable path",
+        ),
+        codex_home=_nonblank(
+            instance_config["codex_home"], "environment instance CODEX_HOME"
+        ),
+        environment_variables=dict(environment_variables),
+        machine_identity=dict(machine_identity),
+    )
+
+
+def _available_memory_bytes() -> int:
+    if hasattr(os, "sysconf"):
+        try:
+            return int(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"))
+        except (OSError, ValueError):
+            pass
+    if sys.platform == "win32":
+        import ctypes
+
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [
+                ("length", ctypes.c_uint32),
+                ("memory_load", ctypes.c_uint32),
+                ("total_physical", ctypes.c_uint64),
+                ("available_physical", ctypes.c_uint64),
+                ("total_page_file", ctypes.c_uint64),
+                ("available_page_file", ctypes.c_uint64),
+                ("total_virtual", ctypes.c_uint64),
+                ("available_virtual", ctypes.c_uint64),
+                ("available_extended", ctypes.c_uint64),
+            ]
+
+        status = MemoryStatus()
+        status.length = ctypes.sizeof(MemoryStatus)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return int(status.total_physical)
+    raise RuntimeError("available memory could not be measured")
+
+
+def _instance_preflight_runner(
+    *,
+    instance: EnvironmentInstance,
+    contract: EnvironmentContract,
+    codex_runner: PreflightRunner,
+) -> PreflightRunner:
+    def run(verification_tuple: VerificationTuple) -> PreflightObservation:
+        raw = codex_runner(verification_tuple)
+        if isinstance(raw, PreflightObservation):
+            observation = raw
+        elif isinstance(raw, Mapping):
+            observation = PreflightObservation.from_mapping(raw)
+        else:
+            raise PreflightError("Codex preflight returned invalid evidence")
+        capabilities = dict(observation.capabilities)
+        endpoint_reachable: dict[str, bool] = {}
+        for endpoint in contract.required_endpoints:
+            try:
+                with socket.create_connection((endpoint, 443), timeout=5):
+                    endpoint_reachable[endpoint] = True
+            except OSError:
+                endpoint_reachable[endpoint] = False
+        capabilities["endpoint_reachable"] = endpoint_reachable
+        capabilities["memory_bytes"] = _available_memory_bytes()
+        capabilities["shell"] = "posix" if os.name == "posix" else "powershell"
+        capabilities["path_mappings"] = {
+            name: path
+            for name, path in instance.logical_path_bindings.items()
+            if Path(path).exists()
+        }
+        workspace = instance.logical_path_bindings.get("workspace-root")
+        if workspace is None:
+            capabilities["workspace_writable"] = False
+        else:
+            probe: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    dir=workspace,
+                    prefix=".nanihold-preflight-",
+                    delete=False,
+                ) as stream:
+                    probe = Path(stream.name)
+                capabilities["workspace_writable"] = True
+            except OSError:
+                capabilities["workspace_writable"] = False
+            finally:
+                if probe is not None:
+                    try:
+                        probe.unlink()
+                    except OSError:
+                        pass
+        return PreflightObservation(
+            sandbox_policy=observation.sandbox_policy,
+            capabilities=capabilities,
+            rollout_ref=observation.rollout_ref,
+        )
+
+    return run
+
+
 def _atomic_write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
@@ -1723,6 +2007,14 @@ class ProductionPilotHost:
         self.codex = CodexAdapter(data["codex"])
         self.preflight_evidence: PreflightEvidence | None = None
         self.preflight_update_events: list[DeclarationUpdateEvent] = []
+        self._environment_ledger: LetheOperationalLedger | None = None
+        self._preflight_status: dict[str, object] = {
+            "enabled": False,
+            "cli_version_file": None,
+            "cache_path": None,
+            "instance_fingerprint": None,
+            "environment_fingerprint": None,
+        }
         preflight_config = data.get("preflight")
         self.preflight: PreflightGate | None = None
         if preflight_config is not None:
@@ -1745,46 +2037,58 @@ class ProductionPilotHost:
         declaration_event_hook: Callable[[DeclarationUpdateEvent], object] | None,
         evidence_hook: Callable[[PreflightEvidence], object] | None,
     ) -> PreflightGate | None:
-        config = _exact_fields(
-            raw_config,
-            {"enabled"},
-            "preflight config",
-            optional_fields={
-                "cli_version_file",
-                "cache_path",
-                "environment_contract",
-                "instance_fingerprint",
-            },
+        config, source_path = _effective_preflight_config(
+            config_path=config_path,
+            raw_config=raw_config,
         )
         if not isinstance(config["enabled"], bool):
             raise RuntimeError("preflight enabled must be boolean")
         if not config["enabled"]:
+            self._preflight_status["enabled"] = False
             return None
         cli_version_file = _config_path(
-            config_path,
+            source_path,
             _nonblank(config["cli_version_file"], "preflight CLI version file"),
         )
         cache_path = _config_path(
-            config_path,
+            source_path,
             _nonblank(config["cache_path"], "preflight cache path"),
         )
         instance_fingerprint = _nonblank(
             config["instance_fingerprint"], "preflight instance fingerprint"
         )
-        # TODO(EEP production wiring): retrieve the selected versioned contract
-        # through EnvironmentContractArtifactStore once artifact key/version and
-        # VersionedArtifactTransport settings exist.  Do not fall back from a
-        # configured control-plane artifact to this embedded document.
-        contract_raw = config["environment_contract"]
-        if not isinstance(contract_raw, Mapping):
-            raise RuntimeError("preflight environment_contract must be an object")
-        try:
-            contract = EnvironmentContract.model_validate(contract_raw)
-        except ValidationError as exc:
+        contract: EnvironmentContract | None = None
+        contract_raw = config.get("environment_contract")
+        if contract_raw is not None:
+            if not isinstance(contract_raw, Mapping):
+                raise RuntimeError("preflight environment_contract must be an object")
+            try:
+                contract = EnvironmentContract.model_validate(contract_raw)
+            except ValidationError as exc:
+                raise RuntimeError("preflight environment_contract is invalid") from exc
+        artifact = _environment_contract_artifact(
+            config=config,
+            base_path=source_path,
+        )
+        if artifact is not None:
+            artifact_contract = artifact.contract
+            if contract is not None and contract != artifact_contract:
+                raise RuntimeError(
+                    "Kernel environment_contract differs from its local artifact"
+                )
+            contract = artifact_contract
+        if contract is None:
             raise RuntimeError(
-                "preflight environment_contract is invalid"
-            ) from exc
+                "preflight requires environment_contract or a local contract artifact"
+            )
         contract_fingerprint = environment_fingerprint(contract)
+        self._preflight_status = {
+            "enabled": True,
+            "cli_version_file": str(cli_version_file),
+            "cache_path": str(cache_path),
+            "instance_fingerprint": instance_fingerprint,
+            "environment_fingerprint": contract_fingerprint,
+        }
         if contract_fingerprint != self.codex.candidate.environment_fingerprint:
             raise RuntimeError(
                 "preflight environment fingerprint differs from the Codex candidate"
@@ -1800,20 +2104,76 @@ class ProductionPilotHost:
 
         def record_evidence(evidence: PreflightEvidence) -> None:
             self.preflight_evidence = evidence
-            if evidence_hook is not None:
-                evidence_hook(evidence)
+            if effective_evidence_hook is not None:
+                effective_evidence_hook(evidence)
 
-        # TODO(EEP production wiring): construct EnvironmentInstanceService from
-        # the commissioned Operational Ledger and inject its
-        # preflight_evidence_hook for the configured instance.  The launcher
-        # cannot do that until production config identifies the DataSpace,
-        # instance ID, and Ledger connection explicitly.
-
-        # TODO(EEP production wiring): inject an instance-aware runner after
-        # EnvironmentInstance bindings define endpoint, memory, shell, and path
-        # probes.  The built-in Codex trial reports rollout sandbox/workspace
-        # only, so PreflightGate deliberately fails closed for missing evidence.
+        instance = _environment_instance(config=config, contract=contract)
+        effective_evidence_hook = evidence_hook
+        if instance is not None:
+            if instance.instance_fingerprint != instance_fingerprint:
+                raise RuntimeError(
+                    "preflight instance fingerprint differs from the EnvironmentInstance binding"
+                )
+            self.codex.bind_environment_instance(instance)
+            if effective_evidence_hook is None:
+                ledger_raw = config.get("operational_ledger")
+                ledger_config = _exact_fields(
+                    ledger_raw,
+                    {
+                        "base_url",
+                        "bearer_token_env",
+                        "data_space_id",
+                        "timeout_seconds",
+                        "max_page_size",
+                    },
+                    "preflight operational ledger",
+                )
+                ledger_data_space_id = _nonblank(
+                    ledger_config["data_space_id"],
+                    "preflight operational ledger DataSpace ID",
+                )
+                if ledger_data_space_id != instance.data_space_id:
+                    raise RuntimeError(
+                        "preflight operational ledger DataSpace differs from the instance"
+                    )
+                self._environment_ledger = LetheOperationalLedger(
+                    base_url=_nonblank(
+                        ledger_config["base_url"],
+                        "preflight operational ledger base URL",
+                    ),
+                    bearer_token=_required_env(
+                        _nonblank(
+                            ledger_config["bearer_token_env"],
+                            "preflight operational ledger bearer token env",
+                        )
+                    ),
+                    data_space_id=ledger_data_space_id,
+                    timeout_seconds=_positive_number(
+                        ledger_config["timeout_seconds"],
+                        "preflight operational ledger timeout",
+                    ),
+                    max_page_size=_positive_integer(
+                        ledger_config["max_page_size"],
+                        "preflight operational ledger max page size",
+                    ),
+                )
+                lifecycle = EnvironmentInstanceService(
+                    data_space_id=instance.data_space_id,
+                    ledger=self._environment_ledger,
+                    clock=utc_now,
+                )
+                lifecycle.attach_active(instance, contract=contract)
+                effective_evidence_hook = lifecycle.preflight_evidence_hook(
+                    instance.instance_id,
+                    idempotency_key_prefix="environment:preflight:verify",
+                )
         runner = preflight_runner or self.codex.run_preflight
+        if instance is not None and preflight_runner is None:
+            runner = _instance_preflight_runner(
+                instance=instance,
+                contract=contract,
+                codex_runner=runner,
+            )
         return PreflightGate(
             contract=contract,
             instance_fingerprint=instance_fingerprint,
@@ -1825,6 +2185,10 @@ class ProductionPilotHost:
             declaration_persist_hook=lambda: _atomic_write_json(config_path, document),
             evidence_hook=record_evidence,
         )
+
+    def close(self) -> None:
+        if self._environment_ledger is not None:
+            self._environment_ledger.close()
 
     def authorized(self, headers: Any) -> bool:
         expected = {
@@ -1883,6 +2247,7 @@ class ProductionPilotHost:
                 self.claude.max_request_document_bytes
             ),
             "receipt_reconciliation": True,
+            "preflight": dict(self._preflight_status),
         }
 
     def execute(self, endpoint: str, payload: dict[str, object]) -> dict[str, object]:
@@ -1905,6 +2270,16 @@ class ProductionPilotHost:
             raise ContractError("request device identity differs from PilotHost")
         if isinstance(request, WorkExecutionRequest):
             self.codex.validate_request(request)
+            if (
+                sys.platform == "win32"
+                and self.codex.sandbox == "workspace-write"
+                and not self.codex.win32_codex_sandbox_bypass_enabled
+                and self.preflight is None
+            ):
+                raise ContractError(
+                    "Windows workspace-write execution requires a successful "
+                    "EnvironmentContract preflight"
+                )
             if self.preflight is not None:
                 try:
                     self.preflight.dispatch_preflight()
@@ -2076,20 +2451,23 @@ def main() -> int:
     parser.add_argument("--log-file", type=Path, required=True)
     args = parser.parse_args()
     host = ProductionPilotHost(args.config.resolve(), args.log_file.resolve())
-    host.log(
-        {
-            "timestamp": _utc_now(),
-            "method": "START",
-            "path": "/",
-            "status": "ready",
-        }
-    )
-    server = ThreadingHTTPServer(
-        (host.bind_host, host.bind_port),
-        _handler(host),
-    )
-    server.serve_forever()
-    return 0
+    try:
+        host.log(
+            {
+                "timestamp": _utc_now(),
+                "method": "START",
+                "path": "/",
+                "status": "ready",
+            }
+        )
+        server = ThreadingHTTPServer(
+            (host.bind_host, host.bind_port),
+            _handler(host),
+        )
+        server.serve_forever()
+        return 0
+    finally:
+        host.close()
 
 
 if __name__ == "__main__":

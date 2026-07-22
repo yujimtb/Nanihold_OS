@@ -187,6 +187,32 @@ class ProductionPilotHostRuntimeConfig(StrictConfig):
         return self
 
 
+class EnvironmentContractArtifactConfig(StrictConfig):
+    """The commissioned local store and immutable contract artifact selector."""
+
+    store_path: Path
+    artifact_key: str = Field(pattern=r"^[a-z][a-z0-9._-]{0,127}$")
+    artifact_version: int = Field(ge=1)
+
+
+class EnvironmentInstanceConfig(StrictConfig):
+    """Machine-specific binding for the commissioned execution instance."""
+
+    instance_id: str = Field(min_length=1)
+    logical_path_bindings: dict[str, str] = Field(min_length=1)
+    cli_executable_path: str = Field(min_length=1)
+    codex_home: str = Field(min_length=1)
+    environment_variables: dict[str, str] = Field(default_factory=dict)
+    machine_identity: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def bindings_are_explicit(self) -> "EnvironmentInstanceConfig":
+        if any(not name.strip() or not path.strip() for name, path in self.logical_path_bindings.items()):
+            raise ValueError("environment_instance logical path bindings must be non-blank")
+        if not self.cli_executable_path.strip() or not self.codex_home.strip():
+            raise ValueError("environment_instance executable and CODEX_HOME are required")
+        return self
+
 class CandidateRegistration(StrictConfig):
     candidate: ModelCandidate
     priors: tuple[BenchmarkPrior, ...]
@@ -230,6 +256,8 @@ class NaniholdConfig(StrictConfig):
     pilot: PilotConfig
     interface_pilot: InterfacePilotConfig
     environment_contract: EnvironmentContract | None = None
+    environment_contract_artifact: EnvironmentContractArtifactConfig | None = None
+    environment_instance: EnvironmentInstanceConfig | None = None
     production_pilot_host: ProductionPilotHostRuntimeConfig | None = None
     routing: RoutingConfig
     server: ServerConfig

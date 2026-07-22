@@ -249,6 +249,31 @@ class EnvironmentInstanceService:
         except KeyError as exc:
             raise InvariantViolation(f"EnvironmentInstance not found: {instance_id}") from exc
 
+    def attach_active(
+        self,
+        instance: EnvironmentInstance,
+        *,
+        contract: EnvironmentContract,
+    ) -> EnvironmentInstance:
+        """Attach a commissioned active instance without replaying lifecycle events.
+
+        Runtime bootstrap receives the commissioned identity and bindings from
+        configuration.  The existing Ledger stream is used only to continue its
+        stream version; registration and activation happened at commissioning time.
+        """
+
+        self._validate_instance_contract(instance, contract)
+        if instance.instance_id in self.instances:
+            raise InvariantViolation(
+                f"EnvironmentInstance already attached: {instance.instance_id}"
+            )
+        history = self.ledger.stream(instance.instance_id, 0, 100_000)
+        if history:
+            self._versions[instance.instance_id] = history[-1].event.stream_version
+        active = instance.model_copy(update={"state": EnvironmentInstanceState.ACTIVE})
+        self.instances[active.instance_id] = active
+        return active
+
     def _validate_instance_contract(
         self, instance: EnvironmentInstance, contract: EnvironmentContract
     ) -> None:

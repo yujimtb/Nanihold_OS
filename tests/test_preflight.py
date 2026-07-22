@@ -19,6 +19,7 @@ from vsm.preflight import (
 from scripts.production_pilot_host import (
     ContractError,
     ProductionPilotHost,
+    _effective_preflight_config,
 )
 
 
@@ -186,6 +187,40 @@ def testバージョン読み取りはプロセスを起動しない(tmp_path: P
 def testバージョンファイルが読めなければfail_fast(tmp_path: Path):
     with pytest.raises(VersionReadError):
         CliVersionReader(tmp_path / "missing-package.json").read()
+
+
+def test_kernel_config_is_authoritative_over_pilot_host_fallback(tmp_path: Path):
+    kernel_path = tmp_path / "vsm.toml"
+    kernel_path.write_text(
+        """
+[kernel.data_space]
+data_space_id = "space:kernel"
+
+[production_pilot_host]
+preflight_enabled = true
+preflight_cli_version_file = "/kernel/codex/package.json"
+preflight_cache_path = "/kernel/preflight.json"
+preflight_instance_fingerprint = "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+""",
+        encoding="utf-8",
+    )
+
+    effective, source_path = _effective_preflight_config(
+        config_path=tmp_path / "pilot-host.json",
+        raw_config={
+            "enabled": False,
+            "kernel_config_path": str(kernel_path),
+            "cli_version_file": "/fallback/package.json",
+            "cache_path": "/fallback/preflight.json",
+            "instance_fingerprint": "f" * 64,
+        },
+    )
+
+    assert source_path == kernel_path
+    assert effective["enabled"] is True
+    assert effective["cli_version_file"] == "/kernel/codex/package.json"
+    assert effective["cache_path"] == "/kernel/preflight.json"
+    assert effective["instance_fingerprint"] == "k" * 64
 
 
 def test候補宣言更新フックは決定論的な監査イベントを生成する(tmp_path: Path):

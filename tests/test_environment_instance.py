@@ -218,6 +218,18 @@ def test_preflight_evidence_hook_verifies_instance_in_operational_ledger(
     assert verified.payload["preflight_evidence"] == result.evidence.to_dict()
 
 
+def test_commissioned_active_instance_can_be_attached_without_replaying_registration() -> None:
+    ledger = InMemoryOperationalLedger(SPACE_ID)
+    lifecycle = service(ledger)
+    candidate = instance("environment-instance:commissioned", "/srv/commissioned")
+
+    attached = lifecycle.attach_active(candidate, contract=CONTRACT)
+
+    assert attached.state is EnvironmentInstanceState.ACTIVE
+    assert lifecycle.instances[candidate.instance_id] == attached
+    assert ledger.stream(candidate.instance_id, 0, 20) == []
+
+
 def test_failover_selects_verified_peer_without_changing_environment_fingerprint() -> None:
     ledger = InMemoryOperationalLedger(SPACE_ID)
     lifecycle = service(ledger)
